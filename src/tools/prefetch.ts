@@ -83,12 +83,16 @@ export function createPrefetchTool(
       const browsingUrls = new Set<string>();
 
       // Phase 1: Search all queries concurrently
+      console.log(`    Searching ${queries.length} queries in parallel...`);
       const searchResults = await Promise.allSettled(
         queries.map(async (query) => {
           const results = await multiEngineSearch(client, query);
+          console.log(`    ✓ "${query.slice(0, 50)}" → ${results.length} results`);
           return { query, results };
         }),
       );
+      const successCount = searchResults.filter((r) => r.status === "fulfilled").length;
+      console.log(`    Searches complete: ${successCount}/${queries.length} succeeded, browsing top results...`);
 
       // Phase 2: For each successful search, browse top URLs concurrently
       const queryResults: QueryResult[] = [];
@@ -142,6 +146,7 @@ export function createPrefetchTool(
                 scrapedUrls.add(url);
                 totalBrowsed++;
                 allBrowsedUrls.push(url);
+                console.log(`    [${totalBrowsed}/${totalQueued}] Browsed: ${scraped.title.slice(0, 60)}`);
 
                 if (!isContentMeaningful(scraped.content)) {
                   qr.browseResults.push({
@@ -182,6 +187,7 @@ export function createPrefetchTool(
 
       // Wait for all browse operations to complete
       await Promise.allSettled(browsePromises);
+      console.log(`    Prefetch complete: ${totalBrowsed} pages browsed across ${queries.length} queries`);
 
       // Format results as structured markdown
       const sections: string[] = [

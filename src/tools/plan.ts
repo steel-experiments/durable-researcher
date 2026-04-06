@@ -22,11 +22,13 @@ export function createPlanTool(researchParams: ResearchParams): AgentTool<typeof
       const depth = researchParams.depth ?? "standard";
       const config = DEPTH_CONFIG[depth];
 
+      console.log(`    Generating ${depth} research plan (up to ${config.initialQueries} queries)...`);
       const plan = await generateResearchPlan(
         researchParams.topic,
         depth,
         config.initialQueries,
       );
+      console.log(`    Plan ready: ${plan.subQueries.length} queries, strategy: ${plan.searchStrategy}`);
 
       const formatted = [
         `## Research Plan`,
