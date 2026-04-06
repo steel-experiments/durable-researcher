@@ -150,11 +150,43 @@ export function createResearchApp(databaseUrl?: string): Absurd {
         messages,
       };
 
+      // Track browse count for hard limit enforcement
+      const maxBrowses = params.maxSources ?? 20;
+      const maxTurns = depthConfig.maxIterations * 15; // ~15 turns per iteration
+
       const config: AgentLoopConfig = {
         model: getModel("zai", "glm-5.1"),
         convertToLlm,
         toolExecution: "sequential",
         getApiKey: (provider) => getEnvApiKey(provider),
+        getSteeringMessages: async () => {
+          // Count how many sources we've browsed and total turns
+          const turnCount = context.messages.filter(
+            (m) => "role" in m && m.role === "assistant",
+          ).length;
+
+          if (scrapedUrls.size >= maxBrowses) {
+            return [
+              {
+                role: "user" as const,
+                content: `[SYSTEM] You have reached the maximum source limit (${maxBrowses}). Stop browsing and searching. Write your final research report NOW using the notes you have collected.`,
+                timestamp: Date.now(),
+              },
+            ];
+          }
+
+          if (turnCount >= maxTurns) {
+            return [
+              {
+                role: "user" as const,
+                content: `[SYSTEM] You have reached the maximum turn limit (${maxTurns}). Stop researching. Write your final research report NOW using the notes you have collected.`,
+                timestamp: Date.now(),
+              },
+            ];
+          }
+
+          return [];
+        },
       };
 
       // 6. Set up durable message persistence
