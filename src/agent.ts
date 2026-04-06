@@ -18,12 +18,14 @@ import { createScreenshotTool } from "./tools/screenshot.js";
 import { createNoteTool } from "./tools/note.js";
 import { createEvaluateTool } from "./tools/evaluate.js";
 import { createPlanTool } from "./tools/plan.js";
+import { createPrefetchTool } from "./tools/prefetch.js";
 import {
   loadMessageLog,
   createLoggingPersister,
   rebuildStateFromMessages,
   type UsageStats,
 } from "./durable-turns.js";
+import { deduplicateNotes } from "./notes-ranker.js";
 import { loadTemplate } from "./prompts.js";
 
 /** Options for creating the research app. */
@@ -44,8 +46,60 @@ function convertToLlm(messages: AgentMessage[]): Message[] {
   );
 }
 
+/**
+ * Generate a partial report from accumulated notes when the agent didn't
+ * produce a final report (e.g. due to timeout).
+ */
+export function buildPartialReport(
+  notes: { title: string; content: string; sourceUrls: string[] }[],
+  topic: string,
+): string {
+  if (notes.length === 0) return "";
+
+  const sections = notes.map(
+    (n) =>
+      `## ${n.title}\n${n.content}\n\nSources: ${n.sourceUrls.join(", ")}`,
+  );
+
+  return [
+    `[Partial results — research timed out with ${notes.length} notes collected on "${topic}"]`,
+    "",
+    ...sections,
+  ].join("\n\n");
+}
+
+/**
+ * Create a timeout steering check that fires when elapsed time approaches the deadline.
+ * Returns a function: call it each turn to check if the agent should stop.
+ * The message is only returned once; subsequent calls return null message but shouldStop stays true.
+ */
+export function createTimeoutSteeringCheck(
+  taskStartTime: number,
+  maxDuration: number,
+  timeoutBuffer: number,
+): () => { shouldStop: boolean; message: string | null } {
+  let messageSent = false;
+
+  return () => {
+    const elapsed = Date.now() - taskStartTime;
+    if (elapsed < maxDuration - timeoutBuffer) {
+      return { shouldStop: false, message: null };
+    }
+
+    if (messageSent) {
+      return { shouldStop: true, message: null };
+    }
+
+    messageSent = true;
+    return {
+      shouldStop: true,
+      message: `[SYSTEM] Approaching task timeout (${Math.round(elapsed / 1000)}s elapsed of ${Math.round(maxDuration / 1000)}s max). Stop ALL tool use immediately and write your final research report NOW using the notes you have collected.`,
+    };
+  };
+}
+
 /** Build the final research result from accumulated notes and messages. */
-function buildResult(
+export function buildResult(
   notes: { title: string; content: string; sourceUrls: string[] }[],
   topic: string,
   messages: AgentMessage[],
@@ -58,9 +112,17 @@ function buildResult(
       const textParts = msg.content.filter(
         (c): c is { type: "text"; text: string } => c.type === "text",
       );
-      report = textParts.map((c) => c.text).join("\n");
-      break;
+      const text = textParts.map((c) => c.text).join("\n");
+      if (text.length > 0) {
+        report = text;
+        break;
+      }
     }
+  }
+
+  // Fall back to partial report from notes if no assistant report text
+  if (!report && notes.length > 0) {
+    report = buildPartialReport(notes, topic);
   }
 
   // Collect all unique sources
@@ -128,7 +190,13 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
       let { messages, nextHandle } = await loadMessageLog(ctx);
 
       // 2. Rebuild in-memory state from replayed messages
-      const { notes, scrapedUrls } = rebuildStateFromMessages(messages);
+      const rebuilt = rebuildStateFromMessages(messages);
+      const scrapedUrls = rebuilt.scrapedUrls;
+
+      // Deduplicate notes on resume to clean up any duplicates from prior runs
+      const notes = rebuilt.notes.length > 0
+        ? deduplicateNotes(rebuilt.notes)
+        : rebuilt.notes;
 
       // Seed with prior research if extending a completed run
       if (params.priorNotes?.length) {
@@ -145,8 +213,10 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
       }
 
       // 3. Create tools with closures over mutable state
+      const prefetchBudget = Math.floor((params.maxSources ?? 20) / 2);
       const tools = [
         createPlanTool(params),
+        createPrefetchTool(steelClient, scrapedUrls, params.topic, prefetchBudget),
         createSearchTool(steelClient, scrapedUrls),
         createBrowseTool(steelClient, scrapedUrls, params.topic),
         createScreenshotTool(steelClient),
@@ -173,6 +243,12 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
       const maxBrowses = params.maxSources ?? 20;
       const maxTurns = depthConfig.maxIterations * 15;
 
+      // Timeout handling: detect approaching deadline and force report
+      const taskStartTime = Date.now();
+      const maxDuration = 600_000;
+      const TIMEOUT_BUFFER = 60_000;
+      const timeoutCheck = createTimeoutSteeringCheck(taskStartTime, maxDuration, TIMEOUT_BUFFER);
+
       // Usage tracking
       const usage: UsageStats = {
         inputTokens: 0,
@@ -186,20 +262,44 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
 
       // Track whether we've already sent the "stop" steering message
       let steeringSent = false;
+      // Track browses since last evaluate for auto-injection
+      let browsesSinceEval = 0;
+      const EVAL_INTERVAL = 5;
 
       const config: AgentLoopConfig = {
         model: agentModel,
         convertToLlm,
         toolExecution: "parallel",
         getApiKey: (provider) => getEnvApiKey(provider),
+        afterToolCall: async (ctx) => {
+          // Count browses and prefetches; reset on evaluate
+          if (ctx.toolCall.name === "browse_url" || ctx.toolCall.name === "prefetch_sources") {
+            browsesSinceEval++;
+          } else if (ctx.toolCall.name === "evaluate_progress") {
+            browsesSinceEval = 0;
+          }
+          return undefined;
+        },
         getSteeringMessages: async () => {
           // Only inject the stop message once
           if (steeringSent) return [];
+
+          // Check timeout first — hardest constraint
+          const timeout = timeoutCheck();
+          if (timeout.shouldStop && timeout.message) {
+            steeringSent = true;
+            return [{
+              role: "user" as const,
+              content: timeout.message,
+              timestamp: Date.now(),
+            }];
+          }
 
           const turnCount = context.messages.filter(
             (m) => "role" in m && m.role === "assistant",
           ).length;
 
+          // Hard limits
           if (scrapedUrls.size >= maxBrowses || turnCount >= maxTurns) {
             steeringSent = true;
             const reason = scrapedUrls.size >= maxBrowses
@@ -212,6 +312,32 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
             }];
           }
 
+          // Auto-inject evaluation data after N browses without an explicit evaluate call
+          if (browsesSinceEval >= EVAL_INTERVAL) {
+            browsesSinceEval = 0;
+
+            const highCount = notes.filter((n) => n.confidence === "high").length;
+            const medCount = notes.filter((n) => n.confidence === "medium").length;
+            const lowCount = notes.filter((n) => n.confidence === "low").length;
+            const domains = new Set(
+              notes
+                .flatMap((n) => n.sourceUrls)
+                .map((u) => { try { return new URL(u).hostname; } catch { return u; } }),
+            );
+
+            return [{
+              role: "user" as const,
+              content: [
+                `[SYSTEM] Auto-evaluation after ${EVAL_INTERVAL} browses:`,
+                `Sources: ${scrapedUrls.size}/${maxBrowses} | Notes: ${notes.length} (${highCount} high, ${medCount} med, ${lowCount} low) | Domains: ${domains.size}`,
+                `Turns: ${turnCount}/${maxTurns}`,
+                ``,
+                `Review your coverage. If you have enough high-confidence notes across diverse sources, write your final report. Otherwise, identify specific gaps and do targeted searches.`,
+              ].join("\n"),
+              timestamp: Date.now(),
+            }];
+          }
+
           return [];
         },
       };
@@ -219,6 +345,32 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
       // 6. Set up durable message persistence with logging
       const persisterOpts = { maxSources: maxBrowses, maxTurns, scrapedUrls, usage };
       const persistEvent = createLoggingPersister(ctx, nextHandle, persisterOpts);
+
+      // Helper: run agent loop with a hard timeout safety net
+      async function runWithTimeout(
+        persister: (event: import("@mariozechner/pi-agent-core").AgentEvent) => Promise<void>,
+      ): Promise<void> {
+        const elapsed = Date.now() - taskStartTime;
+        const remainingMs = maxDuration - elapsed - 10_000; // 10s safety margin
+
+        if (remainingMs <= 0) {
+          console.log("[TIMEOUT] No time remaining — building partial result.");
+          return;
+        }
+
+        const timeoutPromise = new Promise<"timeout">((resolve) =>
+          setTimeout(() => resolve("timeout"), remainingMs),
+        );
+
+        const result = await Promise.race([
+          runAgentLoopContinue(context, config, persister).then(() => "done" as const),
+          timeoutPromise,
+        ]);
+
+        if (result === "timeout") {
+          console.log("[TIMEOUT] Hard deadline approaching — building partial result from accumulated notes.");
+        }
+      }
 
       // 7. Handle first run vs resume
       const last = context.messages.at(-1);
@@ -250,7 +402,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         nextHandle = await ctx.beginStep<MessageLogEntry>("message");
 
         const updatedPersister = createLoggingPersister(ctx, nextHandle, persisterOpts);
-        await runAgentLoopContinue(context, config, updatedPersister);
+        await runWithTimeout(updatedPersister);
         checkForAgentError(context.messages);
       } else if (
         "role" in last &&
@@ -271,7 +423,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         if (lastMsg && "role" in lastMsg && lastMsg.role === "assistant") {
           context.messages.pop();
         }
-        await runAgentLoopContinue(context, config, persistEvent);
+        await runWithTimeout(persistEvent);
         checkForAgentError(context.messages);
       }
 
