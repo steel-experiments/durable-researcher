@@ -1,0 +1,14 @@
+Given the research topic "{{topic}}", generate exactly 3 clarifying questions that would help narrow the scope and improve research quality.
+
+Good questions target:
+- Which specific aspect or angle the user cares about most
+- The intended audience or depth level (technical vs overview)
+- Time period, geography, or domain constraints
+- Whether they want comparison, analysis, or factual summary
+
+Output ONLY a JSON array of objects with "question" and "why" fields. Example:
+[
+  {"question": "Are you interested in recent developments (2024-2026) or historical evolution?", "why": "Narrows the time scope to avoid overly broad search"},
+  {"question": "...", "why": "..."},
+  {"question": "...", "why": "..."}
+]

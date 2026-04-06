@@ -11,6 +11,8 @@ export type ResearchParams = {
   topic: string;
   depth?: "quick" | "standard" | "deep";
   maxSources?: number;
+  /** User's clarifying answers to narrow research scope. */
+  clarifications?: string;
   /** Prior research notes to extend (from a completed run). */
   priorNotes?: ResearchNote[];
   /** Prior source URLs to avoid re-browsing. */

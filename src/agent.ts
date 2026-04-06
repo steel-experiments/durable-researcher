@@ -386,6 +386,9 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
             `Focus on: gaps in the existing research, newer developments, alternative perspectives, and areas marked as low confidence. Do NOT re-browse URLs you have already visited.`,
           ].join("\n");
         }
+        if (params.clarifications) {
+          userContent += `\n\nThe user provided these clarifications to narrow the research scope:\n${params.clarifications}`;
+        }
         const userMessage: AgentMessage = {
           role: "user" as const,
           content: userContent,

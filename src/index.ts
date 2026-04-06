@@ -19,6 +19,7 @@ import {
   type ExistingTask,
 } from "./task-finder.js";
 import { runFollowUp } from "./follow-up.js";
+import { runClarification } from "./clarify.js";
 import { rebuildStateFromMessages } from "./durable-turns.js";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { ResearchNote } from "./types.js";
@@ -33,6 +34,7 @@ Options:
   --max-sources <number>          Maximum sources to consult (default: 20)
   --model <provider:model>        LLM model (default: zai:glm-5.1)
   --resume <task-id>              Resume a specific task by ID
+  --clarify                       Ask clarifying questions before researching
   --new                           Start fresh, ignore existing research
   --extend                        Extend prior research with more sources
   --view                          View existing report without re-running
@@ -396,10 +398,21 @@ async function main() {
   if (!taskID && topic) {
     const params: ResearchParams = { topic, depth, maxSources };
 
+    // Run clarification if requested and interactive
+    if (args.includes("--clarify") && process.stdin.isTTY) {
+      const clarifications = await runClarification(topic);
+      if (clarifications) {
+        params.clarifications = clarifications;
+      }
+    }
+
     console.log(`\nDurable Researcher`);
     console.log(`Topic: ${topic}`);
     console.log(`Depth: ${depth}`);
     console.log(`Max sources: ${maxSources}`);
+    if (params.clarifications) {
+      console.log(`Clarifications: ${params.clarifications.split("\n").length / 3} answers captured`);
+    }
     console.log(`---\n`);
 
     const result = await app.spawn("research", params);
