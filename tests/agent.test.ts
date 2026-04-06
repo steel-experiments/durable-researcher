@@ -22,6 +22,7 @@ describe("loadTemplate", () => {
     expect(result).toContain("browse_url");
     expect(result).toContain("take_note");
     expect(result).toContain("evaluate_progress");
+    expect(result).toContain("prefetch_sources");
   });
 
   it("renders plan prompt with max queries", async () => {

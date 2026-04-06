@@ -4,6 +4,7 @@
 import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import type { ResearchNote } from "../types.js";
+import { rankNotes } from "../notes-ranker.js";
 
 const EvaluateParams = Type.Object({});
 
@@ -48,7 +49,9 @@ export function createEvaluateTool(
         `## Notes Summary`,
       ];
 
-      for (const note of notes) {
+      // Show notes in quality-ranked order
+      const ranked = rankNotes(notes);
+      for (const note of ranked) {
         summary.push(
           `- [${note.confidence}] **${note.title}**: ${note.content.slice(0, 200)}${note.content.length > 200 ? "..." : ""}`,
         );

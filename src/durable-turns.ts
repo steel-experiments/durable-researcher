@@ -71,6 +71,7 @@ export type UsageStats = {
 /** Tool display names for progress logging. */
 const TOOL_ICONS: Record<string, string> = {
   plan_research: "[PLAN]",
+  prefetch_sources: "[PREFETCH]",
   web_search: "[SEARCH]",
   browse_url: "[BROWSE]",
   screenshot: "[SCREENSHOT]",
@@ -212,6 +213,10 @@ function formatToolArgs(toolName: string, args: Record<string, unknown>): string
       return `"${args.title}"`;
     case "screenshot":
       return `"${args.url}"`;
+    case "prefetch_sources": {
+      const queries = args.queries as string[];
+      return `${queries.length} queries`;
+    }
     default:
       return "";
   }
@@ -234,10 +239,12 @@ export function rebuildStateFromMessages(messages: AgentMessage[]): {
   for (const msg of messages) {
     if (!("role" in msg)) continue;
 
-    // Extract notes from assistant messages (tool calls with take_note)
+    // Extract notes and scraped URLs from assistant tool calls
     if (msg.role === "assistant") {
       for (const content of msg.content) {
-        if (content.type === "toolCall" && content.name === "take_note") {
+        if (content.type !== "toolCall") continue;
+
+        if (content.name === "take_note") {
           const args = content.arguments as {
             title: string;
             content: string;
@@ -250,16 +257,21 @@ export function rebuildStateFromMessages(messages: AgentMessage[]): {
             sourceUrls: args.sourceUrls,
             confidence: args.confidence,
           });
+        } else if (content.name === "browse_url") {
+          const args = content.arguments as { url: string };
+          scrapedUrls.add(args.url);
         }
       }
     }
 
-    // Extract scraped URLs from assistant messages (tool calls with browse_url)
-    if (msg.role === "assistant") {
-      for (const content of msg.content) {
-        if (content.type === "toolCall" && content.name === "browse_url") {
-          const args = content.arguments as { url: string };
-          scrapedUrls.add(args.url);
+    // Extract scraped URLs from prefetch_sources tool results
+    if (msg.role === "toolResult" && msg.toolName === "prefetch_sources") {
+      const details = msg.details as {
+        browsedUrls?: string[];
+      } | undefined;
+      if (details?.browsedUrls) {
+        for (const url of details.browsedUrls) {
+          scrapedUrls.add(url);
         }
       }
     }

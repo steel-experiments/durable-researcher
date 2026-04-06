@@ -98,6 +98,54 @@ describe("rebuildStateFromMessages", () => {
     expect(scrapedUrls.has("https://example.com/page2")).toBe(true);
   });
 
+  it("extracts scraped URLs from prefetch_sources tool results", () => {
+    const messages: AgentMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "tc-1",
+            name: "prefetch_sources",
+            arguments: { queries: ["query A", "query B"] },
+          },
+        ],
+        api: "anthropic-messages",
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        usage: {
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+        },
+        stopReason: "toolUse",
+        timestamp: Date.now(),
+      } satisfies AssistantMessage,
+      {
+        role: "toolResult",
+        toolCallId: "tc-1",
+        toolName: "prefetch_sources",
+        content: [{ type: "text", text: "Prefetch results..." }],
+        details: {
+          browsedUrls: [
+            "https://example.com/page1",
+            "https://example.com/page2",
+            "https://other.com/article",
+          ],
+        },
+        isError: false,
+        timestamp: Date.now(),
+      } satisfies ToolResultMessage,
+    ];
+
+    const { scrapedUrls } = rebuildStateFromMessages(messages);
+    expect(scrapedUrls.size).toBe(3);
+    expect(scrapedUrls.has("https://example.com/page1")).toBe(true);
+    expect(scrapedUrls.has("https://example.com/page2")).toBe(true);
+    expect(scrapedUrls.has("https://other.com/article")).toBe(true);
+  });
+
   it("handles mixed messages with notes and browses", () => {
     const messages: AgentMessage[] = [
       {

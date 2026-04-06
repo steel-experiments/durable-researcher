@@ -100,7 +100,7 @@ export function createTimeoutSteeringCheck(
 
 /** Build the final research result from accumulated notes and messages. */
 export function buildResult(
-  notes: { title: string; content: string; sourceUrls: string[] }[],
+  notes: { title: string; content: string; sourceUrls: string[]; confidence?: "high" | "medium" | "low" }[],
   topic: string,
   messages: AgentMessage[],
 ): ResearchResult {
@@ -126,13 +126,7 @@ export function buildResult(
   }
 
   // Collect all unique sources
-  const allUrls = notes.flatMap((n) => n.sourceUrls);
-  const sourceMap = new Map<string, string>();
-  for (const url of allUrls) {
-    if (!sourceMap.has(url)) {
-      sourceMap.set(url, url);
-    }
-  }
+  const uniqueUrls = new Set(notes.flatMap((n) => n.sourceUrls));
 
   return {
     topic,
@@ -141,12 +135,9 @@ export function buildResult(
       title: n.title,
       content: n.content,
       sourceUrls: n.sourceUrls,
-      confidence: "high" as const,
+      confidence: n.confidence ?? ("high" as const),
     })),
-    sources: Array.from(sourceMap.entries()).map(([url]) => ({
-      title: url,
-      url,
-    })),
+    sources: Array.from(uniqueUrls).map((url) => ({ title: url, url })),
     messages,
   };
 }
@@ -358,17 +349,22 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
           return;
         }
 
-        const timeoutPromise = new Promise<"timeout">((resolve) =>
-          setTimeout(() => resolve("timeout"), remainingMs),
-        );
+        let timerId: ReturnType<typeof setTimeout>;
+        const timeoutPromise = new Promise<"timeout">((resolve) => {
+          timerId = setTimeout(() => resolve("timeout"), remainingMs);
+        });
 
-        const result = await Promise.race([
-          runAgentLoopContinue(context, config, persister).then(() => "done" as const),
-          timeoutPromise,
-        ]);
+        try {
+          const result = await Promise.race([
+            runAgentLoopContinue(context, config, persister).then(() => "done" as const),
+            timeoutPromise,
+          ]);
 
-        if (result === "timeout") {
-          console.log("[TIMEOUT] Hard deadline approaching — building partial result from accumulated notes.");
+          if (result === "timeout") {
+            console.log("[TIMEOUT] Hard deadline approaching — building partial result from accumulated notes.");
+          }
+        } finally {
+          clearTimeout(timerId!);
         }
       }
 

@@ -6,7 +6,7 @@ import { Type, type Static } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { completeSimple, getModel, getEnvApiKey } from "@mariozechner/pi-ai";
 import { scrapeUrl } from "../steel-client.js";
-import { isContentMeaningful } from "../content.js";
+import { isContentMeaningful, truncateContent } from "../content.js";
 import { loadTemplate } from "../prompts.js";
 import type { RefinedContent } from "../types.js";
 
@@ -60,10 +60,7 @@ export function createBrowseTool(
         );
       } catch {
         // Fallback: use first ~2000 chars of cleaned content
-        summary = content.slice(0, 2000);
-        if (content.length > 2000) {
-          summary += "\n\n[Summary generation failed — showing truncated content]";
-        }
+        summary = truncateContent(content, 2000);
       }
 
       const refined: RefinedContent = {
@@ -88,7 +85,7 @@ export function createBrowseTool(
 }
 
 /** Use a cheap LLM to summarize scraped content. */
-async function summarizeContent(
+export async function summarizeContent(
   content: string,
   topic: string,
   focus?: string,

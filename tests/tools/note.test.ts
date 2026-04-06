@@ -81,6 +81,34 @@ describe("createNoteTool", () => {
       confidence: "medium" as const,
     });
 
-    expect(result.details).toEqual({ noteIndex: 1 });
+    expect(result.details).toEqual({ noteIndex: 1, mergedCount: 0 });
+  });
+
+  it("triggers dedup when notes reach threshold", async () => {
+    const notes: ResearchNote[] = [];
+    const tool = createNoteTool(notes);
+
+    // Add 7 unique notes (below threshold of 8)
+    for (let i = 0; i < 7; i++) {
+      await tool.execute(`call-${i}`, {
+        title: `Unique Finding ${i}`,
+        content: `Completely unique content about topic number ${i} with enough words to form trigrams properly`,
+        sourceUrls: [`https://source${i}.com`],
+        confidence: "high" as const,
+      });
+    }
+    expect(notes).toHaveLength(7);
+
+    // Add a duplicate of note 0 — this is note 8, triggering dedup
+    const result = await tool.execute("call-dup", {
+      title: "Unique Finding 0 Duplicate",
+      content: "Completely unique content about topic number 0 with enough words to form trigrams properly",
+      sourceUrls: ["https://another-source.com"],
+      confidence: "medium" as const,
+    });
+
+    // Should have merged the duplicate
+    expect(notes.length).toBeLessThan(8);
+    expect(result.content[0].text).toContain("merged");
   });
 });

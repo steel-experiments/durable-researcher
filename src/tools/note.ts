@@ -4,6 +4,7 @@
 import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import type { ResearchNote } from "../types.js";
+import { deduplicateNotes } from "../notes-ranker.js";
 
 const NoteParams = Type.Object({
   title: Type.String({ description: "Short title for this finding" }),
@@ -25,6 +26,8 @@ const NoteParams = Type.Object({
 
 /** Create a take_note tool that appends to the provided notes array. */
 export function createNoteTool(notes: ResearchNote[]): AgentTool<typeof NoteParams> {
+  let notesSinceDedup = 0;
+
   return {
     name: "take_note",
     label: "Take Note",
@@ -40,14 +43,34 @@ export function createNoteTool(notes: ResearchNote[]): AgentTool<typeof NotePara
       };
       notes.push(note);
 
+      // Auto-dedup periodically once notes accumulate past threshold
+      const DEDUP_THRESHOLD = 8;
+      const DEDUP_INTERVAL = 4;
+      let mergedCount = 0;
+      notesSinceDedup++;
+      if (notes.length >= DEDUP_THRESHOLD && notesSinceDedup >= DEDUP_INTERVAL) {
+        notesSinceDedup = 0;
+        const before = notes.length;
+        const deduped = deduplicateNotes(notes);
+        mergedCount = before - deduped.length;
+        if (mergedCount > 0) {
+          notes.length = 0;
+          notes.push(...deduped);
+        }
+      }
+
+      const mergeMsg = mergedCount > 0
+        ? ` ${mergedCount} duplicate note(s) merged.`
+        : "";
+
       return {
         content: [
           {
             type: "text" as const,
-            text: `Note recorded: "${note.title}" (${note.confidence} confidence, ${note.sourceUrls.length} sources). Total notes: ${notes.length}.`,
+            text: `Note recorded: "${note.title}" (${note.confidence} confidence, ${note.sourceUrls.length} sources).${mergeMsg} Total notes: ${notes.length}.`,
           },
         ],
-        details: { noteIndex: notes.length - 1 },
+        details: { noteIndex: notes.length - 1, mergedCount },
       };
     },
   };
