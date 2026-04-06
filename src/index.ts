@@ -429,7 +429,7 @@ async function main() {
 
   const worker = await app.startWorker({
     concurrency: 1,
-    claimTimeout: 300,
+    claimTimeout: 600,
     onError: (err) => console.error("Worker error:", err.message),
   });
 

@@ -114,6 +114,14 @@ export function createLoggingPersister(
         const icon = TOOL_ICONS[event.toolName] ?? "[TOOL]";
         const argSummary = formatToolArgs(event.toolName, event.args);
         console.log(`  ${icon} ${event.toolName}(${argSummary})`);
+        // Extend lease at start of tool execution — long-running tools like
+        // plan_research and prefetch_sources may take minutes without any
+        // intermediate events, causing the claim timeout to expire.
+        try {
+          await ctx.heartbeat(300);
+        } catch {
+          // Heartbeat failure is not fatal
+        }
         break;
       }
 
