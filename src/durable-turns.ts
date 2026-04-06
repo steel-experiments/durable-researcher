@@ -131,25 +131,9 @@ export function createLoggingPersister(
       }
 
       case "message_update": {
-        // Stream the final report text as it arrives
-        const msg = event.message;
-        if (
-          "role" in msg &&
-          msg.role === "assistant" &&
-          event.assistantMessageEvent.type === "text_delta"
-        ) {
-          // Detect if this is the final report (no tool calls yet in this message)
-          const hasToolCalls = msg.content.some(
-            (c: { type: string }) => c.type === "toolCall",
-          );
-          if (!hasToolCalls) {
-            if (!isStreamingReport) {
-              isStreamingReport = true;
-              console.log("\n--- Writing report ---\n");
-            }
-            process.stdout.write(event.assistantMessageEvent.delta);
-          }
-        }
+        // Stream assistant text deltas — but only accumulate, don't print yet.
+        // We'll print on message_end if it turns out to be the final report.
+        // For now, just track deltas for the current message.
         break;
       }
 
@@ -178,25 +162,32 @@ export function createLoggingPersister(
             usage.models[model].output += output;
           }
 
-          if (isStreamingReport) {
-            // Report was streamed, just add a newline
-            console.log("");
-            isStreamingReport = false;
-          } else {
-            // Show short agent text (non-report messages)
-            for (const c of msg.content) {
-              if (c.type === "text" && c.text.length > 0 && c.text.length <= 300) {
-                console.log(`\n  [AGENT] ${c.text}`);
-              }
-            }
+          const hasToolCalls = msg.content.some(
+            (c: { type: string }) => c.type === "toolCall",
+          );
+          const textParts = msg.content.filter(
+            (c): c is { type: "text"; text: string } => c.type === "text" && c.text.length > 0,
+          );
+          const fullText = textParts.map((c) => c.text).join("\n");
 
-            // Show tool call summary
+          if (!hasToolCalls && fullText.length > 500) {
+            // This is the final report — print it in full
+            console.log("\n" + "=".repeat(80));
+            console.log("RESEARCH REPORT");
+            console.log("=".repeat(80) + "\n");
+            console.log(fullText);
+          } else if (hasToolCalls) {
+            // Agent thinking + tool calls — show short text and tool summary
+            if (fullText.length > 0 && fullText.length <= 300) {
+              console.log(`\n  [AGENT] ${fullText}`);
+            }
             const toolCalls = msg.content.filter(
               (c: { type: string }) => c.type === "toolCall",
             );
-            if (toolCalls.length > 0) {
-              console.log(`  Calling ${toolCalls.length} tool(s)...`);
-            }
+            console.log(`  Calling ${toolCalls.length} tool(s)...`);
+          } else if (fullText.length > 0) {
+            // Short non-tool text (status updates, etc.)
+            console.log(`\n  [AGENT] ${fullText}`);
           }
         }
         break;

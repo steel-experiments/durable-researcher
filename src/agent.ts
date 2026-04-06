@@ -184,28 +184,30 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
 
       const agentModel = options.model ?? getModel("zai", "glm-5.1");
 
+      // Track whether we've already sent the "stop" steering message
+      let steeringSent = false;
+
       const config: AgentLoopConfig = {
         model: agentModel,
         convertToLlm,
         toolExecution: "parallel",
         getApiKey: (provider) => getEnvApiKey(provider),
         getSteeringMessages: async () => {
+          // Only inject the stop message once
+          if (steeringSent) return [];
+
           const turnCount = context.messages.filter(
             (m) => "role" in m && m.role === "assistant",
           ).length;
 
-          if (scrapedUrls.size >= maxBrowses) {
+          if (scrapedUrls.size >= maxBrowses || turnCount >= maxTurns) {
+            steeringSent = true;
+            const reason = scrapedUrls.size >= maxBrowses
+              ? `source limit (${maxBrowses})`
+              : `turn limit (${maxTurns})`;
             return [{
               role: "user" as const,
-              content: `[SYSTEM] You have reached the maximum source limit (${maxBrowses}). Stop browsing and searching. Write your final research report NOW using the notes you have collected.`,
-              timestamp: Date.now(),
-            }];
-          }
-
-          if (turnCount >= maxTurns) {
-            return [{
-              role: "user" as const,
-              content: `[SYSTEM] You have reached the maximum turn limit (${maxTurns}). Stop researching. Write your final research report NOW using the notes you have collected.`,
+              content: `[SYSTEM] You have reached the maximum ${reason}. Stop browsing and searching. Write your final research report NOW using the notes you have collected. Do NOT call any tools. Just write the report.`,
               timestamp: Date.now(),
             }];
           }
