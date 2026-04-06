@@ -197,7 +197,15 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         for (const url of params.priorUrls) scrapedUrls.add(url);
       }
 
-      if (messages.length > 0) {
+      // Log resume info only when we'll actually continue the loop (not on completed re-runs)
+      const lastMsg = messages.at(-1);
+      const isAlreadyComplete = lastMsg &&
+        "role" in lastMsg &&
+        lastMsg.role === "assistant" &&
+        lastMsg.content.every((c: { type: string }) => c.type !== "toolCall") &&
+        !("errorMessage" in lastMsg && lastMsg.errorMessage);
+
+      if (messages.length > 0 && !isAlreadyComplete) {
         console.log(
           `Resumed from checkpoint: ${messages.length} messages, ${notes.length} notes, ${scrapedUrls.size} URLs`,
         );

@@ -108,7 +108,9 @@ export async function runFollowUp(
     getApiKey: (provider) => getEnvApiKey(provider),
   };
 
-  console.log("--- Follow-up mode (type 'exit' to quit) ---\n");
+  console.log("\n" + "=".repeat(80));
+  console.log("FOLLOW-UP MODE — ask questions about the research (type 'exit' to quit)");
+  console.log("=".repeat(80) + "\n");
 
   const askQuestion = (): Promise<string> =>
     new Promise((resolve) => {
