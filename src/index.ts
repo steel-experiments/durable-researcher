@@ -305,8 +305,14 @@ async function main() {
       messages: AgentMessage[];
     };
 
-    // Save report to file
+    // Print report if it wasn't streamed (e.g. resumed completed task)
     if (research.report) {
+      if (isResume) {
+        console.log("\n" + "=".repeat(80));
+        console.log(`RESEARCH REPORT: ${research.topic}`);
+        console.log("=".repeat(80) + "\n");
+        console.log(research.report);
+      }
       const filepath = saveReport(research.topic, research.report);
       console.log(`\nReport saved to: ${filepath}`);
     }
