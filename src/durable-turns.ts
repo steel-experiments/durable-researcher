@@ -1,5 +1,5 @@
 // ABOUTME: Bridge between Absurd step checkpoints and Pi Agent message log.
-// ABOUTME: Implements the durable turns pattern: load, persist, and rebuild state from messages.
+// ABOUTME: Implements the durable turns pattern: load, persist, rebuild state, and log progress.
 
 import type { TaskContext, StepHandle } from "absurd-sdk";
 import type { AgentMessage, AgentEvent } from "@mariozechner/pi-agent-core";
@@ -60,7 +60,15 @@ export function createMessagePersister(
   };
 }
 
-/** Tool display names and icons for progress logging. */
+/** Tracks token usage and costs across the run. */
+export type UsageStats = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  models: Record<string, { input: number; output: number }>;
+};
+
+/** Tool display names for progress logging. */
 const TOOL_ICONS: Record<string, string> = {
   plan_research: "[PLAN]",
   web_search: "[SEARCH]",
@@ -70,20 +78,35 @@ const TOOL_ICONS: Record<string, string> = {
   evaluate_progress: "[EVALUATE]",
 };
 
+/** Options for the logging persister. */
+export type LoggingPersisterOptions = {
+  maxSources: number;
+  maxTurns: number;
+  scrapedUrls: Set<string>;
+  usage: UsageStats;
+};
+
 /**
- * Create an event sink that logs live progress to the console AND persists messages.
- * Wraps the checkpoint persister with human-readable output.
+ * Create an event sink that logs live progress, streams the final report,
+ * tracks costs, and persists messages to Absurd checkpoints.
  */
 export function createLoggingPersister(
   ctx: TaskContext,
   initialHandle: StepHandle<MessageLogEntry>,
+  options: LoggingPersisterOptions,
 ): (event: AgentEvent) => Promise<void> {
   const persister = createMessagePersister(ctx, initialHandle);
+  const { maxSources, maxTurns, scrapedUrls, usage } = options;
+  let turnCount = 0;
+  let isStreamingReport = false;
 
   return async (event: AgentEvent) => {
     switch (event.type) {
       case "turn_start":
-        console.log("\n--- New turn ---");
+        turnCount++;
+        console.log(
+          `\n--- Turn ${turnCount} [${scrapedUrls.size}/${maxSources} sources] [${turnCount}/${maxTurns} turns] ---`,
+        );
         break;
 
       case "tool_execution_start": {
@@ -94,9 +117,38 @@ export function createLoggingPersister(
       }
 
       case "tool_execution_end": {
-        const icon = TOOL_ICONS[event.toolName] ?? "[TOOL]";
         if (event.isError) {
+          const icon = TOOL_ICONS[event.toolName] ?? "[TOOL]";
           console.log(`  ${icon} FAILED`);
+        }
+        // Extend lease after each tool execution to prevent timeout
+        try {
+          await ctx.heartbeat(300);
+        } catch {
+          // Heartbeat failure is not fatal
+        }
+        break;
+      }
+
+      case "message_update": {
+        // Stream the final report text as it arrives
+        const msg = event.message;
+        if (
+          "role" in msg &&
+          msg.role === "assistant" &&
+          event.assistantMessageEvent.type === "text_delta"
+        ) {
+          // Detect if this is the final report (no tool calls yet in this message)
+          const hasToolCalls = msg.content.some(
+            (c: { type: string }) => c.type === "toolCall",
+          );
+          if (!hasToolCalls) {
+            if (!isStreamingReport) {
+              isStreamingReport = true;
+              console.log("\n--- Writing report ---\n");
+            }
+            process.stdout.write(event.assistantMessageEvent.delta);
+          }
         }
         break;
       }
@@ -104,26 +156,47 @@ export function createLoggingPersister(
       case "message_end": {
         const msg = event.message;
         if ("role" in msg && msg.role === "assistant") {
-          // Print any text content (thinking/final response)
-          for (const c of msg.content) {
-            if (c.type === "text" && c.text.length > 0) {
-              // For long final reports, just show a preview
-              if (c.text.length > 300) {
-                console.log(`\n  [AGENT] ${c.text.slice(0, 200)}...`);
-              } else {
+          // Track usage
+          if ("usage" in msg && msg.usage) {
+            const u = msg.usage as {
+              inputTokens?: number; input?: number;
+              outputTokens?: number; output?: number;
+              cacheReadInputTokens?: number; cacheRead?: number;
+            };
+            const input = u.inputTokens ?? u.input ?? 0;
+            const output = u.outputTokens ?? u.output ?? 0;
+            const cacheRead = u.cacheReadInputTokens ?? u.cacheRead ?? 0;
+            usage.inputTokens += input;
+            usage.outputTokens += output;
+            usage.cacheReadTokens += cacheRead;
+
+            const model = ("model" in msg ? msg.model : "unknown") as string;
+            if (!usage.models[model]) {
+              usage.models[model] = { input: 0, output: 0 };
+            }
+            usage.models[model].input += input;
+            usage.models[model].output += output;
+          }
+
+          if (isStreamingReport) {
+            // Report was streamed, just add a newline
+            console.log("");
+            isStreamingReport = false;
+          } else {
+            // Show short agent text (non-report messages)
+            for (const c of msg.content) {
+              if (c.type === "text" && c.text.length > 0 && c.text.length <= 300) {
                 console.log(`\n  [AGENT] ${c.text}`);
               }
             }
-          }
 
-          // Show tool call summary
-          const toolCalls = msg.content.filter(
-            (c: { type: string }) => c.type === "toolCall",
-          );
-          if (toolCalls.length > 0) {
-            console.log(
-              `  Calling ${toolCalls.length} tool(s)...`,
+            // Show tool call summary
+            const toolCalls = msg.content.filter(
+              (c: { type: string }) => c.type === "toolCall",
             );
+            if (toolCalls.length > 0) {
+              console.log(`  Calling ${toolCalls.length} tool(s)...`);
+            }
           }
         }
         break;
@@ -169,23 +242,6 @@ export function rebuildStateFromMessages(messages: AgentMessage[]): {
 
   for (const msg of messages) {
     if (!("role" in msg)) continue;
-
-    // Extract URLs from browse_url tool results
-    if (msg.role === "toolResult" && msg.toolName === "browse_url") {
-      const details = msg.details as { url?: string } | undefined;
-      if (details?.url) {
-        scrapedUrls.add(details.url);
-      }
-    }
-
-    // Extract notes from take_note tool results
-    if (msg.role === "toolResult" && msg.toolName === "take_note") {
-      // The note details are stored in the tool result's details field
-      // but the actual note data comes from the assistant's tool call args.
-      // We need to look at the preceding assistant message to find the args.
-      // However, for simplicity, we reconstruct from the text content.
-      // The note tool returns a confirmation — the actual data was in the tool call.
-    }
 
     // Extract notes from assistant messages (tool calls with take_note)
     if (msg.role === "assistant") {

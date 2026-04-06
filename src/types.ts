@@ -58,4 +58,5 @@ export type ResearchResult = {
   report: string;
   notes: ResearchNote[];
   sources: { title: string; url: string }[];
+  messages: AgentMessage[];
 };

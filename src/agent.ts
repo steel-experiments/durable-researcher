@@ -8,7 +8,7 @@ import {
   type AgentLoopConfig,
   type AgentMessage,
 } from "@mariozechner/pi-agent-core";
-import { getModel, getEnvApiKey, type Message } from "@mariozechner/pi-ai";
+import { getModel, getEnvApiKey, type Message, type Model, type Api } from "@mariozechner/pi-ai";
 import type { ResearchParams, ResearchResult, MessageLogEntry } from "./types.js";
 import { DEPTH_CONFIG } from "./types.js";
 import { createSteelClient } from "./steel-client.js";
@@ -22,8 +22,15 @@ import {
   loadMessageLog,
   createLoggingPersister,
   rebuildStateFromMessages,
+  type UsageStats,
 } from "./durable-turns.js";
 import { loadTemplate } from "./prompts.js";
+
+/** Options for creating the research app. */
+export type ResearchAppOptions = {
+  databaseUrl?: string;
+  model?: Model<Api>;
+};
 
 /**
  * Convert AgentMessages to LLM-compatible Messages.
@@ -78,6 +85,7 @@ function buildResult(
       title: url,
       url,
     })),
+    messages,
   };
 }
 
@@ -96,11 +104,14 @@ function checkForAgentError(messages: AgentMessage[]): void {
 }
 
 /** Create and configure the Absurd app with the research task. */
-export function createResearchApp(databaseUrl?: string): Absurd {
-  const url = databaseUrl
+export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
+  const dbUrl = options.databaseUrl
     ?? process.env.DATABASE_URL
     ?? "postgresql://postgres:postgres@localhost:5432/absurd";
-  const app = new Absurd(url);
+  const app = new Absurd(dbUrl);
+
+  // Store usage stats outside the task handler so the CLI can access them
+  let lastUsage: UsageStats | undefined;
 
   app.registerTask<ResearchParams, ResearchResult>(
     {
@@ -150,52 +161,58 @@ export function createResearchApp(databaseUrl?: string): Absurd {
         messages,
       };
 
-      // Track browse count for hard limit enforcement
+      // Track limits for hard enforcement
       const maxBrowses = params.maxSources ?? 20;
-      const maxTurns = depthConfig.maxIterations * 15; // ~15 turns per iteration
+      const maxTurns = depthConfig.maxIterations * 15;
+
+      // Usage tracking
+      const usage: UsageStats = {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        models: {},
+      };
+      lastUsage = usage;
+
+      const agentModel = options.model ?? getModel("zai", "glm-5.1");
 
       const config: AgentLoopConfig = {
-        model: getModel("zai", "glm-5.1"),
+        model: agentModel,
         convertToLlm,
-        toolExecution: "sequential",
+        toolExecution: "parallel",
         getApiKey: (provider) => getEnvApiKey(provider),
         getSteeringMessages: async () => {
-          // Count how many sources we've browsed and total turns
           const turnCount = context.messages.filter(
             (m) => "role" in m && m.role === "assistant",
           ).length;
 
           if (scrapedUrls.size >= maxBrowses) {
-            return [
-              {
-                role: "user" as const,
-                content: `[SYSTEM] You have reached the maximum source limit (${maxBrowses}). Stop browsing and searching. Write your final research report NOW using the notes you have collected.`,
-                timestamp: Date.now(),
-              },
-            ];
+            return [{
+              role: "user" as const,
+              content: `[SYSTEM] You have reached the maximum source limit (${maxBrowses}). Stop browsing and searching. Write your final research report NOW using the notes you have collected.`,
+              timestamp: Date.now(),
+            }];
           }
 
           if (turnCount >= maxTurns) {
-            return [
-              {
-                role: "user" as const,
-                content: `[SYSTEM] You have reached the maximum turn limit (${maxTurns}). Stop researching. Write your final research report NOW using the notes you have collected.`,
-                timestamp: Date.now(),
-              },
-            ];
+            return [{
+              role: "user" as const,
+              content: `[SYSTEM] You have reached the maximum turn limit (${maxTurns}). Stop researching. Write your final research report NOW using the notes you have collected.`,
+              timestamp: Date.now(),
+            }];
           }
 
           return [];
         },
       };
 
-      // 6. Set up durable message persistence
-      const persistEvent = createLoggingPersister(ctx, nextHandle);
+      // 6. Set up durable message persistence with logging
+      const persisterOpts = { maxSources: maxBrowses, maxTurns, scrapedUrls, usage };
+      const persistEvent = createLoggingPersister(ctx, nextHandle, persisterOpts);
 
       // 7. Handle first run vs resume
       const last = context.messages.at(-1);
       if (!last) {
-        // First attempt: append user message and checkpoint it
         const userMessage: AgentMessage = {
           role: "user" as const,
           content: `Research this topic thoroughly: ${params.topic}`,
@@ -207,10 +224,7 @@ export function createResearchApp(databaseUrl?: string): Absurd {
         context.messages.push(userMessage);
         nextHandle = await ctx.beginStep<MessageLogEntry>("message");
 
-        // Update the persister's handle reference by creating a new one
-        const updatedPersister = createLoggingPersister(ctx, nextHandle);
-
-        // 8. Run the durable agent loop
+        const updatedPersister = createLoggingPersister(ctx, nextHandle, persisterOpts);
         await runAgentLoopContinue(context, config, updatedPersister);
         checkForAgentError(context.messages);
       } else if (
@@ -219,7 +233,6 @@ export function createResearchApp(databaseUrl?: string): Absurd {
         last.content.every((c) => c.type !== "toolCall") &&
         !("errorMessage" in last && last.errorMessage)
       ) {
-        // Already finished on a previous attempt (final assistant message with no tool calls and no error)
         return buildResult(notes, params.topic, messages);
       } else if (
         "role" in last &&
@@ -227,13 +240,8 @@ export function createResearchApp(databaseUrl?: string): Absurd {
         "errorMessage" in last &&
         last.errorMessage
       ) {
-        // Last message was an error — throw so Absurd retries the task
         throw new Error(`Agent loop failed: ${last.errorMessage}`);
       } else {
-        // Resume from checkpoint — strip trailing assistant message if present,
-        // since runAgentLoopContinue requires last message to be user or toolResult.
-        // This happens when the agent sent tool calls but crashed before tool results
-        // were checkpointed. The agent will regenerate that turn.
         const lastMsg = context.messages.at(-1);
         if (lastMsg && "role" in lastMsg && lastMsg.role === "assistant") {
           context.messages.pop();
@@ -245,6 +253,9 @@ export function createResearchApp(databaseUrl?: string): Absurd {
       return buildResult(notes, params.topic, messages);
     },
   );
+
+  // Expose usage stats getter
+  (app as any).getLastUsage = () => lastUsage;
 
   return app;
 }

@@ -6,7 +6,8 @@ import { Type, type Static } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { completeSimple, getModel, getEnvApiKey } from "@mariozechner/pi-ai";
 import { scrapeUrl } from "../steel-client.js";
-import { isContentMeaningful, estimateTokens } from "../content.js";
+import { isContentMeaningful } from "../content.js";
+import { loadTemplate } from "../prompts.js";
 import type { RefinedContent } from "../types.js";
 
 const BrowseParams = Type.Object({
@@ -93,19 +94,10 @@ async function summarizeContent(
   focus?: string,
 ): Promise<string> {
   const model = getModel("zai", "glm-4.7-flashx");
-
-  const focusLine = focus
-    ? `Focus on: ${focus}`
-    : `Focus on information relevant to the research topic.`;
+  const systemPrompt = await loadTemplate("summarize", { topic, focus });
 
   const message = await completeSimple(model, {
-    systemPrompt: [
-      `Summarize this web page content in under ${SUMMARY_MAX_TOKENS} tokens.`,
-      focusLine,
-      `Preserve: key facts, dates, numbers, quotes, named entities.`,
-      `Research topic: ${topic}`,
-      `Be concise but thorough. Output only the summary, no preamble.`,
-    ].join("\n"),
+    systemPrompt,
     messages: [
       {
         role: "user" as const,
