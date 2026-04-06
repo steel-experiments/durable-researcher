@@ -11,6 +11,10 @@ export type ResearchParams = {
   topic: string;
   depth?: "quick" | "standard" | "deep";
   maxSources?: number;
+  /** Prior research notes to extend (from a completed run). */
+  priorNotes?: ResearchNote[];
+  /** Prior source URLs to avoid re-browsing. */
+  priorUrls?: string[];
 };
 
 /** Depth config maps depth labels to iteration limits and query counts. */

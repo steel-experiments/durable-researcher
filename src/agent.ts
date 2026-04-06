@@ -130,6 +130,14 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
       // 2. Rebuild in-memory state from replayed messages
       const { notes, scrapedUrls } = rebuildStateFromMessages(messages);
 
+      // Seed with prior research if extending a completed run
+      if (params.priorNotes?.length) {
+        for (const note of params.priorNotes) notes.push(note);
+      }
+      if (params.priorUrls?.length) {
+        for (const url of params.priorUrls) scrapedUrls.add(url);
+      }
+
       if (messages.length > 0) {
         console.log(
           `Resumed from checkpoint: ${messages.length} messages, ${notes.length} notes, ${scrapedUrls.size} URLs`,
@@ -213,9 +221,24 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
       // 7. Handle first run vs resume
       const last = context.messages.at(-1);
       if (!last) {
+        // Build user message — include prior findings if extending
+        let userContent = `Research this topic thoroughly: ${params.topic}`;
+        if (params.priorNotes?.length) {
+          const notesSummary = params.priorNotes
+            .map((n) => `- [${n.confidence}] ${n.title}: ${n.content.slice(0, 150)}`)
+            .join("\n");
+          userContent = [
+            `Continue and extend prior research on: ${params.topic}`,
+            ``,
+            `Here are findings from the previous research session (${params.priorNotes.length} notes, ${params.priorUrls?.length ?? 0} sources already visited):`,
+            notesSummary,
+            ``,
+            `Focus on: gaps in the existing research, newer developments, alternative perspectives, and areas marked as low confidence. Do NOT re-browse URLs you have already visited.`,
+          ].join("\n");
+        }
         const userMessage: AgentMessage = {
           role: "user" as const,
-          content: `Research this topic thoroughly: ${params.topic}`,
+          content: userContent,
           timestamp: Date.now(),
         };
         await ctx.completeStep(nextHandle, {

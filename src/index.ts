@@ -33,18 +33,43 @@ Options:
   --max-sources <number>          Maximum sources to consult (default: 20)
   --model <provider:model>        LLM model (default: zai:glm-5.1)
   --resume <task-id>              Resume a specific task by ID
-  --new                           Force a new task even if a similar one exists
+  --new                           Start fresh, ignore existing research
+  --extend                        Extend prior research with more sources
+  --view                          View existing report without re-running
   --list                          List recent research tasks
   --cleanup                       Remove completed/failed/cancelled tasks
 
 Examples:
   bun run src/index.ts "quantum error correction advances"
   bun run src/index.ts "impact of AI on journalism" --depth deep
+  bun run src/index.ts "quantum error correction" --extend
+  bun run src/index.ts "quantum error correction" --view
   bun run src/index.ts --resume 019d6485-29ae-7484-a08e-659bb5a82b8c
-  bun run src/index.ts --model anthropic:claude-sonnet-4-6 "AI safety"
   bun run src/index.ts --list
   bun run src/index.ts --cleanup
 `);
+}
+
+/** Prompt the user to choose an action for an existing completed task. */
+async function askAction(): Promise<"view" | "extend" | "new"> {
+  const rl = (await import("node:readline")).createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  return new Promise((resolve) => {
+    console.log("\nWhat would you like to do?");
+    console.log("  [v] View existing report");
+    console.log("  [e] Extend research with more sources");
+    console.log("  [n] Start fresh research\n");
+    rl.question("Choice (v/e/n): ", (answer) => {
+      rl.close();
+      const choice = answer.trim().toLowerCase();
+      if (choice === "e" || choice === "extend") resolve("extend");
+      else if (choice === "n" || choice === "new") resolve("new");
+      else resolve("view");
+    });
+  });
 }
 
 function formatTask(task: ExistingTask): string {
@@ -154,6 +179,8 @@ async function main() {
   }
 
   const forceNew = args.includes("--new");
+  const forceExtend = args.includes("--extend");
+  const forceView = args.includes("--view");
 
   // --resume <task-id>: explicit resume
   const resumeIndex = args.indexOf("--resume");
@@ -226,38 +253,146 @@ async function main() {
   const app = createResearchApp(appOptions);
 
   // If no explicit resume, check for existing tasks with same/similar topic
-  if (!taskID && topic && !forceNew) {
-    const recentTasks = await findRecentTasks();
-    const resumable = recentTasks.filter(
-      (t) => t.status !== "completed" && t.status !== "cancelled",
-    );
+  let existingResult: {
+    topic: string;
+    report: string;
+    notes: ResearchNote[];
+    sources: { title: string; url: string }[];
+    messages: AgentMessage[];
+  } | undefined;
 
-    if (resumable.length > 0) {
-      const exact = findExactMatch(resumable, topic);
-      if (exact) {
-        console.log(`Found existing task with same topic:`);
-        console.log(formatTask(exact));
-        console.log(`Resuming...\n`);
-        taskID = exact.taskId;
-        isResume = true;
-      } else {
-        try {
-          const similar = await findSimilarTask(resumable, topic);
-          if (similar) {
-            console.log(`Found similar existing task:`);
-            console.log(formatTask(similar));
-            console.log(`Resuming (use --new to force a fresh start)...\n`);
-            taskID = similar.taskId;
-            isResume = true;
+  if (!taskID && topic && !forceNew && !forceExtend) {
+    const recentTasks = await findRecentTasks();
+
+    // Check for completed tasks first
+    const completed = recentTasks.filter((t) => t.status === "completed");
+    const completedMatch = findExactMatch(completed, topic);
+
+    if (completedMatch) {
+      // Fetch the completed result
+      const snapshot = await app.fetchTaskResult(completedMatch.taskId);
+      if (snapshot?.state === "completed" && snapshot.result) {
+        existingResult = snapshot.result as unknown as typeof existingResult;
+
+        console.log(`Found completed research on this topic:`);
+        console.log(formatTask(completedMatch));
+
+        // Determine action: flag, interactive, or default
+        let action: "view" | "extend" | "new";
+        if (forceView) {
+          action = "view";
+        } else if (process.stdin.isTTY) {
+          action = await askAction();
+        } else {
+          action = "view";
+        }
+
+        if (action === "view") {
+          // Print report and offer follow-up
+          console.log("\n" + "=".repeat(80));
+          console.log(`RESEARCH REPORT: ${existingResult!.topic}`);
+          console.log("=".repeat(80) + "\n");
+          console.log(existingResult!.report);
+          console.log("\n" + "-".repeat(80));
+          console.log(`Sources consulted: ${existingResult!.sources?.length ?? 0}`);
+
+          if (existingResult!.messages?.length && process.stdin.isTTY) {
+            const { scrapedUrls } = rebuildStateFromMessages(existingResult!.messages);
+            await runFollowUp(
+              existingResult!.messages,
+              existingResult!.topic,
+              existingResult!.notes ?? [],
+              scrapedUrls,
+              appOptions.model,
+            );
           }
-        } catch {
-          // LLM similarity check failed — proceed with new task
+          await app.close();
+          process.exit(0);
+        } else if (action === "extend") {
+          // Spawn new task seeded with prior findings
+          const params: ResearchParams = {
+            topic,
+            depth,
+            maxSources,
+            priorNotes: existingResult!.notes,
+            priorUrls: existingResult!.sources?.map((s) => s.url),
+          };
+          console.log(
+            `\nExtending research with ${existingResult!.notes?.length ?? 0} prior notes, ${existingResult!.sources?.length ?? 0} prior sources...\n`,
+          );
+          const result = await app.spawn("research", params);
+          taskID = result.taskID;
+          console.log(`Task spawned: ${taskID}`);
+        } else {
+          // action === "new" — fall through to spawn new
+        }
+      }
+    }
+
+    // Check for in-progress tasks
+    if (!taskID && !existingResult) {
+      const resumable = recentTasks.filter(
+        (t) => t.status !== "completed" && t.status !== "cancelled",
+      );
+      if (resumable.length > 0) {
+        const exact = findExactMatch(resumable, topic);
+        if (exact) {
+          console.log(`Found in-progress task with same topic:`);
+          console.log(formatTask(exact));
+          console.log(`Resuming...\n`);
+          taskID = exact.taskId;
+          isResume = true;
+        } else {
+          try {
+            const similar = await findSimilarTask(resumable, topic);
+            if (similar) {
+              console.log(`Found similar in-progress task:`);
+              console.log(formatTask(similar));
+              console.log(`Resuming (use --new to force a fresh start)...\n`);
+              taskID = similar.taskId;
+              isResume = true;
+            }
+          } catch {
+            // LLM similarity check failed — proceed with new task
+          }
         }
       }
     }
   }
 
-  // Spawn new task if we don't have one to resume
+  // Handle --extend flag directly (without interactive prompt)
+  if (!taskID && topic && forceExtend && !existingResult) {
+    const recentTasks = await findRecentTasks();
+    const completed = recentTasks.filter((t) => t.status === "completed");
+    const match = findExactMatch(completed, topic);
+    if (match) {
+      const snapshot = await app.fetchTaskResult(match.taskId);
+      if (snapshot?.state === "completed" && snapshot.result) {
+        const prior = snapshot.result as unknown as {
+          notes: ResearchNote[];
+          sources: { title: string; url: string }[];
+        };
+        const params: ResearchParams = {
+          topic,
+          depth,
+          maxSources,
+          priorNotes: prior.notes,
+          priorUrls: prior.sources?.map((s: { url: string }) => s.url),
+        };
+        console.log(
+          `\nExtending research with ${prior.notes?.length ?? 0} prior notes, ${prior.sources?.length ?? 0} prior sources...\n`,
+        );
+        const result = await app.spawn("research", params);
+        taskID = result.taskID;
+        console.log(`Task spawned: ${taskID}`);
+      }
+    }
+    if (!taskID) {
+      console.log("No completed research found to extend. Starting fresh.\n");
+    }
+  }
+
+  // Spawn new task if we still don't have one
   if (!taskID && topic) {
     const params: ResearchParams = { topic, depth, maxSources };
 
@@ -267,16 +402,9 @@ async function main() {
     console.log(`Max sources: ${maxSources}`);
     console.log(`---\n`);
 
-    const idempotencyKey = `research:${topic.trim().toLowerCase()}`;
-    const result = await app.spawn("research", params, { idempotencyKey });
+    const result = await app.spawn("research", params);
     taskID = result.taskID;
-
-    if (result.created) {
-      console.log(`Task spawned: ${taskID}`);
-    } else {
-      console.log(`Resuming existing task: ${taskID} (exact topic match)`);
-      isResume = true;
-    }
+    console.log(`Task spawned: ${taskID}`);
   }
 
   if (!taskID) {
