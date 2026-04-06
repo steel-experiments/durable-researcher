@@ -1,0 +1,29 @@
+{
+  "name": "durable-researcher",
+  "version": "0.1.0",
+  "description": "Self-hosted deep research agent with durable execution via Absurd, browser access via Steel, and LLM agent loop via Pi Agent SDK",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "db:init": "ABSURD_DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@localhost:5432/absurd} absurdctl schema-version 2>/dev/null && echo 'Schema already initialized' || ABSURD_DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@localhost:5432/absurd} absurdctl init; ABSURD_DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@localhost:5432/absurd} absurdctl create-queue default 2>/dev/null; echo 'Done'"
+  },
+  "dependencies": {
+    "@mariozechner/pi-agent-core": "*",
+    "@mariozechner/pi-ai": "*",
+    "absurd-sdk": "^0.3.0",
+    "dotenv": "^16.4.7",
+    "handlebars": "^4.7.9",
+    "steel-sdk": "^0.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.20.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
