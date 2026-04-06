@@ -23,12 +23,23 @@ export function createPlanTool(researchParams: ResearchParams): AgentTool<typeof
       const config = DEPTH_CONFIG[depth];
 
       console.log(`    Generating ${depth} research plan (up to ${config.initialQueries} queries)...`);
-      const plan = await generateResearchPlan(
-        researchParams.topic,
-        depth,
-        config.initialQueries,
-      );
-      console.log(`    Plan ready: ${plan.subQueries.length} queries, strategy: ${plan.searchStrategy}`);
+      const startTime = Date.now();
+      const ticker = setInterval(() => {
+        const elapsed = Math.round((Date.now() - startTime) / 1000);
+        process.stdout.write(`\r    Waiting for LLM... ${elapsed}s`);
+      }, 5_000);
+      let plan: Awaited<ReturnType<typeof generateResearchPlan>>;
+      try {
+        plan = await generateResearchPlan(
+          researchParams.topic,
+          depth,
+          config.initialQueries,
+        );
+      } finally {
+        clearInterval(ticker);
+      }
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      console.log(`    Plan ready (${elapsed}s): ${plan.subQueries.length} queries, strategy: ${plan.searchStrategy}`);
 
       const formatted = [
         `## Research Plan`,
