@@ -84,6 +84,9 @@ export function createBrowseTool(
   };
 }
 
+/** Timeout in ms for summarization LLM calls. */
+const SUMMARIZE_TIMEOUT = 45_000;
+
 /** Use a cheap LLM to summarize scraped content. */
 export async function summarizeContent(
   content: string,
@@ -93,23 +96,31 @@ export async function summarizeContent(
   const model = getModel("zai", "glm-4.7-flashx");
   const systemPrompt = await loadTemplate("summarize", { topic, focus });
 
-  const message = await completeSimple(model, {
-    systemPrompt,
-    messages: [
-      {
-        role: "user" as const,
-        content: content,
-        timestamp: Date.now(),
-      },
-    ],
-  }, {
-    maxTokens: SUMMARY_MAX_TOKENS * 2,
-    apiKey: getEnvApiKey("zai"),
-  });
+  const controller = new AbortController();
+  const timerId = setTimeout(() => controller.abort(), SUMMARIZE_TIMEOUT);
 
-  // Extract text from the assistant message
-  const textContent = message.content.filter(
-    (c): c is { type: "text"; text: string } => c.type === "text",
-  );
-  return textContent.map((c) => c.text).join("\n");
+  try {
+    const message = await completeSimple(model, {
+      systemPrompt,
+      messages: [
+        {
+          role: "user" as const,
+          content: content,
+          timestamp: Date.now(),
+        },
+      ],
+    }, {
+      maxTokens: SUMMARY_MAX_TOKENS * 2,
+      apiKey: getEnvApiKey("zai"),
+      signal: controller.signal,
+    });
+
+    // Extract text from the assistant message
+    const textContent = message.content.filter(
+      (c): c is { type: "text"; text: string } => c.type === "text",
+    );
+    return textContent.map((c) => c.text).join("\n");
+  } finally {
+    clearTimeout(timerId);
+  }
 }

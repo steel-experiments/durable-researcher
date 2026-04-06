@@ -64,6 +64,9 @@ export function createPlanTool(researchParams: ResearchParams): AgentTool<typeof
   };
 }
 
+/** Timeout in ms for the plan LLM call. */
+const PLAN_TIMEOUT = 60_000;
+
 /** Use LLM to generate a research plan from the topic. */
 async function generateResearchPlan(
   topic: string,
@@ -76,26 +79,42 @@ async function generateResearchPlan(
     depth,
   });
 
-  const message = await completeSimple(model, {
-    systemPrompt,
-    messages: [
-      {
-        role: "user" as const,
-        content: `Research topic: ${topic}`,
-        timestamp: Date.now(),
-      },
-    ],
-  }, {
-    maxTokens: 1500,
-    apiKey: getEnvApiKey("zai"),
-  });
+  try {
+    const controller = new AbortController();
+    const timerId = setTimeout(() => controller.abort(), PLAN_TIMEOUT);
 
-  const text = message.content
-    .filter((c): c is { type: "text"; text: string } => c.type === "text")
-    .map((c) => c.text)
-    .join("\n");
+    const message = await completeSimple(model, {
+      systemPrompt,
+      messages: [
+        {
+          role: "user" as const,
+          content: `Research topic: ${topic}`,
+          timestamp: Date.now(),
+        },
+      ],
+    }, {
+      maxTokens: 1500,
+      apiKey: getEnvApiKey("zai"),
+      signal: controller.signal,
+    });
 
-  return parsePlanResponse(text, topic, maxQueries);
+    clearTimeout(timerId);
+
+    const text = message.content
+      .filter((c): c is { type: "text"; text: string } => c.type === "text")
+      .map((c) => c.text)
+      .join("\n");
+
+    return parsePlanResponse(text, topic, maxQueries);
+  } catch (err) {
+    console.log(`    Plan LLM call failed (${(err as Error).message}), using fallback queries`);
+    return {
+      strategicPlan: `Research "${topic}" across multiple dimensions`,
+      subQueries: extractQueriesFromText("", topic, maxQueries),
+      searchStrategy: "breadth-first",
+      estimatedSteps: maxQueries * 2,
+    };
+  }
 }
 
 /** Parse the LLM's plan response into a structured ResearchPlan. */
