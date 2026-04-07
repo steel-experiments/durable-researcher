@@ -39,9 +39,9 @@ const mockScrape = scrapeUrl as unknown as Mock;
 
 function makeSearchResults(count: number, prefix: string): SearchResult[] {
   return Array.from({ length: count }, (_, i) => ({
-    title: `${prefix} Result ${i}`,
+    title: `${prefix} test topic research Result ${i}`,
     url: `https://${prefix.toLowerCase().replace(/\s/g, "-")}-${i}.com/page`,
-    snippet: `Snippet for ${prefix} result ${i}`,
+    snippet: `Snippet about test topic research for ${prefix} result ${i}`,
   }));
 }
 
@@ -199,8 +199,8 @@ describe("createPrefetchTool", () => {
   it("deduplicates URLs across queries", async () => {
     // Both queries return the same URL
     const sharedResults: SearchResult[] = [
-      { title: "Shared Page", url: "https://shared.com/page", snippet: "Shared" },
-      { title: "Unique A", url: "https://unique-a.com/page", snippet: "A" },
+      { title: "Shared test topic research Page", url: "https://shared.com/page", snippet: "About test topic research" },
+      { title: "Unique test topic research A", url: "https://unique-a.com/page", snippet: "More test topic research" },
     ];
 
     mockSearch.mockResolvedValue(sharedResults);

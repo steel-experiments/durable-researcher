@@ -131,15 +131,25 @@ describe("scoreRelevance", () => {
     expect(score).toBeGreaterThanOrEqual(0.3);
   });
 
-  it("scores irrelevant results below threshold", () => {
+  it("scores single-keyword matches as zero", () => {
     const result: SearchResult = {
       title: "WhatsApp Web",
       url: "https://web.whatsapp.com",
       snippet: "Send and receive messages on your computer",
     };
     const score = scoreRelevance(result, topic);
-    // Single keyword match ("web") should score below the 0.3 filter threshold
-    expect(score).toBeLessThan(0.3);
+    // Single keyword match is not enough — requires at least 2
+    expect(score).toBe(0);
+  });
+
+  it("scores dictionary pages matching one topic word as zero", () => {
+    const result: SearchResult = {
+      title: "TRUSTWORTHY Definition & Meaning - Merriam-Webster",
+      url: "https://merriam-webster.com/dictionary/trustworthy",
+      snippet: "Definition of trustworthy: worthy of confidence",
+    };
+    // "trustworthy" is only 1 keyword match
+    expect(scoreRelevance(result, "AI agent automation web infrastructure trustworthy")).toBe(0);
   });
 
   it("scores dictionary/translation results lower than relevant results", () => {
@@ -205,15 +215,13 @@ describe("filterByRelevance", () => {
     expect(filtered).toHaveLength(2);
   });
 
-  it("returns at least top 3 results even if scores are low", () => {
+  it("returns empty when no results are relevant", () => {
     const results: SearchResult[] = [
       { title: "Random Page One", url: "https://a.com", snippet: "Nothing related" },
       { title: "Random Page Two", url: "https://b.com", snippet: "Also unrelated" },
-      { title: "Random Page Three", url: "https://c.com", snippet: "Still not relevant" },
-      { title: "Random Page Four", url: "https://d.com", snippet: "Nope" },
+      { title: "Standing Desks", url: "https://c.com", snippet: "Office furniture" },
     ];
     const filtered = filterByRelevance(results, topic);
-    // Should keep at least 3 so the agent has something to work with
-    expect(filtered.length).toBeGreaterThanOrEqual(3);
+    expect(filtered).toHaveLength(0);
   });
 });

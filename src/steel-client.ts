@@ -221,6 +221,30 @@ const STOPWORDS = new Set([
   "new", "use", "using", "used", "best", "top", "free", "online", "app",
 ]);
 
+/** Strip common English suffixes for basic stemming. */
+function roughStem(word: string): string {
+  if (word.endsWith("tion") || word.endsWith("sion")) return word.slice(0, -3);
+  if (word.endsWith("ing") && word.length > 5) return word.slice(0, -3);
+  if (word.endsWith("ment") && word.length > 5) return word.slice(0, -4);
+  if (word.endsWith("ness") && word.length > 5) return word.slice(0, -4);
+  if (word.endsWith("able") && word.length > 5) return word.slice(0, -4);
+  if (word.endsWith("ies")) return word.slice(0, -3) + "y";
+  if (word.endsWith("es") && word.length > 4) return word.slice(0, -2);
+  if (word.endsWith("s") && !word.endsWith("ss") && word.length > 3) return word.slice(0, -1);
+  return word;
+}
+
+/** Check if two words match, allowing for basic plural/suffix differences. */
+function wordsMatch(a: string, b: string): boolean {
+  if (a === b) return true;
+  const stemA = roughStem(a);
+  const stemB = roughStem(b);
+  return stemA === stemB || stemA === b || a === stemB;
+}
+
+/** Minimum number of topic keywords that must match for a result to be considered relevant. */
+const MIN_KEYWORD_MATCHES = 2;
+
 export function scoreRelevance(result: SearchResult, topic: string): number {
   const topicWords = new Set(
     topic.toLowerCase().split(/\s+/).filter((w) => w.length > 2 && !STOPWORDS.has(w)),
@@ -233,36 +257,34 @@ export function scoreRelevance(result: SearchResult, topic: string): number {
 
   let matches = 0;
   for (const word of topicWords) {
-    if (resultWords.some((rw) => rw.includes(word) || word.includes(rw))) {
+    // Match whole words with basic plural/suffix tolerance.
+    // Check if the word or its stem matches any result word or its stem.
+    if (resultWords.some((rw) => wordsMatch(word, rw))) {
       matches++;
     }
   }
+
+  // Require at least MIN_KEYWORD_MATCHES absolute matches to score at all.
+  // A single keyword hit (e.g. "trustworthy" on a dictionary page) is noise.
+  if (matches < MIN_KEYWORD_MATCHES) return 0;
 
   return matches / topicWords.size;
 }
 
 /**
  * Filter search results by relevance to the topic.
- * Keeps results above the threshold, but always returns at least minResults
- * so the agent has something to work with even for unusual topics.
+ * Only returns results that score above threshold. If nothing passes,
+ * returns an empty array — browsing garbage is worse than browsing nothing.
  */
 export function filterByRelevance(
   results: SearchResult[],
   topic: string,
   threshold = 0.3,
-  minResults = 3,
 ): SearchResult[] {
   const scored = results.map((r) => ({ result: r, score: scoreRelevance(r, topic) }));
   scored.sort((a, b) => b.score - a.score);
 
-  const aboveThreshold = scored.filter((s) => s.score >= threshold);
-
-  if (aboveThreshold.length >= minResults) {
-    return aboveThreshold.map((s) => s.result);
-  }
-
-  // Return at least minResults, taking the top-scored ones
-  return scored.slice(0, Math.min(minResults, scored.length)).map((s) => s.result);
+  return scored.filter((s) => s.score >= threshold).map((s) => s.result);
 }
 
 /** Try multiple search engines in order, returning results from the first success. */
