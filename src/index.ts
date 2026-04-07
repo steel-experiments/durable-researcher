@@ -122,16 +122,19 @@ async function cleanupTasks() {
     connectionString: process.env.DATABASE_URL ?? DEFAULT_DB_URL,
   });
   try {
-    // Delete checkpoints and runs for terminal tasks, then the tasks themselves
-    const result = await pool.query(`
-      WITH terminal AS (
+    // Delete checkpoints, waiters, runs, and events for terminal tasks, then the tasks themselves
+    await pool.query(`
+      DELETE FROM absurd.c_default
+      WHERE task_id IN (
         SELECT task_id FROM absurd.t_default
         WHERE state IN ('completed', 'failed', 'cancelled')
       )
-      DELETE FROM absurd.c_default
-      WHERE run_id IN (
-        SELECT r.run_id FROM absurd.r_default r
-        JOIN terminal t ON r.task_id = t.task_id
+    `);
+    await pool.query(`
+      DELETE FROM absurd.w_default
+      WHERE task_id IN (
+        SELECT task_id FROM absurd.t_default
+        WHERE state IN ('completed', 'failed', 'cancelled')
       )
     `);
     await pool.query(`
