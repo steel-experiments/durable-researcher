@@ -116,7 +116,7 @@ def judge(
     data_dir: Path = typer.Option("data"),
     responses_dir: Path = typer.Option("responses"),
     results_dir: Path = typer.Option("results"),
-    model: str = typer.Option("claude-sonnet-4-6", help="Judge model"),
+    model: str = typer.Option("claude-haiku-4-5-20251001", help="Judge model"),
     concurrency: int = typer.Option(20, help="Max concurrent judge API calls"),
     limit: Optional[int] = typer.Option(None, help="Max tasks to judge"),
 ) -> None:

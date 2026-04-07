@@ -58,14 +58,14 @@ This calls `bun run src/bench.ts` for each benchmark prompt and writes reports t
 
 ```bash
 uv run bench judge researchrubrics
-uv run bench judge draco --model claude-sonnet-4-6 --concurrency 20
+uv run bench judge draco --concurrency 20
 ```
 
 For each report, every criterion is evaluated independently by Claude with a binary MET/UNMET verdict. Results are stored per-task in `results/{benchmark}/{task_id}.jsonl` — criteria already judged are skipped on re-run.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--model` | `claude-sonnet-4-6` | Anthropic model for judging |
+| `--model` | `claude-haiku-4-5-20251001` | Anthropic model for judging |
 | `--concurrency` | `20` | Max concurrent API calls |
 | `--limit` | all | Cap the number of tasks to judge |
 

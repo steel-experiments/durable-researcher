@@ -131,7 +131,7 @@ class Judge:
 
     def __init__(
         self,
-        model: str = "claude-sonnet-4-6",
+        model: str = "claude-haiku-4-5-20251001",
         max_concurrent: int = 20,
         max_retries: int = 3,
     ):
