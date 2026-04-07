@@ -2,7 +2,8 @@
 // ABOUTME: writes the markdown report to a file. No interactive prompts or task-finding.
 
 import "dotenv/config";
-import { writeFileSync } from "fs";
+import { writeFileSync, mkdirSync } from "fs";
+import { dirname } from "path";
 import { createResearchApp } from "./agent.js";
 import type { ResearchParams } from "./types.js";
 
@@ -63,6 +64,7 @@ async function main() {
   if (result.state === "completed" && result.result) {
     const research = result.result as unknown as { report: string };
     if (research.report) {
+      mkdirSync(dirname(output), { recursive: true });
       writeFileSync(output, research.report, "utf-8");
       console.error(`Report written to: ${output}`);
     } else {
