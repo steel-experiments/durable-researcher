@@ -24,8 +24,10 @@ export function createSearchTool(
     parameters: SearchParams,
     execute: async (_toolCallId, params) => {
       const rawResults = await multiEngineSearch(client, params.query);
+      // Score against both topic and the specific query — a result matching
+      // the query is relevant even if it doesn't match the broad topic
       const relevant = researchTopic
-        ? filterByRelevance(rawResults, researchTopic)
+        ? filterByRelevance(rawResults, researchTopic, 0.2, params.query)
         : rawResults;
 
       // Filter out already-visited URLs

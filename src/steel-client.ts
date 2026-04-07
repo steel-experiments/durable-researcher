@@ -251,14 +251,16 @@ export function scoreRelevance(result: SearchResult, topic: string): number {
   );
   if (topicWords.size === 0) return 0;
 
-  const resultText = `${result.title} ${result.snippet}`.toLowerCase();
+  // Include URL path segments in the matchable text — SERP snippets are often
+  // empty from Steel scraping, but URLs like /research/building-effective-agents
+  // contain useful signal.
+  const urlPath = extractUrlWords(result.url);
+  const resultText = `${result.title} ${result.snippet} ${urlPath}`.toLowerCase();
   const resultWords = resultText.split(/\s+/).filter((w) => w.length > 2);
   if (resultWords.length === 0) return 0;
 
   let matches = 0;
   for (const word of topicWords) {
-    // Match whole words with basic plural/suffix tolerance.
-    // Check if the word or its stem matches any result word or its stem.
     if (resultWords.some((rw) => wordsMatch(word, rw))) {
       matches++;
     }
@@ -271,17 +273,35 @@ export function scoreRelevance(result: SearchResult, topic: string): number {
   return matches / topicWords.size;
 }
 
+/** Extract meaningful words from a URL's hostname and path for relevance scoring. */
+function extractUrlWords(url: string): string {
+  try {
+    const parsed = new URL(url);
+    // Split hostname and path on common separators
+    return `${parsed.hostname} ${parsed.pathname}`
+      .replace(/[/.\-_]/g, " ");
+  } catch {
+    return "";
+  }
+}
+
 /**
- * Filter search results by relevance to the topic.
- * Only returns results that score above threshold. If nothing passes,
- * returns an empty array — browsing garbage is worse than browsing nothing.
+ * Filter search results by relevance to the topic (and optionally the search query).
+ * Scores against both topic and query, taking the higher score — a result matching
+ * the specific query is relevant even if it doesn't match the broad topic.
+ * Returns only results above threshold; empty array if nothing qualifies.
  */
 export function filterByRelevance(
   results: SearchResult[],
   topic: string,
   threshold = 0.3,
+  query?: string,
 ): SearchResult[] {
-  const scored = results.map((r) => ({ result: r, score: scoreRelevance(r, topic) }));
+  const scored = results.map((r) => {
+    const topicScore = scoreRelevance(r, topic);
+    const queryScore = query ? scoreRelevance(r, query) : 0;
+    return { result: r, score: Math.max(topicScore, queryScore) };
+  });
   scored.sort((a, b) => b.score - a.score);
 
   return scored.filter((s) => s.score >= threshold).map((s) => s.result);

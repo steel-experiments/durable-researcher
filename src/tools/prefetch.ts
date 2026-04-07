@@ -87,7 +87,7 @@ export function createPrefetchTool(
       const searchResults = await Promise.allSettled(
         queries.map(async (query) => {
           const rawResults = await multiEngineSearch(client, query);
-          const results = filterByRelevance(rawResults, topic);
+          const results = filterByRelevance(rawResults, topic, 0.3, query);
           console.log(`    ✓ "${query.slice(0, 50)}" → ${results.length}/${rawResults.length} relevant`);
           return { query, results };
         }),
