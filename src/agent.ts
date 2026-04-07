@@ -357,6 +357,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
           return;
         }
 
+        const abortController = new AbortController();
         let timerId: ReturnType<typeof setTimeout>;
         const timeoutPromise = new Promise<"timeout">((resolve) => {
           timerId = setTimeout(() => resolve("timeout"), remainingMs);
@@ -364,11 +365,13 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
 
         try {
           const result = await Promise.race([
-            runAgentLoopContinue(context, config, persister).then(() => "done" as const),
+            runAgentLoopContinue(context, config, persister, abortController.signal).then(() => "done" as const),
             timeoutPromise,
           ]);
 
           if (result === "timeout") {
+            // Abort the agent loop so it stops producing output
+            abortController.abort();
             console.log("[TIMEOUT] Hard deadline approaching — building partial result from accumulated notes.");
           }
         } finally {

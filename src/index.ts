@@ -449,11 +449,15 @@ async function main() {
       messages: AgentMessage[];
     };
 
-    // Print report if it wasn't streamed (e.g. resumed completed task)
+    // Print report if it wasn't already streamed by the logging persister.
+    // On timeout, the report is built from notes and was never streamed.
+    // On resume, the agent produced the report in a previous run.
+    // On a normal fresh run, the persister already printed it.
     if (research.report) {
-      if (isResume) {
+      const isPartialReport = research.report.startsWith("[Partial results");
+      if (isResume || isPartialReport) {
         console.log("\n" + "=".repeat(80));
-        console.log(`RESEARCH REPORT: ${research.topic}`);
+        console.log("RESEARCH REPORT");
         console.log("=".repeat(80) + "\n");
         console.log(research.report);
       }
