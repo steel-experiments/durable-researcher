@@ -65,7 +65,8 @@ async def run_task(
 
     output_dir = responses_dir / benchmark
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{task_id}.md"
+    # Must be absolute — bench.ts runs with cwd=project_root
+    output_path = (output_dir / f"{task_id}.md").resolve()
 
     # Skip if report already exists and is non-empty
     if output_path.exists() and output_path.stat().st_size > 0:
