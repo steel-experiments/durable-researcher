@@ -426,9 +426,18 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
       ) {
         throw new Error(`Agent loop failed: ${last.errorMessage}`);
       } else {
-        const lastMsg = context.messages.at(-1);
-        if (lastMsg && "role" in lastMsg && lastMsg.role === "assistant") {
-          context.messages.pop();
+        // Pop trailing assistant messages so runAgentLoopContinue can proceed
+        // (it requires the last message to not be an assistant message)
+        while (context.messages.length > 0) {
+          const tail = context.messages.at(-1);
+          if (tail && "role" in tail && tail.role === "assistant") {
+            context.messages.pop();
+          } else {
+            break;
+          }
+        }
+        if (context.messages.length === 0) {
+          throw new Error("Resume failed: no non-assistant messages to continue from");
         }
         await runWithTimeout(persistEvent);
         checkForAgentError(context.messages);
