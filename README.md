@@ -7,17 +7,24 @@ Built on [Pi Agent SDK](https://github.com/badlogic/pi-mono) + [Absurd](https://
 ## Quick Start
 
 ```bash
-# Prerequisites: Docker, Bun, Steel API key, ZAI API key
+# Prerequisites: Docker, Bun
 
 git clone https://github.com/steel-experiments/durable-researcher.git
 cd durable-researcher
+
+# One-command setup (installs deps, starts Postgres, initializes schema)
+./setup.sh
+
+# Edit .env to add your API keys, then run a research task
+bun run dev "quantum error correction advances"
+```
+
+Or do it manually:
+
+```bash
 bun install
-
-# Start Postgres and initialize Absurd schema
-docker compose up -d
-bun run db:init
-
-# Run a research task
+docker compose up -d     # Start Postgres
+bun run db:init          # Initialize Absurd schema + default queue
 ZAI_API_KEY=... STEEL_API_KEY=... bun run dev "quantum error correction advances"
 ```
 
@@ -52,8 +59,14 @@ bun run dev "impact of AI on journalism"
 # Control depth: quick (1 iteration), standard (3), deep (5)
 bun run dev "Rust vs Go for microservices" --depth deep
 
+# Ask clarifying questions before researching
+bun run dev "AI safety" --clarify
+
 # Use a different model
 bun run dev "AI safety" --model anthropic:claude-sonnet-4-6
+
+# Limit sources
+bun run dev "quantum computing" --max-sources 10
 ```
 
 ### Working with existing research
@@ -108,6 +121,7 @@ Copy `.env.example` to `.env` or export directly — shell env vars take precede
 |---|---|---|
 | `ZAI_API_KEY` | Yes | Z.AI API key for GLM models |
 | `STEEL_API_KEY` | Yes | Steel Cloud API key |
+| `ANTHROPIC_API_KEY` | Eval only | Anthropic API key for the LLM judge |
 | `DATABASE_URL` | No | Postgres connection (default: `postgresql://postgres:postgres@localhost:5432/absurd`) |
 
 ## Architecture
@@ -115,25 +129,30 @@ Copy `.env.example` to `.env` or export directly — shell env vars take precede
 ```
 src/
 ├── agent.ts           # Absurd task registration + durable agent loop
+├── bench.ts           # Headless CLI bridge for benchmarking
 ├── durable-turns.ts   # Checkpoint bridge: Absurd steps ↔ Pi Agent messages
 ├── steel-client.ts    # Steel SDK wrapper, multi-engine search, SERP extraction
 ├── task-finder.ts     # Task deduplication (exact + LLM fuzzy match)
+├── clarify.ts         # Pre-research clarification questions via LLM
 ├── follow-up.ts       # Interactive follow-up questions after report
+├── notes-ranker.ts    # Trigram similarity dedup + confidence ranking
 ├── content.ts         # Text cleaning, truncation, quality checks
 ├── prompts.ts         # Handlebars template loader
 ├── index.ts           # CLI entry point
 └── tools/
     ├── plan.ts        # Generate sub-queries + search strategy
-    ├── search.ts      # Web search with URL deduplication
+    ├── prefetch.ts    # Parallel search+browse fan-out for plan sub-queries
+    ├── search.ts      # Web search with relevance filtering
     ├── browse.ts      # Scrape + LLM-summarize pages
     ├── screenshot.ts  # Capture page screenshots
-    ├── note.ts        # Record structured findings
+    ├── note.ts        # Record structured findings with auto-dedup
     └── evaluate.ts    # Assess research coverage
 
 prompts/
 ├── system.hbs         # Main agent system prompt
 ├── plan.hbs           # Research planning prompt
-└── summarize.hbs      # Page summarization prompt
+├── summarize.hbs      # Page summarization prompt
+└── clarify.hbs        # Clarification question generation prompt
 ```
 
 ### Durable Turns Pattern
@@ -177,7 +196,25 @@ bun test              # Run tests
 bun run typecheck     # TypeScript check
 bun run db:up         # Start Postgres
 bun run db:init       # Initialize Absurd schema (idempotent)
+./setup.sh            # Full setup: deps, Postgres, schema, eval
 ```
+
+## Evaluation
+
+Benchmark against [ResearchRubrics](https://github.com/scaleai/researchrubrics) (101 tasks, 2,593 criteria) and [DRACO](https://huggingface.co/datasets/perplexity-ai/draco) (100 tasks, 3,934 criteria) using Claude as LLM-as-judge.
+
+```bash
+cd eval
+uv sync --dev                         # Install eval dependencies
+
+uv run bench download all             # Download datasets from HuggingFace
+uv run bench run researchrubrics --limit 3 --depth quick --project-root ..
+uv run bench judge researchrubrics    # Judge reports with Claude
+uv run bench score researchrubrics    # Compute scores
+uv run bench report researchrubrics   # Generate summary report
+```
+
+Each stage is resumable — re-running skips completed work. See [`eval/README.md`](eval/README.md) for full details.
 
 ## License
 
