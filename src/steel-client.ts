@@ -65,16 +65,45 @@ const SEARCH_ENGINES = [
 
 /** Domains to exclude from search results. */
 const BLOCKED_DOMAINS = new Set([
+  // Search engines
   "google.com",
   "googleapis.com",
   "gstatic.com",
+  "bing.com",
+  "duckduckgo.com",
+  // Video/social platforms
   "youtube.com",
+  "facebook.com",
+  "instagram.com",
+  "tiktok.com",
+  "twitter.com",
+  "x.com",
+  "linkedin.com",
+  "reddit.com",
+  // Messaging
+  "whatsapp.com",
+  "web.whatsapp.com",
+  "telegram.org",
+  // Shopping
+  "amazon.com",
+  "ebay.com",
+  "alibaba.com",
+  // Dictionaries/translation (match "agent" literally)
+  "dict.leo.org",
+  "leo.org",
+  "dict.cc",
+  "linguee.com",
+  "deepl.com",
+  "translate.google.com",
+  // Google subdomains
   "accounts.google.com",
   "support.google.com",
   "maps.google.com",
-  "translate.google.com",
-  "bing.com",
-  "duckduckgo.com",
+  "play.google.com",
+  // Generic noise
+  "pinterest.com",
+  "quora.com",
+  "wikipedia.org",
 ]);
 
 /** Check if a URL belongs to a blocked domain. */
@@ -175,6 +204,65 @@ export function extractSearchResults(
   }
 
   return results.slice(0, 15);
+}
+
+/**
+ * Score how relevant a search result is to the research topic.
+ * Uses word overlap between the result's title+snippet and the topic keywords.
+ * Returns a score between 0 and 1.
+ */
+/** Common words that match too broadly and add noise to relevance scoring. */
+const STOPWORDS = new Set([
+  "the", "and", "for", "that", "this", "with", "from", "are", "was", "were",
+  "will", "have", "has", "had", "been", "being", "how", "what", "when", "where",
+  "who", "which", "why", "can", "could", "would", "should", "not", "but", "also",
+  "into", "about", "than", "then", "its", "any", "all", "each", "some", "make",
+  "made", "needed", "need", "does", "more", "most", "other", "over", "such",
+  "new", "use", "using", "used", "best", "top", "free", "online", "app",
+]);
+
+export function scoreRelevance(result: SearchResult, topic: string): number {
+  const topicWords = new Set(
+    topic.toLowerCase().split(/\s+/).filter((w) => w.length > 2 && !STOPWORDS.has(w)),
+  );
+  if (topicWords.size === 0) return 0;
+
+  const resultText = `${result.title} ${result.snippet}`.toLowerCase();
+  const resultWords = resultText.split(/\s+/).filter((w) => w.length > 2);
+  if (resultWords.length === 0) return 0;
+
+  let matches = 0;
+  for (const word of topicWords) {
+    if (resultWords.some((rw) => rw.includes(word) || word.includes(rw))) {
+      matches++;
+    }
+  }
+
+  return matches / topicWords.size;
+}
+
+/**
+ * Filter search results by relevance to the topic.
+ * Keeps results above the threshold, but always returns at least minResults
+ * so the agent has something to work with even for unusual topics.
+ */
+export function filterByRelevance(
+  results: SearchResult[],
+  topic: string,
+  threshold = 0.3,
+  minResults = 3,
+): SearchResult[] {
+  const scored = results.map((r) => ({ result: r, score: scoreRelevance(r, topic) }));
+  scored.sort((a, b) => b.score - a.score);
+
+  const aboveThreshold = scored.filter((s) => s.score >= threshold);
+
+  if (aboveThreshold.length >= minResults) {
+    return aboveThreshold.map((s) => s.result);
+  }
+
+  // Return at least minResults, taking the top-scored ones
+  return scored.slice(0, Math.min(minResults, scored.length)).map((s) => s.result);
 }
 
 /** Try multiple search engines in order, returning results from the first success. */

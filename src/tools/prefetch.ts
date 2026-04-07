@@ -4,7 +4,7 @@
 import Steel from "steel-sdk";
 import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { multiEngineSearch, scrapeUrl } from "../steel-client.js";
+import { multiEngineSearch, scrapeUrl, filterByRelevance } from "../steel-client.js";
 import { isContentMeaningful, truncateContent } from "../content.js";
 import { summarizeContent } from "./browse.js";
 
@@ -86,8 +86,9 @@ export function createPrefetchTool(
       console.log(`    Searching ${queries.length} queries in parallel...`);
       const searchResults = await Promise.allSettled(
         queries.map(async (query) => {
-          const results = await multiEngineSearch(client, query);
-          console.log(`    ✓ "${query.slice(0, 50)}" → ${results.length} results`);
+          const rawResults = await multiEngineSearch(client, query);
+          const results = filterByRelevance(rawResults, topic);
+          console.log(`    ✓ "${query.slice(0, 50)}" → ${results.length}/${rawResults.length} relevant`);
           return { query, results };
         }),
       );

@@ -86,7 +86,7 @@ export async function runFollowUp(
 
   const steelClient = createSteelClient();
   const tools = [
-    createSearchTool(steelClient, scrapedUrls),
+    createSearchTool(steelClient, scrapedUrls, topic),
     createBrowseTool(steelClient, scrapedUrls, topic),
     createScreenshotTool(steelClient),
     createNoteTool(notes),

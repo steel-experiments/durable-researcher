@@ -4,7 +4,7 @@
 import Steel from "steel-sdk";
 import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { multiEngineSearch } from "../steel-client.js";
+import { multiEngineSearch, filterByRelevance } from "../steel-client.js";
 
 const SearchParams = Type.Object({
   query: Type.String({ description: "The search query to execute" }),
@@ -14,6 +14,7 @@ const SearchParams = Type.Object({
 export function createSearchTool(
   client: Steel,
   scrapedUrls: Set<string>,
+  researchTopic?: string,
 ): AgentTool<typeof SearchParams> {
   return {
     name: "web_search",
@@ -22,20 +23,23 @@ export function createSearchTool(
       "Search the web for information. Returns a list of titles, URLs, and snippets. Already-visited URLs are filtered out.",
     parameters: SearchParams,
     execute: async (_toolCallId, params) => {
-      const results = await multiEngineSearch(client, params.query);
+      const rawResults = await multiEngineSearch(client, params.query);
+      const relevant = researchTopic
+        ? filterByRelevance(rawResults, researchTopic)
+        : rawResults;
 
       // Filter out already-visited URLs
-      const fresh = results.filter((r) => !scrapedUrls.has(r.url));
+      const fresh = relevant.filter((r) => !scrapedUrls.has(r.url));
 
       if (fresh.length === 0) {
         return {
           content: [
             {
               type: "text" as const,
-              text: `No new results found for "${params.query}". All ${results.length} results have already been visited. Try a different query.`,
+              text: `No new results found for "${params.query}". ${rawResults.length} results found, ${relevant.length} relevant, all already visited. Try a different query.`,
             },
           ],
-          details: { totalResults: results.length, freshResults: 0 },
+          details: { totalResults: rawResults.length, relevantResults: relevant.length, freshResults: 0 },
         };
       }
 
@@ -54,7 +58,8 @@ export function createSearchTool(
           },
         ],
         details: {
-          totalResults: results.length,
+          totalResults: rawResults.length,
+          relevantResults: relevant.length,
           freshResults: fresh.length,
         },
       };

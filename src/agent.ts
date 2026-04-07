@@ -216,7 +216,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
       const tools = [
         createPlanTool(params),
         createPrefetchTool(steelClient, scrapedUrls, params.topic, prefetchBudget),
-        createSearchTool(steelClient, scrapedUrls),
+        createSearchTool(steelClient, scrapedUrls, params.topic),
         createBrowseTool(steelClient, scrapedUrls, params.topic),
         createScreenshotTool(steelClient),
         createNoteTool(notes),
