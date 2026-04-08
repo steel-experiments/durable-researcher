@@ -334,7 +334,7 @@ class Judge:
 
     Per-benchmark configuration:
     - ResearchRubrics: gemini-2.5-pro-preview-06-05, no thinking, JSON response
-    - DRACO: gemini-3-pro, thinking=low, temperature=0.2, raw JSON response
+    - DRACO: gemini-3-pro-preview, thinking=low, temperature=0.2, raw JSON response
     """
 
     def __init__(
