@@ -226,11 +226,9 @@ class Judge:
         """Call Google Gemini and return (raw_text, tokens_used).
 
         Matches the ResearchRubrics paper setup: no thinking mode,
-        JSON response format, 50k max output tokens.
+        JSON response format, 50k max output tokens, separate system instruction.
         """
         from google.genai import types
-
-        full_prompt = f"{SYSTEM_PROMPT}\n\n{user_prompt}"
 
         # Gemini SDK is synchronous — run in thread pool to not block the event loop
         loop = asyncio.get_event_loop()
@@ -241,10 +239,11 @@ class Judge:
                 contents=[
                     types.Content(
                         role="user",
-                        parts=[types.Part.from_text(text=full_prompt)],
+                        parts=[types.Part.from_text(text=user_prompt)],
                     ),
                 ],
                 config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
                     max_output_tokens=50000,
                     response_mime_type="application/json",
                 ),
