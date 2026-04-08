@@ -221,9 +221,19 @@ def judge(
         thinking_level=config["thinking_level"],
     )
 
-    all_verdicts = asyncio.run(
-        j.judge_benchmark(judge_tasks, bench_results_dir)
-    )
+    from rich.progress import Progress, BarColumn, TextColumn, MofNCompleteColumn, TimeElapsedColumn
+
+    async def _run_with_progress():
+        with Progress(
+            TextColumn("[bold]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            return await j.judge_benchmark(judge_tasks, bench_results_dir, progress=progress)
+
+    all_verdicts = asyncio.run(_run_with_progress())
 
     total_criteria = sum(len(v) for v in all_verdicts.values())
     total_met = sum(sum(1 for v in vs if v.met) for vs in all_verdicts.values())

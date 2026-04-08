@@ -8,8 +8,11 @@ import json
 import os
 import re
 import time
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
+
+from rich.progress import Progress
 
 import anthropic
 
@@ -505,6 +508,7 @@ class Judge:
         task_id: str,
         results_dir: Path,
         query: str = "",
+        on_criterion_done: Callable[[], None] | None = None,
     ) -> list[Verdict]:
         """Judge all criteria for a single task with resume support."""
         report = report_path.read_text()
@@ -519,6 +523,8 @@ class Judge:
         async def _judge_and_save(criterion: Criterion) -> Verdict:
             verdict = await self.judge_criterion(report, criterion, task_id, query)
             save_verdict(verdict, verdicts_path)
+            if on_criterion_done:
+                on_criterion_done()
             return verdict
 
         new_verdicts = await asyncio.gather(
@@ -530,16 +536,42 @@ class Judge:
         self,
         tasks: list[tuple[str, Path, list[Criterion], str]],
         results_dir: Path,
+        progress: Progress | None = None,
     ) -> dict[str, list[Verdict]]:
         """Judge all tasks in a benchmark.
 
         tasks: list of (task_id, report_path, criteria, query) tuples.
+        progress: optional Rich Progress instance for live display.
         """
         results_dir.mkdir(parents=True, exist_ok=True)
         all_verdicts: dict[str, list[Verdict]] = {}
-        for task_id, report_path, criteria, query in tasks:
-            verdicts = await self.judge_task(
-                report_path, criteria, task_id, results_dir, query
-            )
+
+        for i, (task_id, report_path, criteria, query) in enumerate(tasks, 1):
+            task_label = f"[{i}/{len(tasks)}] {task_id[:12]}…"
+
+            if progress:
+                task_bar = progress.add_task(
+                    task_label, total=len(criteria),
+                )
+                # Count skipped (already judged) criteria
+                existing = load_existing_verdicts(results_dir / f"{task_id}.jsonl")
+                skipped = len(criteria) - len(self.remaining_criteria(criteria, existing))
+                if skipped > 0:
+                    progress.advance(task_bar, skipped)
+
+                def _advance(bar=task_bar):
+                    progress.advance(bar)
+
+                verdicts = await self.judge_task(
+                    report_path, criteria, task_id, results_dir, query,
+                    on_criterion_done=_advance,
+                )
+            else:
+                verdicts = await self.judge_task(
+                    report_path, criteria, task_id, results_dir, query,
+                )
+
+            met_count = sum(1 for v in verdicts if v.met)
             all_verdicts[task_id] = verdicts
+
         return all_verdicts
