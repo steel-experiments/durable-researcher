@@ -8,7 +8,7 @@ import json
 import os
 import re
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
 
 import anthropic
@@ -404,11 +404,17 @@ class Judge:
         if self.temperature is not None:
             config_kwargs["temperature"] = self.temperature
         if self.thinking_level:
-            config_kwargs["thinking_config"] = types.ThinkingConfig(
-                thinking_budget={"off": 0, "low": 1024, "medium": 8192, "high": 32768}.get(
-                    self.thinking_level, 0
+            level_map = {
+                "low": types.ThinkingLevel.LOW,
+                "medium": types.ThinkingLevel.MEDIUM,
+                "high": types.ThinkingLevel.HIGH,
+                "minimal": types.ThinkingLevel.MINIMAL,
+            }
+            level = level_map.get(self.thinking_level)
+            if level:
+                config_kwargs["thinking_config"] = types.ThinkingConfig(
+                    thinking_level=level,
                 )
-            )
 
         loop = asyncio.get_event_loop()
         response = await loop.run_in_executor(
@@ -465,15 +471,13 @@ class Judge:
                     model=self.model,
                     duration_seconds=round(elapsed, 2),
                 )
-            except anthropic.RateLimitError:
+            except Exception as e:
+                is_rate_limit = isinstance(e, anthropic.RateLimitError)
                 if attempt < self.max_retries - 1:
                     await asyncio.sleep(2**attempt)
                     continue
-                raise
-            except (anthropic.APIError, Exception) as e:
-                if attempt < self.max_retries - 1:
-                    await asyncio.sleep(2**attempt)
-                    continue
+                if is_rate_limit:
+                    raise
                 return Verdict(
                     task_id=task_id,
                     criterion_id=criterion.id,
