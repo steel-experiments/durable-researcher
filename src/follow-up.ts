@@ -15,6 +15,7 @@ import type { ResearchNote } from "./types.js";
 import { createSteelClient } from "./steel-client.js";
 import { createSearchTool } from "./tools/search.js";
 import { createBrowseTool } from "./tools/browse.js";
+import { createScoutTool } from "./tools/scout.js";
 import { createScreenshotTool } from "./tools/screenshot.js";
 import { createNoteTool } from "./tools/note.js";
 import { createEvaluateTool } from "./tools/evaluate.js";
@@ -87,6 +88,7 @@ export async function runFollowUp(
 
   const steelClient = createSteelClient();
   const tools = [
+    createScoutTool(steelClient, scrapedUrls, topic),
     createSearchTool(steelClient, scrapedUrls, topic),
     createBrowseTool(steelClient, scrapedUrls, topic),
     createScreenshotTool(steelClient),
@@ -106,7 +108,7 @@ export async function runFollowUp(
     model: agentModel,
     convertToLlm,
     toolExecution: "parallel",
-    reasoningEffort: getAgentReasoning(),
+    reasoning: getAgentReasoning(),
     getApiKey: (provider) => getEnvApiKey(provider),
   };
 

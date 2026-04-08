@@ -72,6 +72,7 @@ export type UsageStats = {
 const TOOL_ICONS: Record<string, string> = {
   plan_research: "[PLAN]",
   prefetch_sources: "[PREFETCH]",
+  scout: "[SCOUT]",
   web_search: "[SEARCH]",
   browse_url: "[BROWSE]",
   screenshot: "[SCREENSHOT]",
@@ -225,6 +226,9 @@ function formatToolArgs(toolName: string, args: Record<string, unknown>): string
       const queries = args.queries as string[];
       return `${queries.length} queries`;
     }
+    case "scout":
+      return `"${args.query}"`;
+
     default:
       return "";
   }
@@ -272,8 +276,8 @@ export function rebuildStateFromMessages(messages: AgentMessage[]): {
       }
     }
 
-    // Extract scraped URLs from prefetch_sources tool results
-    if (msg.role === "toolResult" && msg.toolName === "prefetch_sources") {
+    // Extract scraped URLs from prefetch_sources and scout tool results
+    if (msg.role === "toolResult" && (msg.toolName === "prefetch_sources" || msg.toolName === "scout")) {
       const details = msg.details as {
         browsedUrls?: string[];
       } | undefined;

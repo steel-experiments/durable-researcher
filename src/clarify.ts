@@ -52,7 +52,7 @@ async function generateQuestions(topic: string): Promise<ClarifyingQuestion[]> {
     {
       maxTokens: 500,
       apiKey: getEnvApiKey(model.provider),
-      reasoningEffort: getUtilityReasoning(),
+      reasoning: getUtilityReasoning(),
     },
   );
 

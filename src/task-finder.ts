@@ -101,7 +101,7 @@ export async function findSimilarTask(
   }, {
     maxTokens: 10,
     apiKey: getEnvApiKey(model.provider),
-    reasoningEffort: getUtilityReasoning(),
+    reasoning: getUtilityReasoning(),
   });
 
   const text = message.content

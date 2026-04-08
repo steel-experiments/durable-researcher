@@ -1,5 +1,5 @@
-// ABOUTME: Centralized model and reasoning configuration loaded from environment variables.
-// ABOUTME: Provides getAgentModel() and getUtilityModel() with reasoning effort settings.
+// ABOUTME: Centralized configuration loaded from environment variables.
+// ABOUTME: Provides model, reasoning, and task duration settings.
 
 import { getModel, type Model, type Api } from "@mariozechner/pi-ai";
 import type { ThinkingLevel } from "@mariozechner/pi-ai";
@@ -47,4 +47,18 @@ export function getUtilityModel(): Model<Api> {
 /** Get the reasoning effort for utility LLM calls. */
 export function getUtilityReasoning(): ThinkingLevel | undefined {
   return parseReasoningEffort(process.env.UTILITY_REASONING);
+}
+
+/** Default max task duration in milliseconds. */
+const DEFAULT_MAX_DURATION = 1200_000; // 20 minutes
+
+/** Get the maximum task duration in milliseconds. */
+export function getMaxDuration(): number {
+  const envVal = process.env.MAX_DURATION;
+  if (envVal) {
+    const seconds = parseInt(envVal, 10);
+    if (!isNaN(seconds) && seconds > 0) return seconds * 1000;
+    console.warn(`Invalid MAX_DURATION "${envVal}" — using default ${DEFAULT_MAX_DURATION / 1000}s`);
+  }
+  return DEFAULT_MAX_DURATION;
 }

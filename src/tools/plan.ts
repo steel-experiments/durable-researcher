@@ -96,7 +96,7 @@ async function generateResearchPlan(
     }, {
       maxTokens: 1500,
       apiKey: getEnvApiKey(model.provider),
-      reasoningEffort: getUtilityReasoning(),
+      reasoning: getUtilityReasoning(),
       signal: controller.signal,
     });
 

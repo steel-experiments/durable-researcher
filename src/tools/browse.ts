@@ -9,6 +9,7 @@ import { getUtilityModel, getUtilityReasoning } from "../config.js";
 import { scrapeUrl } from "../steel-client.js";
 import { isContentMeaningful, truncateContent } from "../content.js";
 import { loadTemplate } from "../prompts.js";
+import { getCachedBrowse, setCachedBrowse } from "../browse-cache.js";
 import type { RefinedContent } from "../types.js";
 
 const BrowseParams = Type.Object({
@@ -23,11 +24,15 @@ const BrowseParams = Type.Object({
 
 const SUMMARY_MAX_TOKENS = 500;
 
+/** Content shorter than this is returned raw — preserves specific data. */
+const SMART_SUMMARIZE_THRESHOLD = 4000;
+
 /** Create a browse_url tool that scrapes and summarizes page content. */
 export function createBrowseTool(
   client: Steel,
   scrapedUrls: Set<string>,
   researchTopic: string,
+  taskId?: string,
 ): AgentTool<typeof BrowseParams> {
   return {
     name: "browse_url",
@@ -36,7 +41,25 @@ export function createBrowseTool(
       "Navigate to a URL, scrape its content, and return a focused summary. Use the 'focus' parameter to guide what information to extract.",
     parameters: BrowseParams,
     execute: async (_toolCallId, params) => {
-      const { content, title, rawLength } = await scrapeUrl(client, params.url);
+      // Check browse cache first
+      let content: string;
+      let title: string;
+      let rawLength: number;
+
+      const cached = taskId ? await getCachedBrowse(taskId, params.url).catch(() => null) : null;
+      if (cached) {
+        content = cached.content;
+        title = cached.title;
+        rawLength = cached.rawLength;
+      } else {
+        const scraped = await scrapeUrl(client, params.url);
+        content = scraped.content;
+        title = scraped.title;
+        rawLength = scraped.rawLength;
+        if (taskId) {
+          await setCachedBrowse(taskId, params.url, { title, content, rawLength }).catch(() => {});
+        }
+      }
       scrapedUrls.add(params.url);
 
       if (!isContentMeaningful(content)) {
@@ -51,17 +74,21 @@ export function createBrowseTool(
         };
       }
 
-      // LLM-summarize the content
+      // Smart summarization: only LLM-summarize long content.
+      // Short pages go through raw to preserve specific data (numbers, quotes).
       let summary: string;
-      try {
-        summary = await summarizeContent(
-          content,
-          researchTopic,
-          params.focus,
-        );
-      } catch {
-        // Fallback: use first ~2000 chars of cleaned content
-        summary = truncateContent(content, 2000);
+      if (content.length <= SMART_SUMMARIZE_THRESHOLD) {
+        summary = content;
+      } else {
+        try {
+          summary = await summarizeContent(
+            content,
+            researchTopic,
+            params.focus,
+          );
+        } catch {
+          summary = truncateContent(content, 4000);
+        }
       }
 
       const refined: RefinedContent = {
@@ -113,7 +140,7 @@ export async function summarizeContent(
     }, {
       maxTokens: SUMMARY_MAX_TOKENS * 2,
       apiKey: getEnvApiKey(model.provider),
-      reasoningEffort: getUtilityReasoning(),
+      reasoning: getUtilityReasoning(),
       signal: controller.signal,
     });
 

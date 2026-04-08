@@ -9,7 +9,7 @@ import {
   type AgentMessage,
 } from "@mariozechner/pi-agent-core";
 import { getEnvApiKey, type Message, type Model, type Api } from "@mariozechner/pi-ai";
-import { getAgentModel, getAgentReasoning } from "./config.js";
+import { getAgentModel, getAgentReasoning, getMaxDuration } from "./config.js";
 import type { ResearchParams, ResearchResult, MessageLogEntry } from "./types.js";
 import { DEPTH_CONFIG } from "./types.js";
 import { createSteelClient } from "./steel-client.js";
@@ -20,6 +20,7 @@ import { createNoteTool } from "./tools/note.js";
 import { createEvaluateTool } from "./tools/evaluate.js";
 import { createPlanTool } from "./tools/plan.js";
 import { createPrefetchTool } from "./tools/prefetch.js";
+import { createScoutTool } from "./tools/scout.js";
 import {
   loadMessageLog,
   createLoggingPersister,
@@ -171,7 +172,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
     {
       name: "research",
       defaultMaxAttempts: 3,
-      defaultCancellation: { maxDuration: 600_000 },
+      defaultCancellation: { maxDuration: getMaxDuration() },
     },
     async (params, ctx) => {
       const steelClient = createSteelClient();
@@ -214,11 +215,13 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
 
       // 3. Create tools with closures over mutable state
       const prefetchBudget = Math.floor((params.maxSources ?? 20) / 2);
+      const taskId = ctx.taskID;
       const tools = [
         createPlanTool(params),
-        createPrefetchTool(steelClient, scrapedUrls, params.topic, prefetchBudget),
+        createPrefetchTool(steelClient, scrapedUrls, params.topic, prefetchBudget, taskId),
+        createScoutTool(steelClient, scrapedUrls, params.topic, taskId),
         createSearchTool(steelClient, scrapedUrls, params.topic),
-        createBrowseTool(steelClient, scrapedUrls, params.topic),
+        createBrowseTool(steelClient, scrapedUrls, params.topic, taskId),
         createScreenshotTool(steelClient),
         createNoteTool(notes),
         createEvaluateTool(notes, scrapedUrls),
@@ -245,7 +248,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
 
       // Timeout handling: detect approaching deadline and force report
       const taskStartTime = Date.now();
-      const maxDuration = 600_000;
+      const maxDuration = getMaxDuration();
       const TIMEOUT_BUFFER = 60_000;
       const timeoutCheck = createTimeoutSteeringCheck(taskStartTime, maxDuration, TIMEOUT_BUFFER);
 
@@ -270,7 +273,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         model: agentModel,
         convertToLlm,
         toolExecution: "parallel",
-        reasoningEffort: getAgentReasoning(),
+        reasoning: getAgentReasoning(),
         getApiKey: (provider) => getEnvApiKey(provider),
         afterToolCall: async (ctx) => {
           // Count browses and prefetches; reset on evaluate

@@ -7,6 +7,7 @@ import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { multiEngineSearch, scrapeUrl, filterByRelevance } from "../steel-client.js";
 import { isContentMeaningful, truncateContent } from "../content.js";
 import { summarizeContent } from "./browse.js";
+import { getCachedBrowse, setCachedBrowse } from "../browse-cache.js";
 
 const PrefetchParams = Type.Object({
   queries: Type.Array(Type.String(), {
@@ -15,8 +16,8 @@ const PrefetchParams = Type.Object({
   }),
 });
 
-/** Maximum concurrent browse operations to avoid overwhelming Steel/LLM APIs. */
-const MAX_CONCURRENT_BROWSES = 5;
+/** Maximum concurrent browse operations. Higher = faster but more Steel sessions. */
+const MAX_CONCURRENT_BROWSES = 10;
 
 /** Maximum URLs to browse per query. */
 const BROWSES_PER_QUERY = 2;
@@ -64,6 +65,7 @@ export function createPrefetchTool(
   scrapedUrls: Set<string>,
   topic: string,
   maxBudget: number,
+  taskId?: string,
 ): AgentTool<typeof PrefetchParams> {
   return {
     name: "prefetch_sources",
@@ -74,119 +76,96 @@ export function createPrefetchTool(
     execute: async (_toolCallId, params) => {
       const { queries } = params;
       const semaphore = createSemaphore(MAX_CONCURRENT_BROWSES);
+      const SMART_SUMMARIZE_THRESHOLD = 4000;
 
       // Track budget across all queries
       let totalBrowsed = 0;
       let totalQueued = 0;
       const allBrowsedUrls: string[] = [];
-      // Track URLs being browsed across queries to avoid duplicates
       const browsingUrls = new Set<string>();
-
-      // Phase 1: Search all queries concurrently
-      console.log(`    Searching ${queries.length} queries in parallel...`);
-      const searchResults = await Promise.allSettled(
-        queries.map(async (query) => {
-          const rawResults = await multiEngineSearch(client, query);
-          const results = filterByRelevance(rawResults, topic, 0.3, query);
-          console.log(`    ✓ "${query.slice(0, 50)}" → ${results.length}/${rawResults.length} relevant`);
-          return { query, results };
-        }),
-      );
-      const successCount = searchResults.filter((r) => r.status === "fulfilled").length;
-      console.log(`    Searches complete: ${successCount}/${queries.length} succeeded, browsing top results...`);
-
-      // Phase 2: For each successful search, browse top URLs concurrently
       const queryResults: QueryResult[] = [];
-
       const browsePromises: Promise<void>[] = [];
 
-      for (let idx = 0; idx < searchResults.length; idx++) {
-        const searchResult = searchResults[idx];
-        if (searchResult.status === "rejected") {
-          const query = queries[idx];
-          queryResults.push({
-            query,
-            searchResultCount: 0,
-            browseResults: [],
-            errors: [`Search failed: ${searchResult.reason?.message ?? "unknown error"}`],
-          });
-          continue;
-        }
+      // Helper: queue a browse for a URL within a query result
+      function queueBrowse(qr: QueryResult, query: string, url: string) {
+        browsePromises.push(
+          (async () => {
+            await semaphore.acquire();
+            try {
+              if (totalBrowsed >= maxBudget) return;
 
-        const { query, results } = searchResult.value;
-        const qr: QueryResult = {
-          query,
-          searchResultCount: results.length,
-          browseResults: [],
-          errors: [],
-        };
-        queryResults.push(qr);
-
-        // Pick top URLs that haven't been scraped or queued yet
-        const urlsToBrowse: { url: string; title: string }[] = [];
-        for (const result of results) {
-          if (urlsToBrowse.length >= BROWSES_PER_QUERY) break;
-          if (totalQueued >= maxBudget) break;
-          if (scrapedUrls.has(result.url)) continue;
-          if (browsingUrls.has(result.url)) continue;
-
-          urlsToBrowse.push({ url: result.url, title: result.title });
-          browsingUrls.add(result.url);
-          totalQueued++;
-        }
-
-        // Browse each URL with concurrency control
-        for (const { url, title } of urlsToBrowse) {
-          browsePromises.push(
-            (async () => {
-              await semaphore.acquire();
-              try {
-                if (totalBrowsed >= maxBudget) return;
-
-                const scraped = await scrapeUrl(client, url);
-                scrapedUrls.add(url);
-                totalBrowsed++;
-                allBrowsedUrls.push(url);
-                console.log(`    [${totalBrowsed}/${totalQueued}] Browsed: ${scraped.title.slice(0, 60)}`);
-
-                if (!isContentMeaningful(scraped.content)) {
-                  qr.browseResults.push({
-                    query,
-                    url,
-                    title: scraped.title,
-                    summary: "[Insufficient content]",
-                    rawLength: scraped.rawLength,
-                  });
-                  return;
+              let scraped: { content: string; title: string; rawLength: number };
+              const cached = taskId ? await getCachedBrowse(taskId, url).catch(() => null) : null;
+              if (cached) {
+                scraped = { content: cached.content, title: cached.title, rawLength: cached.rawLength };
+              } else {
+                scraped = await scrapeUrl(client, url);
+                if (taskId) {
+                  await setCachedBrowse(taskId, url, scraped).catch(() => {});
                 }
+              }
+              scrapedUrls.add(url);
+              totalBrowsed++;
+              allBrowsedUrls.push(url);
+              console.log(`    [${totalBrowsed}/${totalQueued}] ${cached ? "Cached" : "Browsed"}: ${scraped.title.slice(0, 60)}`);
 
-                let summary: string;
+              if (!isContentMeaningful(scraped.content)) {
+                qr.browseResults.push({ query, url, title: scraped.title, summary: "[Insufficient content]", rawLength: scraped.rawLength });
+                return;
+              }
+
+              let summary: string;
+              if (scraped.content.length <= SMART_SUMMARIZE_THRESHOLD) {
+                summary = scraped.content;
+              } else {
                 try {
                   summary = await summarizeContent(scraped.content, topic);
                 } catch {
-                  summary = truncateContent(scraped.content, 2000);
+                  summary = truncateContent(scraped.content, 4000);
                 }
-
-                qr.browseResults.push({
-                  query,
-                  url,
-                  title: scraped.title,
-                  summary,
-                  rawLength: scraped.rawLength,
-                });
-              } catch (err) {
-                qr.errors.push(
-                  `Browse failed for ${url}: ${(err as Error).message}`,
-                );
-              } finally {
-                semaphore.release();
               }
-            })(),
-          );
-        }
+
+              qr.browseResults.push({ query, url, title: scraped.title, summary, rawLength: scraped.rawLength });
+            } catch (err) {
+              qr.errors.push(`Browse failed for ${url}: ${(err as Error).message}`);
+            } finally {
+              semaphore.release();
+            }
+          })(),
+        );
       }
 
-      // Wait for all browse operations to complete
+      // Pipelined: each search immediately queues browses on completion
+      console.log(`    Searching ${queries.length} queries in parallel (pipelined browse)...`);
+      await Promise.allSettled(
+        queries.map(async (query) => {
+          const qr: QueryResult = { query, searchResultCount: 0, browseResults: [], errors: [] };
+          queryResults.push(qr);
+
+          try {
+            const rawResults = await multiEngineSearch(client, query);
+            const results = filterByRelevance(rawResults, topic, 0.3, query);
+            qr.searchResultCount = results.length;
+            console.log(`    ✓ "${query.slice(0, 50)}" → ${results.length}/${rawResults.length} relevant`);
+
+            let queuedForQuery = 0;
+            for (const result of results) {
+              if (queuedForQuery >= BROWSES_PER_QUERY) break;
+              if (totalQueued >= maxBudget) break;
+              if (scrapedUrls.has(result.url) || browsingUrls.has(result.url)) continue;
+
+              browsingUrls.add(result.url);
+              totalQueued++;
+              queuedForQuery++;
+              queueBrowse(qr, query, result.url);
+            }
+          } catch (err) {
+            qr.errors.push(`Search failed: ${(err as Error).message}`);
+          }
+        }),
+      );
+
+      // Wait for all browse operations (some started during search phase)
       await Promise.allSettled(browsePromises);
       console.log(`    Prefetch complete: ${totalBrowsed} pages browsed across ${queries.length} queries`);
 
