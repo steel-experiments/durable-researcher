@@ -31,12 +31,12 @@ ZAI_API_KEY=... STEEL_API_KEY=... bun run dev "quantum error correction advances
 ## How It Works
 
 ```
-You → CLI → Absurd task (Postgres) → Pi Agent loop (glm-5.1)
+You → CLI → Absurd task (Postgres) → Pi Agent loop (glm-5.1 + reasoning)
                                           ↓
-                              plan → search → browse → note → evaluate → report
-                                       ↑        ↑
-                                    Bing/DDG   Steel Cloud
-                                    (fallback)  (scrape + summarize)
+                        plan → prefetch → note → evaluate → scout → report
+                                  ↑          ↑        ↑
+                              Bing/DDG    Steel     Browse Cache
+                              (fallback)  (scrape)  (Postgres)
 ```
 
 The agent follows a **plan → prefetch → note → evaluate → follow-up → report** cycle:
@@ -123,12 +123,15 @@ Copy `.env.example` to `.env` or export directly — shell env vars take precede
 |---|---|---|
 | `ZAI_API_KEY` | Yes | Z.AI API key for GLM models |
 | `STEEL_API_KEY` | Yes | Steel Cloud API key |
-| `ANTHROPIC_API_KEY` | Eval only | Anthropic API key for the LLM judge |
 | `DATABASE_URL` | No | Postgres connection (default: `postgresql://postgres:postgres@localhost:5432/absurd`) |
 | `AGENT_MODEL` | No | Agent model (default: `zai:glm-5.1`) |
 | `AGENT_REASONING` | No | Agent reasoning effort (default: `high`) |
 | `UTILITY_MODEL` | No | Utility model (default: `zai:glm-5.1`) |
 | `UTILITY_REASONING` | No | Utility reasoning effort (default: off) |
+| `MAX_DURATION` | No | Task timeout in seconds (default: `1200` = 20 min) |
+| `JUDGE_MODEL` | Eval only | Judge model: `gemini-2.5-pro` or `claude-haiku-4-5-20251001` |
+| `GEMINI_API_KEY` | Eval only | Google API key (required if using Gemini judge) |
+| `ANTHROPIC_API_KEY` | Eval only | Anthropic API key (required if using Claude judge) |
 
 ## Architecture
 
@@ -136,23 +139,26 @@ Copy `.env.example` to `.env` or export directly — shell env vars take precede
 src/
 ├── agent.ts           # Absurd task registration + durable agent loop
 ├── bench.ts           # Headless CLI bridge for benchmarking
+├── browse-cache.ts    # Postgres-backed cache for scraped pages (survives crashes)
+├── config.ts          # Centralized config from .env (models, reasoning, timeout)
 ├── durable-turns.ts   # Checkpoint bridge: Absurd steps ↔ Pi Agent messages
-├── steel-client.ts    # Steel SDK wrapper, multi-engine search, SERP extraction
+├── steel-client.ts    # Steel SDK wrapper, multi-engine search, relevance filtering
 ├── task-finder.ts     # Task deduplication (exact + LLM fuzzy match)
+├── notes-ranker.ts    # Trigram similarity dedup + confidence ranking
 ├── clarify.ts         # Pre-research clarification questions via LLM
 ├── follow-up.ts       # Interactive follow-up questions after report
-├── notes-ranker.ts    # Trigram similarity dedup + confidence ranking
 ├── content.ts         # Text cleaning, truncation, quality checks
 ├── prompts.ts         # Handlebars template loader
 ├── index.ts           # CLI entry point
 └── tools/
     ├── plan.ts        # Generate sub-queries + search strategy
-    ├── prefetch.ts    # Parallel search+browse fan-out for plan sub-queries
+    ├── prefetch.ts    # Pipelined parallel search+browse fan-out (concurrency 10)
+    ├── scout.ts       # Search+browse in one call for follow-up gaps
     ├── search.ts      # Web search with relevance filtering
-    ├── browse.ts      # Scrape + LLM-summarize pages
+    ├── browse.ts      # Scrape + smart summarize (raw ≤4KB, LLM >4KB)
     ├── screenshot.ts  # Capture page screenshots
     ├── note.ts        # Record structured findings with auto-dedup
-    └── evaluate.ts    # Assess research coverage
+    └── evaluate.ts    # Assess research coverage with ranked notes
 
 prompts/
 ├── system.hbs         # Main agent system prompt
@@ -179,18 +185,27 @@ The agent enforces hard stops via steering messages injected into the conversati
 |---|---|---|
 | Max sources | 20 | Browsed URL count |
 | Max turns | 45 | Assistant message count |
-| Task timeout | 600s | Wall-clock time (60s warning buffer) |
+| Task timeout | 1200s (configurable) | Wall-clock time (60s warning buffer) |
 
-When a limit is hit, the agent is told to stop researching and write its report immediately. On timeout, the agent loop is aborted via `AbortController` and a partial report is built from accumulated notes.
+When a limit is hit, the agent is told to stop researching and write its report immediately. On timeout, the agent loop is aborted via `AbortController` and a partial report is built from accumulated notes. Timeout is configurable via `MAX_DURATION` env var.
 
 ### Parallel Prefetch
 
 After planning, the `prefetch_sources` tool fans out all sub-queries concurrently:
 
-- Searches all queries in parallel via Steel
-- Browses top 2 results per query with a semaphore (max 5 concurrent)
+- **Pipelined**: browses start as each search completes (not waiting for all searches)
+- Browses top 2 results per query with a semaphore (max 10 concurrent)
 - Budget capped at `maxSources / 2` to leave room for targeted follow-ups
 - Results filtered by relevance scoring before browsing
+- **Smart summarization**: content ≤4KB returned raw (preserves specific data), longer content LLM-summarized
+
+### Scout Tool
+
+The `scout` tool combines search + browse in one call for follow-up gaps. Instead of the 3-turn pattern (search → LLM decides → browse), scout does it in 1 turn — searching a query, filtering by relevance, and browsing the top 3 results in parallel. Saves 1-2 LLM turns per follow-up cycle.
+
+### Browse Cache
+
+Scraped pages are cached in Postgres keyed by `(task_id, url)`. On crash/resume, cached pages are reused without re-scraping Steel. Cache entries expire after 7 days and are cleaned up automatically with `--cleanup`.
 
 ### Search Result Relevance Filtering
 
@@ -225,20 +240,24 @@ bun run db:init       # Initialize Absurd schema (idempotent)
 
 ## Evaluation
 
-Benchmark against [ResearchRubrics](https://github.com/scaleai/researchrubrics) (101 tasks, 2,593 criteria) and [DRACO](https://huggingface.co/datasets/perplexity-ai/draco) (100 tasks, 3,934 criteria) using Claude as LLM-as-judge.
+Benchmark against [ResearchRubrics](https://github.com/scaleai/researchrubrics) (101 tasks, 2,593 criteria) and [DRACO](https://huggingface.co/datasets/perplexity-ai/draco) (100 tasks, 3,934 criteria) using LLM-as-judge (Gemini or Claude).
 
 ```bash
 cd eval
 uv sync --dev                         # Install eval dependencies
 
 uv run bench download all             # Download datasets from HuggingFace
-uv run bench run researchrubrics --limit 3 --depth quick --project-root ..
-uv run bench judge researchrubrics    # Judge reports with Claude
+uv run bench run researchrubrics --limit 10 --depth quick --project-root ..
+
+# Judge with Gemini (default) or Claude
+uv run bench judge researchrubrics --model gemini-2.5-pro
+uv run bench judge researchrubrics --model claude-haiku-4-5-20251001
+
 uv run bench score researchrubrics    # Compute scores
 uv run bench report researchrubrics   # Generate summary report
 ```
 
-Each stage is resumable — re-running skips completed work. See [`eval/README.md`](eval/README.md) for full details.
+Set `JUDGE_MODEL` in `.env` to change the default judge. Each stage is resumable — re-running skips completed work. See [`eval/README.md`](eval/README.md) for full details.
 
 ## License
 
