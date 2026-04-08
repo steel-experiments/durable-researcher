@@ -9,7 +9,12 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from dotenv import load_dotenv
 import typer
+
+# Load .env from project root (parent of eval/) — shell env takes precedence
+_project_root = Path(__file__).resolve().parent.parent.parent.parent
+load_dotenv(_project_root / ".env", override=False)
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
