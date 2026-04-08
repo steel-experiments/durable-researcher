@@ -93,7 +93,7 @@ export async function summarizeContent(
   topic: string,
   focus?: string,
 ): Promise<string> {
-  const model = getModel("zai", "glm-4.7-flashx");
+  const model = getModel("zai", "glm-5.1");
   const systemPrompt = await loadTemplate("summarize", { topic, focus });
 
   const controller = new AbortController();

@@ -33,7 +33,7 @@ export function parseQuestions(text: string): ClarifyingQuestion[] {
 
 /** Generate clarifying questions for a research topic using LLM. */
 async function generateQuestions(topic: string): Promise<ClarifyingQuestion[]> {
-  const model = getModel("zai", "glm-4.7-flashx");
+  const model = getModel("zai", "glm-5.1");
   const systemPrompt = await loadTemplate("clarify", { topic });
 
   const message = await completeSimple(

@@ -105,6 +105,7 @@ export async function runFollowUp(
     model: agentModel,
     convertToLlm,
     toolExecution: "parallel",
+    reasoningEffort: "low",
     getApiKey: (provider) => getEnvApiKey(provider),
   };
 

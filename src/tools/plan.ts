@@ -73,7 +73,7 @@ async function generateResearchPlan(
   depth: string,
   maxQueries: number,
 ): Promise<ResearchPlan> {
-  const model = getModel("zai", "glm-4.7-flashx");
+  const model = getModel("zai", "glm-5.1");
   const systemPrompt = await loadTemplate("plan", {
     maxQueries: String(maxQueries),
     depth,

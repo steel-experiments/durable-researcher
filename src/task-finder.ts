@@ -76,7 +76,7 @@ export async function findSimilarTask(
   );
   if (candidates.length === 0) return undefined;
 
-  const model = getModel("zai", "glm-4.7-flashx");
+  const model = getModel("zai", "glm-5.1");
   const taskList = candidates
     .map((t, i) => `${i + 1}. "${t.topic}" (${t.status}, ${t.createdAt.toISOString().slice(0, 10)})`)
     .join("\n");

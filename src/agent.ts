@@ -269,6 +269,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         model: agentModel,
         convertToLlm,
         toolExecution: "parallel",
+        reasoningEffort: "low",
         getApiKey: (provider) => getEnvApiKey(provider),
         afterToolCall: async (ctx) => {
           // Count browses and prefetches; reset on evaluate
