@@ -123,7 +123,7 @@ def judge(
     responses_dir: Path = typer.Option("responses"),
     results_dir: Path = typer.Option("results"),
     model: str = typer.Option(
-        os.environ.get("JUDGE_MODEL", "claude-haiku-4-5-20251001"),
+        os.environ.get("JUDGE_MODEL", "gemini-2.5-pro-preview-06-05"),
         help="Judge model (e.g. claude-haiku-4-5-20251001, gemini-2.5-pro). Set JUDGE_MODEL env var to change default.",
     ),
     concurrency: int = typer.Option(20, help="Max concurrent judge API calls"),
