@@ -171,7 +171,7 @@ class Judge:
         """Call Anthropic Claude and return (raw_text, tokens_used)."""
         response = await self._anthropic_client.messages.create(
             model=self.model,
-            max_tokens=4096,
+            max_tokens=50000,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_prompt}],
         )
