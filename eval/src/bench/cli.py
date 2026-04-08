@@ -237,8 +237,9 @@ def judge(
 
     total_criteria = sum(len(v) for v in all_verdicts.values())
     total_met = sum(sum(1 for v in vs if v.met) for vs in all_verdicts.values())
-    console.print(f"\n[green]Judged {total_criteria} criteria across {len(all_verdicts)} tasks[/green]")
-    console.print(f"  Met: {total_met}/{total_criteria} ({100*total_met/total_criteria:.1f}%)")
+    console.print(f"\n[green]{total_criteria} criteria across {len(all_verdicts)} tasks[/green]")
+    if total_criteria > 0:
+        console.print(f"  Met: {total_met}/{total_criteria} ({100*total_met/total_criteria:.1f}%)")
 
 
 @app.command()
