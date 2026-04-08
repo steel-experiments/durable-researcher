@@ -1,5 +1,5 @@
 # ABOUTME: LLM-as-judge for binary criterion evaluation.
-# ABOUTME: Supports Anthropic Claude and Google Gemini as judge models.
+# ABOUTME: Supports Anthropic Claude and Google Gemini, aligned with ResearchRubrics methodology.
 
 from __future__ import annotations
 
@@ -15,44 +15,76 @@ import anthropic
 
 from bench.score import Criterion, Verdict
 
-SYSTEM_PROMPT = """You are an expert evaluator assessing whether a research document satisfies a specific criterion. Your evaluation must be precise, objective, and based solely on evidence present in the document.
+# Aligned with ResearchRubrics paper: src/prompts/system_prompt.txt
+SYSTEM_PROMPT = """You are an expert evaluator tasked with assessing whether a document satisfies specific rubric criteria. Your evaluation must be precise, objective, and based solely on the evidence present in the document.
 
-Evaluate using a binary scale:
-- MET: The document satisfies the criterion. Required elements are present and adequately addressed.
-- UNMET: The document fails to satisfy the criterion. Key elements are missing, incorrect, or inadequately addressed.
+## Evaluation Framework
 
-Rules:
-- Base evaluation ONLY on what is explicitly present in the document.
-- Do not assume implied or missing content.
-- Provide specific evidence from the document to support your verdict.
-- Example lists in criteria illustrate possible answers but are not exhaustive.
-- For numerical values: check if they fall within specified ranges or match exactly.
-- For factual claims: verify the information is present, regardless of exact phrasing.
-- Accept semantically equivalent statements or logical entailments.
-- Be strict about factual accuracy and flexible about wording.
+You will evaluate each rubric criterion using a binary satisfaction scale:
 
-Respond with ONLY valid JSON, no markdown fences:
-{"verdict": "MET" or "UNMET", "confidence": 0.0-1.0, "reasoning": "brief explanation"}"""
+1. **Not Satisfied (Score: 0.0)**: The document fails to meet the criterion. Key elements are missing, incorrect, or inadequately addressed.
 
+2. **Satisfied (Score: 1.0)**: The document fully meets the criterion. All required elements are present, well-developed, and appropriately detailed.
 
-USER_PROMPT_TEMPLATE = """## Research Report
-{report}
+## Evaluation Process
 
-## Criterion to Evaluate
-**Section**: {section}
-**Weight**: {weight}
-**Criterion**: {criterion}
+1. **Understand the Criterion**: Carefully read and interpret what the rubric is asking for.
 
-Evaluate whether the report satisfies this criterion."""
+2. **Search for Evidence**: Systematically review the document for relevant content that addresses the criterion.
+
+3. **Assess Completeness**: Evaluate whether the evidence satisfies or fails to satisfy the criterion.
+
+4. **Provide Reasoning**: Explain your evaluation with specific references to the document content.
+
+## Important Guidelines
+
+- Base your evaluation ONLY on what is explicitly present in the document
+- Do not make assumptions about implied or missing content
+- Consider the quality, completeness, and relevance of the evidence
+- Be consistent in your evaluation standards across all criteria
+- Provide specific examples from the document to support your verdict
+
+Note: Example lists in these rubrics are intended to illustrate possible reasoning patterns or relevant topics. These example lists contain correct answers but are not exhaustive. Use them as guidance, but also make your own final judgment about what qualifies as correct when appropriate."""
+
+# Aligned with ResearchRubrics paper: src/prompts/user_prompt.txt
+USER_PROMPT_TEMPLATE = """## Document Content
+{document_content}
+
+## Rubric Criterion to Evaluate
+
+**Title**: {rubric_title}
+**Category**: {rubric_category}
+**Weight**: {rubric_weight}
+
+## Your Task
+
+Evaluate whether the above document satisfies this specific rubric criterion.
+
+## Required Response Format
+
+Provide your evaluation in the following JSON format:
+
+```json
+{{
+  "verdict": "[Not Satisfied/Satisfied]",
+  "score": [0.0/1.0],
+  "confidence": [0.0-1.0],
+  "reasoning": "Detailed explanation with specific evidence from the document",
+  "evidence_quotes": ["Direct quote 1", "Direct quote 2", ...],
+  "missing_elements": ["Element 1 that would improve satisfaction", ...]
+}}
+```
+
+Ensure your response is ONLY the JSON object, with no additional text."""
 
 
 def build_user_prompt(report: str, criterion: Criterion) -> str:
     """Build the user prompt for a single criterion evaluation."""
     return USER_PROMPT_TEMPLATE.format(
-        report=report,
-        section=criterion.section,
-        weight=criterion.weight,
-        criterion=criterion.text,
+        document_content=report,
+        rubric_title=criterion.text,
+        rubric_category=criterion.section,
+        rubric_weight=criterion.weight,
     )
 
 
@@ -80,8 +112,17 @@ def parse_verdict_response(
             duration_seconds=0.0,
         )
 
-    verdict_str = data.get("verdict", "").upper()
-    if verdict_str not in ("MET", "UNMET"):
+    # Parse verdict: "Satisfied" → met=True, "Not Satisfied" → met=False
+    verdict_str = data.get("verdict", "").strip()
+    if verdict_str.lower() == "satisfied":
+        met = True
+    elif verdict_str.lower() == "not satisfied":
+        met = False
+    elif verdict_str.upper() == "MET":
+        met = True
+    elif verdict_str.upper() == "UNMET":
+        met = False
+    else:
         return Verdict(
             task_id=task_id,
             criterion_id=criterion_id,
@@ -96,7 +137,7 @@ def parse_verdict_response(
     return Verdict(
         task_id=task_id,
         criterion_id=criterion_id,
-        met=verdict_str == "MET",
+        met=met,
         confidence=float(data.get("confidence", 0.0)),
         reasoning=data.get("reasoning", ""),
         tokens_used=0,
