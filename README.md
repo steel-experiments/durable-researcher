@@ -39,14 +39,14 @@ You → CLI → Absurd task (Postgres) → Pi Agent loop (glm-5.1)
                                     (fallback)  (scrape + summarize)
 ```
 
-The agent follows a **plan → search → browse → note → evaluate → adapt** cycle:
+The agent follows a **plan → prefetch → note → evaluate → follow-up → report** cycle:
 
-1. **Plan** — Decomposes your topic into targeted sub-queries (glm-4.7-flashx)
-2. **Search** — Runs queries via Steel against Bing/DuckDuckGo/Google
-3. **Browse** — Scrapes pages via Steel, summarizes with glm-4.7-flashx
-4. **Note** — Records structured findings with source attribution
-5. **Evaluate** — Assesses coverage gaps and decides: search more or synthesize
-6. **Report** — Writes a sourced, analytical report with streaming output
+1. **Plan** — Decomposes your topic into targeted sub-queries
+2. **Prefetch** — Fans out all sub-queries in parallel: concurrent search + browse with relevance filtering
+3. **Note** — Records structured findings with source attribution and auto-deduplication
+4. **Evaluate** — Assesses coverage gaps with quality-ranked notes
+5. **Follow-up** — Targeted search + browse for gaps, or direct browsing of known URLs
+6. **Report** — Writes a sourced, analytical report (format adapts to user instructions)
 
 Every message is checkpointed to Postgres via Absurd. Kill the process mid-run, restart, and it picks up exactly where it left off. Reports are saved to `output/` automatically.
 
@@ -98,7 +98,9 @@ bun run dev "quantum error correction" --new       # start fresh
 After any report, you enter **follow-up mode** where you can ask questions about the findings:
 
 ```
---- Follow-up mode (type 'exit' to quit) ---
+================================================================================
+FOLLOW-UP MODE — ask questions about the research (type 'exit' to quit)
+================================================================================
 
 > What are the main differences between surface codes and qLDPC codes?
 ```
@@ -123,6 +125,10 @@ Copy `.env.example` to `.env` or export directly — shell env vars take precede
 | `STEEL_API_KEY` | Yes | Steel Cloud API key |
 | `ANTHROPIC_API_KEY` | Eval only | Anthropic API key for the LLM judge |
 | `DATABASE_URL` | No | Postgres connection (default: `postgresql://postgres:postgres@localhost:5432/absurd`) |
+| `AGENT_MODEL` | No | Agent model (default: `zai:glm-5.1`) |
+| `AGENT_REASONING` | No | Agent reasoning effort (default: `high`) |
+| `UTILITY_MODEL` | No | Utility model (default: `zai:glm-5.1`) |
+| `UTILITY_REASONING` | No | Utility reasoning effort (default: off) |
 
 ## Architecture
 
@@ -165,7 +171,7 @@ The core innovation: every `message_end` event from the Pi Agent loop is persist
 
 The LLM doesn't know it crashed. The conversation transcript IS the state.
 
-### Hard Limits
+### Hard Limits & Graceful Timeout
 
 The agent enforces hard stops via steering messages injected into the conversation:
 
@@ -173,21 +179,39 @@ The agent enforces hard stops via steering messages injected into the conversati
 |---|---|---|
 | Max sources | 20 | Browsed URL count |
 | Max turns | 45 | Assistant message count |
+| Task timeout | 600s | Wall-clock time (60s warning buffer) |
 
-When a limit is hit, the agent is told to stop researching and write its report immediately.
+When a limit is hit, the agent is told to stop researching and write its report immediately. On timeout, the agent loop is aborted via `AbortController` and a partial report is built from accumulated notes.
+
+### Parallel Prefetch
+
+After planning, the `prefetch_sources` tool fans out all sub-queries concurrently:
+
+- Searches all queries in parallel via Steel
+- Browses top 2 results per query with a semaphore (max 5 concurrent)
+- Budget capped at `maxSources / 2` to leave room for targeted follow-ups
+- Results filtered by relevance scoring before browsing
+
+### Search Result Relevance Filtering
+
+Search results are scored against both the research topic and the specific query using keyword matching with basic stemming. Results must match at least 2 topic keywords to pass. This prevents browsing irrelevant pages (dictionaries, product sites, unrelated content). The agent is also instructed to browse known URLs directly when search results are poor.
+
+### Note Deduplication & Ranking
+
+Notes are automatically deduplicated using trigram Jaccard similarity (threshold 0.6). Near-duplicate notes are merged: longer content is kept, source URLs are unioned, and higher confidence is preserved. The evaluate tool displays notes in quality-ranked order (confidence → source count → content length).
 
 ## Models
 
-Default model configuration (override main agent with `--model`):
+All LLM calls use glm-5.1 by default, configurable via environment variables:
 
-| Role | Model | Why |
-|---|---|---|
-| Main agent | glm-5.1 | 200k context, strong reasoning, tool use |
-| Summarization | glm-4.7-flashx | Fast, cheap, mechanical extraction |
-| Planning | glm-4.7-flashx | Query generation doesn't need heavy reasoning |
-| Fuzzy matching | glm-4.7-flashx | Quick topic similarity check |
+| Role | Env Variable | Default | Description |
+|---|---|---|---|
+| Agent loop | `AGENT_MODEL` | `zai:glm-5.1` | Main research agent + follow-up |
+| Agent reasoning | `AGENT_REASONING` | `high` | Thinking effort: minimal, low, medium, high, xhigh |
+| Utility calls | `UTILITY_MODEL` | `zai:glm-5.1` | Summarization, planning, matching, clarification |
+| Utility reasoning | `UTILITY_REASONING` | *(off)* | Reasoning effort for utility calls |
 
-Token usage is tracked and printed at the end of each run.
+The `--model` CLI flag overrides `AGENT_MODEL`. Token usage is tracked per-model and printed at the end of each run.
 
 ## Development
 
