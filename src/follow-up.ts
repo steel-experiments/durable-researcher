@@ -9,7 +9,8 @@ import {
   type AgentMessage,
   type AgentEvent,
 } from "@mariozechner/pi-agent-core";
-import { getModel, getEnvApiKey, type Message, type Model, type Api } from "@mariozechner/pi-ai";
+import { getEnvApiKey, type Message, type Model, type Api } from "@mariozechner/pi-ai";
+import { getAgentModel, getAgentReasoning } from "./config.js";
 import type { ResearchNote } from "./types.js";
 import { createSteelClient } from "./steel-client.js";
 import { createSearchTool } from "./tools/search.js";
@@ -93,7 +94,7 @@ export async function runFollowUp(
     createEvaluateTool(notes, scrapedUrls),
   ];
 
-  const agentModel = model ?? getModel("zai", "glm-5.1");
+  const agentModel = getAgentModel(model);
 
   const context: AgentContext = {
     systemPrompt: `You are a research assistant continuing a conversation about "${topic}". You have already produced a research report. The user is now asking follow-up questions. You have access to the same browsing and note-taking tools. Answer concisely, citing sources where applicable.`,
@@ -105,7 +106,7 @@ export async function runFollowUp(
     model: agentModel,
     convertToLlm,
     toolExecution: "parallel",
-    reasoningEffort: "low",
+    reasoningEffort: getAgentReasoning(),
     getApiKey: (provider) => getEnvApiKey(provider),
   };
 

@@ -2,7 +2,8 @@
 // ABOUTME: Queries Postgres for recent tasks and uses LLM for fuzzy topic matching.
 
 import pg from "pg";
-import { completeSimple, getModel, getEnvApiKey } from "@mariozechner/pi-ai";
+import { completeSimple, getEnvApiKey } from "@mariozechner/pi-ai";
+import { getUtilityModel, getUtilityReasoning } from "./config.js";
 
 export type ExistingTask = {
   taskId: string;
@@ -76,7 +77,7 @@ export async function findSimilarTask(
   );
   if (candidates.length === 0) return undefined;
 
-  const model = getModel("zai", "glm-5.1");
+  const model = getUtilityModel();
   const taskList = candidates
     .map((t, i) => `${i + 1}. "${t.topic}" (${t.status}, ${t.createdAt.toISOString().slice(0, 10)})`)
     .join("\n");
@@ -99,7 +100,8 @@ export async function findSimilarTask(
     ],
   }, {
     maxTokens: 10,
-    apiKey: getEnvApiKey("zai"),
+    apiKey: getEnvApiKey(model.provider),
+    reasoningEffort: getUtilityReasoning(),
   });
 
   const text = message.content

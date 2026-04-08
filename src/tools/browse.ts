@@ -4,7 +4,8 @@
 import Steel from "steel-sdk";
 import { Type, type Static } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { completeSimple, getModel, getEnvApiKey } from "@mariozechner/pi-ai";
+import { completeSimple, getEnvApiKey } from "@mariozechner/pi-ai";
+import { getUtilityModel, getUtilityReasoning } from "../config.js";
 import { scrapeUrl } from "../steel-client.js";
 import { isContentMeaningful, truncateContent } from "../content.js";
 import { loadTemplate } from "../prompts.js";
@@ -93,7 +94,7 @@ export async function summarizeContent(
   topic: string,
   focus?: string,
 ): Promise<string> {
-  const model = getModel("zai", "glm-5.1");
+  const model = getUtilityModel();
   const systemPrompt = await loadTemplate("summarize", { topic, focus });
 
   const controller = new AbortController();
@@ -111,7 +112,8 @@ export async function summarizeContent(
       ],
     }, {
       maxTokens: SUMMARY_MAX_TOKENS * 2,
-      apiKey: getEnvApiKey("zai"),
+      apiKey: getEnvApiKey(model.provider),
+      reasoningEffort: getUtilityReasoning(),
       signal: controller.signal,
     });
 

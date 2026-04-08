@@ -3,7 +3,8 @@
 
 import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { completeSimple, getModel, getEnvApiKey } from "@mariozechner/pi-ai";
+import { completeSimple, getEnvApiKey } from "@mariozechner/pi-ai";
+import { getUtilityModel, getUtilityReasoning } from "../config.js";
 import type { ResearchParams, ResearchPlan } from "../types.js";
 import { DEPTH_CONFIG } from "../types.js";
 import { loadTemplate } from "../prompts.js";
@@ -73,7 +74,7 @@ async function generateResearchPlan(
   depth: string,
   maxQueries: number,
 ): Promise<ResearchPlan> {
-  const model = getModel("zai", "glm-5.1");
+  const model = getUtilityModel();
   const systemPrompt = await loadTemplate("plan", {
     maxQueries: String(maxQueries),
     depth,
@@ -94,7 +95,8 @@ async function generateResearchPlan(
       ],
     }, {
       maxTokens: 1500,
-      apiKey: getEnvApiKey("zai"),
+      apiKey: getEnvApiKey(model.provider),
+      reasoningEffort: getUtilityReasoning(),
       signal: controller.signal,
     });
 

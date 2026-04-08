@@ -2,7 +2,8 @@
 // ABOUTME: Generates questions via LLM, collects answers via stdin, returns formatted context.
 
 import * as readline from "node:readline";
-import { completeSimple, getModel, getEnvApiKey } from "@mariozechner/pi-ai";
+import { completeSimple, getEnvApiKey } from "@mariozechner/pi-ai";
+import { getUtilityModel, getUtilityReasoning } from "./config.js";
 import { loadTemplate } from "./prompts.js";
 
 type ClarifyingQuestion = {
@@ -33,7 +34,7 @@ export function parseQuestions(text: string): ClarifyingQuestion[] {
 
 /** Generate clarifying questions for a research topic using LLM. */
 async function generateQuestions(topic: string): Promise<ClarifyingQuestion[]> {
-  const model = getModel("zai", "glm-5.1");
+  const model = getUtilityModel();
   const systemPrompt = await loadTemplate("clarify", { topic });
 
   const message = await completeSimple(
@@ -50,7 +51,8 @@ async function generateQuestions(topic: string): Promise<ClarifyingQuestion[]> {
     },
     {
       maxTokens: 500,
-      apiKey: getEnvApiKey("zai"),
+      apiKey: getEnvApiKey(model.provider),
+      reasoningEffort: getUtilityReasoning(),
     },
   );
 

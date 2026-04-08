@@ -8,7 +8,8 @@ import {
   type AgentLoopConfig,
   type AgentMessage,
 } from "@mariozechner/pi-agent-core";
-import { getModel, getEnvApiKey, type Message, type Model, type Api } from "@mariozechner/pi-ai";
+import { getEnvApiKey, type Message, type Model, type Api } from "@mariozechner/pi-ai";
+import { getAgentModel, getAgentReasoning } from "./config.js";
 import type { ResearchParams, ResearchResult, MessageLogEntry } from "./types.js";
 import { DEPTH_CONFIG } from "./types.js";
 import { createSteelClient } from "./steel-client.js";
@@ -257,7 +258,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
       };
       lastUsage = usage;
 
-      const agentModel = options.model ?? getModel("zai", "glm-5.1");
+      const agentModel = getAgentModel(options.model);
 
       // Track whether we've already sent the "stop" steering message
       let steeringSent = false;
@@ -269,7 +270,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         model: agentModel,
         convertToLlm,
         toolExecution: "parallel",
-        reasoningEffort: "low",
+        reasoningEffort: getAgentReasoning(),
         getApiKey: (provider) => getEnvApiKey(provider),
         afterToolCall: async (ctx) => {
           // Count browses and prefetches; reset on evaluate
