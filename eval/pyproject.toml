@@ -5,6 +5,7 @@ description = "Evaluation harness for durable-researcher against ResearchRubrics
 requires-python = ">=3.11"
 dependencies = [
     "anthropic>=0.42",
+    "google-genai>=1.0",
     "typer>=0.12",
     "huggingface-hub>=0.23",
     "rich>=13.0",

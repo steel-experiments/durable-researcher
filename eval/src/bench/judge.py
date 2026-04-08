@@ -1,10 +1,11 @@
-# ABOUTME: LLM-as-judge for binary criterion evaluation using the Anthropic SDK.
-# ABOUTME: Unified judge works for both ResearchRubrics and DRACO benchmarks.
+# ABOUTME: LLM-as-judge for binary criterion evaluation.
+# ABOUTME: Supports Anthropic Claude and Google Gemini as judge models.
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import time
 from dataclasses import asdict, dataclass
@@ -126,8 +127,13 @@ def save_verdict(verdict: Verdict, jsonl_path: Path) -> None:
         f.write(json.dumps(asdict(verdict)) + "\n")
 
 
+def _is_gemini_model(model: str) -> bool:
+    """Check if a model string refers to a Google Gemini model."""
+    return model.startswith("gemini-")
+
+
 class Judge:
-    """LLM-as-judge using the Anthropic SDK."""
+    """LLM-as-judge supporting Anthropic Claude and Google Gemini models."""
 
     def __init__(
         self,
@@ -137,8 +143,19 @@ class Judge:
     ):
         self.model = model
         self.max_retries = max_retries
-        self._client = anthropic.AsyncAnthropic()
         self._sem = asyncio.Semaphore(max_concurrent)
+        self._use_gemini = _is_gemini_model(model)
+
+        if self._use_gemini:
+            from google import genai
+            api_key = os.environ.get("GEMINI_API_KEY")
+            if not api_key:
+                raise ValueError(
+                    "GEMINI_API_KEY environment variable is required for Gemini judge models"
+                )
+            self._gemini_client = genai.Client(api_key=api_key)
+        else:
+            self._anthropic_client = anthropic.AsyncAnthropic()
 
     @staticmethod
     def remaining_criteria(
@@ -147,6 +164,56 @@ class Judge:
         """Return criteria not yet judged."""
         judged_ids = {v.criterion_id for v in existing_verdicts}
         return [c for c in all_criteria if c.id not in judged_ids]
+
+    async def _judge_anthropic(
+        self, user_prompt: str, task_id: str, criterion_id: str
+    ) -> tuple[str, int]:
+        """Call Anthropic Claude and return (raw_text, tokens_used)."""
+        response = await self._anthropic_client.messages.create(
+            model=self.model,
+            max_tokens=512,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        raw = response.content[0].text
+        tokens = response.usage.input_tokens + response.usage.output_tokens
+        return raw, tokens
+
+    async def _judge_gemini(
+        self, user_prompt: str, task_id: str, criterion_id: str
+    ) -> tuple[str, int]:
+        """Call Google Gemini and return (raw_text, tokens_used)."""
+        from google.genai import types
+
+        full_prompt = f"{SYSTEM_PROMPT}\n\n{user_prompt}"
+
+        # Gemini SDK is synchronous — run in thread pool to not block the event loop
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None,
+            lambda: self._gemini_client.models.generate_content(
+                model=self.model,
+                contents=[
+                    types.Content(
+                        role="user",
+                        parts=[types.Part.from_text(text=full_prompt)],
+                    ),
+                ],
+                config=types.GenerateContentConfig(
+                    thinking_config=types.ThinkingConfig(thinking_budget=-1),
+                    max_output_tokens=512,
+                ),
+            ),
+        )
+
+        raw = response.text or ""
+        tokens = 0
+        if response.usage_metadata:
+            tokens = (
+                (response.usage_metadata.prompt_token_count or 0)
+                + (response.usage_metadata.candidates_token_count or 0)
+            )
+        return raw, tokens
 
     async def judge_criterion(
         self,
@@ -161,24 +228,23 @@ class Judge:
         for attempt in range(self.max_retries):
             try:
                 async with self._sem:
-                    response = await self._client.messages.create(
-                        model=self.model,
-                        max_tokens=512,
-                        system=SYSTEM_PROMPT,
-                        messages=[{"role": "user", "content": user_prompt}],
-                    )
+                    if self._use_gemini:
+                        raw, tokens = await self._judge_gemini(
+                            user_prompt, task_id, criterion.id
+                        )
+                    else:
+                        raw, tokens = await self._judge_anthropic(
+                            user_prompt, task_id, criterion.id
+                        )
                 elapsed = time.monotonic() - start
-                raw = response.content[0].text
                 verdict = parse_verdict_response(raw, task_id, criterion.id)
-                # Fill in metadata from the actual call
                 return Verdict(
                     task_id=verdict.task_id,
                     criterion_id=verdict.criterion_id,
                     met=verdict.met,
                     confidence=verdict.confidence,
                     reasoning=verdict.reasoning,
-                    tokens_used=response.usage.input_tokens
-                    + response.usage.output_tokens,
+                    tokens_used=tokens,
                     model=self.model,
                     duration_seconds=round(elapsed, 2),
                 )
@@ -187,7 +253,7 @@ class Judge:
                     await asyncio.sleep(2**attempt)
                     continue
                 raise
-            except anthropic.APIError as e:
+            except (anthropic.APIError, Exception) as e:
                 if attempt < self.max_retries - 1:
                     await asyncio.sleep(2**attempt)
                     continue
@@ -201,7 +267,6 @@ class Judge:
                     model=self.model,
                     duration_seconds=round(time.monotonic() - start, 2),
                 )
-        # Should not reach here, but satisfy type checker
         raise RuntimeError("Exhausted retries without returning")
 
     async def judge_task(
@@ -236,11 +301,7 @@ class Judge:
         tasks: list[tuple[str, Path, list[Criterion]]],
         results_dir: Path,
     ) -> dict[str, list[Verdict]]:
-        """Judge all tasks in a benchmark.
-
-        tasks: list of (task_id, report_path, criteria) tuples.
-        Only tasks with existing report files should be included.
-        """
+        """Judge all tasks in a benchmark."""
         results_dir.mkdir(parents=True, exist_ok=True)
         all_verdicts: dict[str, list[Verdict]] = {}
         for task_id, report_path, criteria in tasks:

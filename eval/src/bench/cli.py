@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -116,7 +117,10 @@ def judge(
     data_dir: Path = typer.Option("data"),
     responses_dir: Path = typer.Option("responses"),
     results_dir: Path = typer.Option("results"),
-    model: str = typer.Option("claude-haiku-4-5-20251001", help="Judge model"),
+    model: str = typer.Option(
+        os.environ.get("JUDGE_MODEL", "claude-haiku-4-5-20251001"),
+        help="Judge model (e.g. claude-haiku-4-5-20251001, gemini-2.5-pro). Set JUDGE_MODEL env var to change default.",
+    ),
     concurrency: int = typer.Option(20, help="Max concurrent judge API calls"),
     limit: Optional[int] = typer.Option(None, help="Max tasks to judge"),
 ) -> None:
