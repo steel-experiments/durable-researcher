@@ -399,10 +399,12 @@ class Judge:
         config_kwargs: dict = {
             "system_instruction": system_prompt,
             "max_output_tokens": 50000,
-            "response_mime_type": "application/json",
         }
         if self.temperature is not None:
             config_kwargs["temperature"] = self.temperature
+
+        # Gemini's thinking mode is incompatible with response_mime_type JSON mode.
+        # When thinking is enabled, we rely on the prompt to enforce JSON output.
         if self.thinking_level:
             level_map = {
                 "low": types.ThinkingLevel.LOW,
@@ -415,6 +417,12 @@ class Judge:
                 config_kwargs["thinking_config"] = types.ThinkingConfig(
                     thinking_level=level,
                 )
+            else:
+                console_msg = f"Warning: unknown thinking_level '{self.thinking_level}', ignoring"
+                import sys
+                print(console_msg, file=sys.stderr)
+        else:
+            config_kwargs["response_mime_type"] = "application/json"
 
         loop = asyncio.get_event_loop()
         response = await loop.run_in_executor(

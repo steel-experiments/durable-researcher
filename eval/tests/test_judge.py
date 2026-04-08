@@ -16,12 +16,12 @@ from bench.score import Criterion
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-class TestBuildUserPrompt:
+class TestBuildUserPromptResearchRubrics:
     def test_contains_report(self):
         criterion = Criterion(
             id="t:0", text="Discusses X", weight=5.0, section="Explicit Criteria"
         )
-        prompt = build_user_prompt("# My Report\n\nContent here.", criterion)
+        prompt = build_user_prompt("# My Report\n\nContent here.", criterion, "researchrubrics")
         assert "# My Report" in prompt
         assert "Content here." in prompt
 
@@ -29,20 +29,49 @@ class TestBuildUserPrompt:
         criterion = Criterion(
             id="t:0", text="Discusses quantum codes", weight=5.0, section="Factual"
         )
-        prompt = build_user_prompt("report text", criterion)
+        prompt = build_user_prompt("report text", criterion, "researchrubrics")
         assert "Discusses quantum codes" in prompt
 
     def test_contains_section(self):
         criterion = Criterion(
             id="t:0", text="test", weight=5.0, section="Citation Quality"
         )
-        prompt = build_user_prompt("report", criterion)
+        prompt = build_user_prompt("report", criterion, "researchrubrics")
         assert "Citation Quality" in prompt
 
     def test_contains_weight(self):
         criterion = Criterion(id="t:0", text="test", weight=7.5, section="s")
-        prompt = build_user_prompt("report", criterion)
+        prompt = build_user_prompt("report", criterion, "researchrubrics")
         assert "7.5" in prompt
+
+
+class TestBuildUserPromptDraco:
+    def test_contains_response(self):
+        criterion = Criterion(id="t:0", text="States X", weight=1.0, section="accuracy")
+        prompt = build_user_prompt("Response content here.", criterion, "draco", query="What is X?")
+        assert "Response content here." in prompt
+        assert "<response>" in prompt
+
+    def test_contains_criterion(self):
+        criterion = Criterion(id="t:0", text="Mentions the year 2024", weight=1.0, section="accuracy")
+        prompt = build_user_prompt("report", criterion, "draco", query="query")
+        assert "Mentions the year 2024" in prompt
+        assert "<criterion>" in prompt
+
+    def test_positive_criterion_type(self):
+        criterion = Criterion(id="t:0", text="test", weight=1.0, section="s")
+        prompt = build_user_prompt("report", criterion, "draco", query="query")
+        assert "positive" in prompt
+
+    def test_negative_criterion_type(self):
+        criterion = Criterion(id="t:0", text="test", weight=-1.0, section="s")
+        prompt = build_user_prompt("report", criterion, "draco", query="query")
+        assert "negative" in prompt
+
+    def test_contains_query(self):
+        criterion = Criterion(id="t:0", text="test", weight=1.0, section="s")
+        prompt = build_user_prompt("report", criterion, "draco", query="What are the effects of climate change?")
+        assert "What are the effects of climate change?" in prompt
 
 
 class TestParseVerdictResponse:
@@ -83,6 +112,28 @@ class TestParseVerdictResponse:
         raw = json.dumps({"confidence": 0.9, "reasoning": "ok"})
         result = parse_verdict_response(raw, "task1", "task1:0")
         assert result.met is False
+
+    def test_satisfied_verdict(self):
+        raw = json.dumps({"verdict": "Satisfied", "score": 1.0, "confidence": 0.9, "reasoning": "ok"})
+        result = parse_verdict_response(raw, "task1", "task1:0")
+        assert result.met is True
+
+    def test_not_satisfied_verdict(self):
+        raw = json.dumps({"verdict": "Not Satisfied", "score": 0.0, "confidence": 0.8, "reasoning": "nope"})
+        result = parse_verdict_response(raw, "task1", "task1:0")
+        assert result.met is False
+
+    def test_draco_criterion_status_met(self):
+        raw = json.dumps({"criterion_status": "MET", "explanation": "Found it."})
+        result = parse_verdict_response(raw, "task1", "task1:0")
+        assert result.met is True
+        assert result.reasoning == "Found it."
+
+    def test_draco_criterion_status_unmet(self):
+        raw = json.dumps({"criterion_status": "UNMET", "explanation": "Not found."})
+        result = parse_verdict_response(raw, "task1", "task1:0")
+        assert result.met is False
+        assert result.reasoning == "Not found."
 
 
 class TestLoadExistingVerdicts:
