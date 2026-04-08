@@ -86,6 +86,39 @@ export async function setCachedBrowse(
   );
 }
 
+/** Default cache expiry: 7 days. */
+const CACHE_EXPIRY_DAYS = 7;
+
+/**
+ * Delete cache entries older than the expiry period.
+ * Returns the number of rows deleted.
+ */
+export async function expireBrowseCache(expiryDays = CACHE_EXPIRY_DAYS): Promise<number> {
+  await ensureTable();
+  const p = getPool();
+  const result = await p.query(
+    `DELETE FROM browse_cache WHERE scraped_at < NOW() - INTERVAL '1 day' * $1`,
+    [expiryDays],
+  );
+  return result.rowCount ?? 0;
+}
+
+/**
+ * Delete cache entries for tasks that have been cleaned up (completed/failed/cancelled).
+ * Call this alongside task cleanup to keep the cache in sync.
+ * Returns the number of rows deleted.
+ */
+export async function cleanupBrowseCache(): Promise<number> {
+  await ensureTable();
+  const p = getPool();
+  // Delete cache for tasks that no longer exist in the task table
+  const result = await p.query(`
+    DELETE FROM browse_cache
+    WHERE task_id NOT IN (SELECT task_id FROM absurd.t_default)
+  `);
+  return result.rowCount ?? 0;
+}
+
 /** Close the connection pool. */
 export async function closeBrowseCache(): Promise<void> {
   if (pool) {

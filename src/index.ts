@@ -12,6 +12,7 @@ import { createResearchApp, type ResearchAppOptions } from "./agent.js";
 import type { ResearchParams } from "./types.js";
 import type { UsageStats } from "./durable-turns.js";
 import { getMaxDuration } from "./config.js";
+import { cleanupBrowseCache, expireBrowseCache } from "./browse-cache.js";
 import { getModel } from "@mariozechner/pi-ai";
 import {
   findRecentTasks,
@@ -151,6 +152,13 @@ async function cleanupTasks() {
       RETURNING task_id
     `);
     console.log(`Cleaned up ${deleted.rowCount} tasks.`);
+
+    // Clean up browse cache: remove entries for deleted tasks + expire old entries
+    const cacheOrphans = await cleanupBrowseCache();
+    const cacheExpired = await expireBrowseCache();
+    if (cacheOrphans > 0 || cacheExpired > 0) {
+      console.log(`Browse cache: ${cacheOrphans} orphaned + ${cacheExpired} expired entries removed.`);
+    }
   } finally {
     await pool.end();
   }
