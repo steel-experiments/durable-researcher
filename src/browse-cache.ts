@@ -114,7 +114,7 @@ export async function cleanupBrowseCache(): Promise<number> {
   // Delete cache for tasks that no longer exist in the task table
   const result = await p.query(`
     DELETE FROM browse_cache
-    WHERE task_id NOT IN (SELECT task_id FROM absurd.t_default)
+    WHERE task_id NOT IN (SELECT task_id::text FROM absurd.t_default)
   `);
   return result.rowCount ?? 0;
 }
