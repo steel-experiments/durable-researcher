@@ -90,20 +90,43 @@ def run(
     if limit:
         tasks = tasks[:limit]
 
-    console.print(f"Running {len(tasks)} tasks from {benchmark} (depth={depth})")
+    console.print(f"Running {len(tasks)} tasks from {benchmark} (depth={depth})\n")
+
+    from rich.progress import Progress, BarColumn, TextColumn, MofNCompleteColumn, TimeElapsedColumn
+    from bench.runner import RunResult as _RunResult
 
     task_tuples = [(t.task_id, t.benchmark, t.prompt) for t in tasks]
-    results = asyncio.run(
-        run_benchmark(
-            task_tuples,
-            responses_dir,
-            depth=depth,
-            max_sources=max_sources,
-            concurrency=concurrency,
-            timeout=timeout,
-            project_root=project_root.resolve(),
-        )
-    )
+
+    async def _run_with_progress():
+        with Progress(
+            TextColumn("[bold]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            bar = progress.add_task("Running", total=len(task_tuples))
+
+            def _on_done(result: _RunResult):
+                status = "skip" if result.skipped else ("ok" if result.success else "FAIL")
+                elapsed = f"{result.duration_seconds:.0f}s" if result.duration_seconds > 0 else "cached"
+                progress.console.print(
+                    f"  {result.task_id[:12]}… {status} ({elapsed})"
+                )
+                progress.advance(bar)
+
+            return await run_benchmark(
+                task_tuples,
+                responses_dir,
+                depth=depth,
+                max_sources=max_sources,
+                concurrency=concurrency,
+                timeout=timeout,
+                project_root=project_root.resolve(),
+                on_task_done=_on_done,
+            )
+
+    results = asyncio.run(_run_with_progress())
 
     succeeded = sum(1 for r in results if r.success)
     skipped = sum(1 for r in results if r.skipped)

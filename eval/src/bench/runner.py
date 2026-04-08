@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -136,17 +137,19 @@ async def run_benchmark(
     concurrency: int = 1,
     timeout: int = 900,
     project_root: Path | None = None,
+    on_task_done: Callable[[RunResult], None] | None = None,
 ) -> list[RunResult]:
     """Run agent on all tasks with concurrency control.
 
     tasks: list of (task_id, benchmark, prompt) tuples.
+    on_task_done: called after each task completes (for progress updates).
     """
     sem = asyncio.Semaphore(concurrency)
     results: list[RunResult] = []
 
     async def _run_one(task_id: str, benchmark: str, prompt: str) -> RunResult:
         async with sem:
-            return await run_task(
+            result = await run_task(
                 task_id=task_id,
                 benchmark=benchmark,
                 prompt=prompt,
@@ -156,6 +159,9 @@ async def run_benchmark(
                 timeout=timeout,
                 project_root=project_root,
             )
+            if on_task_done:
+                on_task_done(result)
+            return result
 
     coros = [_run_one(tid, bench, prompt) for tid, bench, prompt in tasks]
     results = await asyncio.gather(*coros)
