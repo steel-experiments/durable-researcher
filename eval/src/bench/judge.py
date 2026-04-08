@@ -171,7 +171,7 @@ class Judge:
         """Call Anthropic Claude and return (raw_text, tokens_used)."""
         response = await self._anthropic_client.messages.create(
             model=self.model,
-            max_tokens=512,
+            max_tokens=4096,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_prompt}],
         )
@@ -182,7 +182,11 @@ class Judge:
     async def _judge_gemini(
         self, user_prompt: str, task_id: str, criterion_id: str
     ) -> tuple[str, int]:
-        """Call Google Gemini and return (raw_text, tokens_used)."""
+        """Call Google Gemini and return (raw_text, tokens_used).
+
+        Matches the ResearchRubrics paper setup: no thinking mode,
+        JSON response format, 50k max output tokens.
+        """
         from google.genai import types
 
         full_prompt = f"{SYSTEM_PROMPT}\n\n{user_prompt}"
@@ -200,8 +204,8 @@ class Judge:
                     ),
                 ],
                 config=types.GenerateContentConfig(
-                    thinking_config=types.ThinkingConfig(thinking_budget=-1),
-                    max_output_tokens=512,
+                    max_output_tokens=50000,
+                    response_mime_type="application/json",
                 ),
             ),
         )
