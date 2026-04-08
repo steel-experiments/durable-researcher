@@ -116,22 +116,68 @@ def run(
             console.print(f"  [red]FAIL[/red] {r.task_id}: {r.error}")
 
 
+def _resolve_judge_config(benchmark: str) -> dict:
+    """Resolve benchmark-specific judge defaults from env vars.
+
+    Env var format: {BENCHMARK}_JUDGE_MODEL, {BENCHMARK}_JUDGE_TEMPERATURE, etc.
+    Falls back to JUDGE_* vars, then to paper defaults.
+    """
+    bm = benchmark.upper()
+
+    # Paper defaults per benchmark
+    defaults = {
+        "researchrubrics": {
+            "model": "gemini-2.5-pro-preview-06-05",
+            "temperature": None,
+            "thinking_level": None,
+        },
+        "draco": {
+            "model": "gemini-3-pro",
+            "temperature": 0.2,
+            "thinking_level": "low",
+        },
+    }
+    d = defaults.get(benchmark, defaults["researchrubrics"])
+
+    model = (
+        os.environ.get(f"{bm}_JUDGE_MODEL")
+        or os.environ.get("JUDGE_MODEL")
+        or d["model"]
+    )
+    temp_str = (
+        os.environ.get(f"{bm}_JUDGE_TEMPERATURE")
+        or os.environ.get("JUDGE_TEMPERATURE")
+    )
+    temperature = float(temp_str) if temp_str else d["temperature"]
+    thinking_level = (
+        os.environ.get(f"{bm}_JUDGE_THINKING")
+        or os.environ.get("JUDGE_THINKING")
+        or d["thinking_level"]
+    )
+    if thinking_level == "none" or thinking_level == "off" or thinking_level == "disabled":
+        thinking_level = None
+
+    return {"model": model, "temperature": temperature, "thinking_level": thinking_level}
+
+
 @app.command()
 def judge(
     benchmark: str = typer.Argument(..., help="Benchmark: researchrubrics or draco"),
     data_dir: Path = typer.Option("data"),
     responses_dir: Path = typer.Option("responses"),
     results_dir: Path = typer.Option("results"),
-    model: str = typer.Option(
-        os.environ.get("JUDGE_MODEL", "gemini-2.5-pro-preview-06-05"),
-        help="Judge model (e.g. claude-haiku-4-5-20251001, gemini-2.5-pro). Set JUDGE_MODEL env var to change default.",
-    ),
+    model: Optional[str] = typer.Option(None, help="Override judge model"),
     concurrency: int = typer.Option(20, help="Max concurrent judge API calls"),
     limit: Optional[int] = typer.Option(None, help="Max tasks to judge"),
 ) -> None:
-    """Judge agent reports using Claude as LLM-as-judge."""
+    """Judge agent reports using LLM-as-judge with benchmark-specific prompts and config."""
     from bench.data import load_benchmark
     from bench.judge import Judge
+
+    # Resolve config: CLI --model overrides env vars, which override paper defaults
+    config = _resolve_judge_config(benchmark)
+    if model:
+        config["model"] = model
 
     data_path = _resolve_data_path(benchmark, data_dir)
     if not data_path.exists():
@@ -142,12 +188,12 @@ def judge(
     if limit:
         tasks = tasks[:limit]
 
-    # Build list of tasks that have reports
+    # Build list of tasks that have reports, including the query for DRACO
     judge_tasks = []
     for task in tasks:
         report_path = responses_dir / benchmark / f"{task.task_id}.md"
         if report_path.exists() and report_path.stat().st_size > 0:
-            judge_tasks.append((task.task_id, report_path, task.criteria))
+            judge_tasks.append((task.task_id, report_path, task.criteria, task.prompt))
         else:
             console.print(f"  [yellow]SKIP[/yellow] {task.task_id}: no report found")
 
@@ -155,13 +201,25 @@ def judge(
         console.print("[red]No reports to judge.[/red]")
         raise typer.Exit(1)
 
+    config_desc = f"model={config['model']}"
+    if config["temperature"] is not None:
+        config_desc += f", temp={config['temperature']}"
+    if config["thinking_level"]:
+        config_desc += f", thinking={config['thinking_level']}"
+
     console.print(
         f"Judging {len(judge_tasks)} tasks from {benchmark} "
-        f"(model={model}, concurrency={concurrency})"
+        f"({config_desc}, concurrency={concurrency})"
     )
 
     bench_results_dir = results_dir / benchmark
-    j = Judge(model=model, max_concurrent=concurrency)
+    j = Judge(
+        model=config["model"],
+        benchmark=benchmark,
+        max_concurrent=concurrency,
+        temperature=config["temperature"],
+        thinking_level=config["thinking_level"],
+    )
 
     all_verdicts = asyncio.run(
         j.judge_benchmark(judge_tasks, bench_results_dir)

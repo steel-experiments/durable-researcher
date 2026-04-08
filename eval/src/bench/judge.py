@@ -1,5 +1,5 @@
 # ABOUTME: LLM-as-judge for binary criterion evaluation.
-# ABOUTME: Supports Anthropic Claude and Google Gemini, aligned with ResearchRubrics methodology.
+# ABOUTME: Supports Anthropic Claude and Google Gemini with benchmark-specific prompts and configs.
 
 from __future__ import annotations
 
@@ -15,8 +15,12 @@ import anthropic
 
 from bench.score import Criterion, Verdict
 
-# Aligned with ResearchRubrics paper: src/prompts/system_prompt.txt
-SYSTEM_PROMPT = """You are an expert evaluator tasked with assessing whether a document satisfies specific rubric criteria. Your evaluation must be precise, objective, and based solely on the evidence present in the document.
+# ---------------------------------------------------------------------------
+# ResearchRubrics prompts — exact copy from scaleapi/researchrubrics repo
+# src/prompts/system_prompt.txt and src/prompts/user_prompt.txt
+# ---------------------------------------------------------------------------
+
+RESEARCHRUBRICS_SYSTEM_PROMPT = """You are an expert evaluator tasked with assessing whether a document satisfies specific rubric criteria. Your evaluation must be precise, objective, and based solely on the evidence present in the document.
 
 ## Evaluation Framework
 
@@ -46,8 +50,7 @@ You will evaluate each rubric criterion using a binary satisfaction scale:
 
 Note: Example lists in these rubrics are intended to illustrate possible reasoning patterns or relevant topics. These example lists contain correct answers but are not exhaustive. Use them as guidance, but also make your own final judgment about what qualifies as correct when appropriate."""
 
-# Aligned with ResearchRubrics paper: src/prompts/user_prompt.txt
-USER_PROMPT_TEMPLATE = """## Document Content
+RESEARCHRUBRICS_USER_TEMPLATE = """## Document Content
 {document_content}
 
 ## Rubric Criterion to Evaluate
@@ -77,22 +80,163 @@ Provide your evaluation in the following JSON format:
 
 Ensure your response is ONLY the JSON object, with no additional text."""
 
+# ---------------------------------------------------------------------------
+# DRACO prompts — exact copy from Appendix F.5 of the DRACO paper
+# (arXiv:2602.11685, perplexity-ai/draco)
+# ---------------------------------------------------------------------------
 
-def build_user_prompt(report: str, criterion: Criterion) -> str:
+DRACO_SYSTEM_PROMPT = """You are evaluating a response for a given query against a single criterion.
+
+You will receive the response to evaluate, a single criterion to check, and a <criterion_type> field indicating if the criterion is positive or negative.
+
+CRITERION TYPES:
+The <criterion_type> field tells you whether this criterion describes something desirable (positive) or undesirable (negative). Your job is THE SAME for both types: determine if the thing described in the criterion is actually present in the response.
+
+POSITIVE CRITERIA:
+Positive criteria describe desired traits, requirements, or content that should be present.
+- MET (criterion_status: "MET"): The response contains/satisfies the requirement
+- UNMET (criterion_status: "UNMET"): The response does not contain/satisfy the requirement
+
+NEGATIVE CRITERIA:
+Negative criteria describe active errors or mistakes that the response is making.
+- MET (criterion_status: "MET"): The response advocates, states, or recommends the problematic thing
+- UNMET (criterion_status: "UNMET"): The response does NOT make this error, OR it mentions the thing only to warn against it or mention why it's wrong
+
+Examples of what does NOT count as MET for negative criteria:
+- "This is often misdiagnosed as X, but it's actually Y" -> NOT stating it's X (UNMET)
+- "Avoid doing X because..." -> NOT recommending X (UNMET)
+- "Unlike X, the correct approach is Y" -> NOT advocating for X (UNMET)
+- "A common mistake is thinking X" -> NOT claiming X is correct (UNMET)
+
+EVALUATION RULES:
+- For numerical values: Check if they fall within specified ranges or match exactly as required.
+- For factual claims: Verify the information is present and accurate, regardless of exact phrasing.
+- For required elements: Confirm presence, counting precisely when numbers are specified.
+- For exclusion requirements: Confirm that restricted content is absent.
+- For length requirements: Carefully measure the number of words, characters, items, etc.
+- Be strict about factual accuracy and flexible about wording.
+- Accept semantically equivalent statements or implications where appropriate.
+- Pay careful attention to negation, warnings, and contrasts.
+
+CONDITIONAL VS UNCONDITIONAL ACTIONS (CRITICAL):
+When a criterion requires an action to be done "immediately", "now", "as soon as possible", or unconditionally, you must distinguish:
+- UNCONDITIONAL: "Give epinephrine now" or "Administer X immediately" -> action IS being taken
+- CONDITIONAL: "If Y occurs, give epinephrine" or "Start X if condition Z" -> action is NOT being taken immediately; it's contingent on a future condition
+
+If the criterion says something should happen "immediately" or without conditions, a conditional statement does NOT satisfy the criterion. Mark as UNMET.
+
+Example:
+- Criterion: "Administers alteplase immediately for acute ischemic stroke"
+- Output: "If CT confirms no hemorrhage, consider alteplase" -> UNMET (conditional, not immediate)
+- Output: "Give alteplase now per acute stroke protocol" -> MET (immediate, unconditional)
+
+IMPLICIT VS EXPLICIT SATISFACTION:
+Consider whether a criterion can be satisfied implicitly through context, tone, or logical implication, not just explicit statements:
+- "States there is no location in China" can be MET by "Locations are only in United States and Canada"--if locations are ONLY in US and Canada, China is excluded; no need to mention China
+- "Confirms the user is logged out" can be MET by "Session expired at 3:42 PM"--an expired session means the user is logged out, even without stating it directly
+
+CRITERION STATUS:
+"criterion_status" has *nothing* to do with quality or correctness. It only means:
+- "MET": The thing described in the criterion IS present/occurring in the response
+- "UNMET": The thing described in the criterion IS NOT present/occurring in the response
+
+Your response must be valid JSON with this exact format:
+
+{
+"explanation": "Brief explanation of why the criterion is MET.",
+"criterion_status": "MET"
+}
+
+Examples:
+
+Positive criterion: "States Q4 2023 base margin 17.2%"
+Response: "The Q4 2023 base margin was 17.2% before adjustments."
+{
+"explanation": "The response states Q4 2023 base margin as 17.2%, as required.",
+"criterion_status": "MET"
+}
+
+Negative criterion: "States that the patient has celiac disease"
+Response: "This patient does not have celiac disease."
+{
+"explanation": "The response explicitly states the patient does NOT have celiac disease, so this error is not present.",
+"criterion_status": "UNMET"
+}
+
+Positive criterion: "Administers epinephrine immediately for anaphylaxis"
+Response: "If symptoms worsen, give epinephrine and call for help."
+{
+"explanation": "Epinephrine is mentioned only as a conditional action contingent on symptom worsening, not as an immediate intervention.",
+"criterion_status": "UNMET"
+}
+
+Positive criterion: "States there is no location in China"
+Response: "Locations are only in United States and Canada."
+{
+"explanation": "If locations are only in US and Canada, China is excluded. The response logically entails no China location without mentioning China.",
+"criterion_status": "MET"
+}
+
+Return only raw JSON starting with {, no back-ticks, no 'json' prefix."""
+
+DRACO_USER_TEMPLATE = """<criterion_type>
+{criterion_type}
+</criterion_type>
+
+<criterion>
+{criterion_text}
+</criterion>
+
+{query_text}
+
+<response>
+{response_text}
+</response>"""
+
+
+# ---------------------------------------------------------------------------
+# Prompt builders
+# ---------------------------------------------------------------------------
+
+def build_user_prompt(
+    report: str,
+    criterion: Criterion,
+    benchmark: str,
+    query: str = "",
+) -> str:
     """Build the user prompt for a single criterion evaluation."""
-    return USER_PROMPT_TEMPLATE.format(
-        document_content=report,
-        rubric_title=criterion.text,
-        rubric_category=criterion.section,
-        rubric_weight=criterion.weight,
-    )
+    if benchmark == "draco":
+        criterion_type = "positive" if criterion.weight > 0 else "negative"
+        return DRACO_USER_TEMPLATE.format(
+            criterion_type=criterion_type,
+            criterion_text=criterion.text,
+            query_text=query,
+            response_text=report,
+        )
+    else:
+        return RESEARCHRUBRICS_USER_TEMPLATE.format(
+            document_content=report,
+            rubric_title=criterion.text,
+            rubric_category=criterion.section,
+            rubric_weight=criterion.weight,
+        )
 
+
+def get_system_prompt(benchmark: str) -> str:
+    """Get the system prompt for the given benchmark."""
+    if benchmark == "draco":
+        return DRACO_SYSTEM_PROMPT
+    return RESEARCHRUBRICS_SYSTEM_PROMPT
+
+
+# ---------------------------------------------------------------------------
+# Verdict parsing
+# ---------------------------------------------------------------------------
 
 def parse_verdict_response(
     raw: str, task_id: str, criterion_id: str
 ) -> Verdict:
     """Parse judge LLM response into a Verdict, with fallback for malformed output."""
-    # Strip markdown code fences if present
     cleaned = raw.strip()
     md_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", cleaned, re.DOTALL)
     if md_match:
@@ -112,15 +256,15 @@ def parse_verdict_response(
             duration_seconds=0.0,
         )
 
-    # Parse verdict: "Satisfied" → met=True, "Not Satisfied" → met=False
-    verdict_str = data.get("verdict", "").strip()
-    if verdict_str.lower() == "satisfied":
+    # Support both ResearchRubrics ("Satisfied"/"Not Satisfied") and DRACO ("MET"/"UNMET")
+    verdict_str = (
+        data.get("verdict", "")
+        or data.get("criterion_status", "")
+    ).strip()
+
+    if verdict_str.lower() == "satisfied" or verdict_str.upper() == "MET":
         met = True
-    elif verdict_str.lower() == "not satisfied":
-        met = False
-    elif verdict_str.upper() == "MET":
-        met = True
-    elif verdict_str.upper() == "UNMET":
+    elif verdict_str.lower() == "not satisfied" or verdict_str.upper() == "UNMET":
         met = False
     else:
         return Verdict(
@@ -139,12 +283,16 @@ def parse_verdict_response(
         criterion_id=criterion_id,
         met=met,
         confidence=float(data.get("confidence", 0.0)),
-        reasoning=data.get("reasoning", ""),
+        reasoning=data.get("reasoning", "") or data.get("explanation", ""),
         tokens_used=0,
         model="",
         duration_seconds=0.0,
     )
 
+
+# ---------------------------------------------------------------------------
+# Persistence
+# ---------------------------------------------------------------------------
 
 def load_existing_verdicts(jsonl_path: Path) -> list[Verdict]:
     """Load previously computed verdicts from a JSONL file."""
@@ -168,22 +316,41 @@ def save_verdict(verdict: Verdict, jsonl_path: Path) -> None:
         f.write(json.dumps(asdict(verdict)) + "\n")
 
 
+# ---------------------------------------------------------------------------
+# Model detection
+# ---------------------------------------------------------------------------
+
 def _is_gemini_model(model: str) -> bool:
     """Check if a model string refers to a Google Gemini model."""
     return model.startswith("gemini-")
 
 
+# ---------------------------------------------------------------------------
+# Judge class
+# ---------------------------------------------------------------------------
+
 class Judge:
-    """LLM-as-judge supporting Anthropic Claude and Google Gemini models."""
+    """LLM-as-judge supporting Anthropic Claude and Google Gemini models.
+
+    Per-benchmark configuration:
+    - ResearchRubrics: gemini-2.5-pro-preview-06-05, no thinking, JSON response
+    - DRACO: gemini-3-pro, thinking=low, temperature=0.2, raw JSON response
+    """
 
     def __init__(
         self,
-        model: str = "claude-haiku-4-5-20251001",
+        model: str = "gemini-2.5-pro-preview-06-05",
+        benchmark: str = "researchrubrics",
         max_concurrent: int = 20,
         max_retries: int = 3,
+        temperature: float | None = None,
+        thinking_level: str | None = None,
     ):
         self.model = model
+        self.benchmark = benchmark
         self.max_retries = max_retries
+        self.temperature = temperature
+        self.thinking_level = thinking_level
         self._sem = asyncio.Semaphore(max_concurrent)
         self._use_gemini = _is_gemini_model(model)
 
@@ -207,30 +374,42 @@ class Judge:
         return [c for c in all_criteria if c.id not in judged_ids]
 
     async def _judge_anthropic(
-        self, user_prompt: str, task_id: str, criterion_id: str
+        self, system_prompt: str, user_prompt: str
     ) -> tuple[str, int]:
         """Call Anthropic Claude and return (raw_text, tokens_used)."""
-        response = await self._anthropic_client.messages.create(
-            model=self.model,
-            max_tokens=50000,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
+        kwargs: dict = {
+            "model": self.model,
+            "max_tokens": 50000,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": user_prompt}],
+        }
+        if self.temperature is not None:
+            kwargs["temperature"] = self.temperature
+        response = await self._anthropic_client.messages.create(**kwargs)
         raw = response.content[0].text
         tokens = response.usage.input_tokens + response.usage.output_tokens
         return raw, tokens
 
     async def _judge_gemini(
-        self, user_prompt: str, task_id: str, criterion_id: str
+        self, system_prompt: str, user_prompt: str
     ) -> tuple[str, int]:
-        """Call Google Gemini and return (raw_text, tokens_used).
-
-        Matches the ResearchRubrics paper setup: no thinking mode,
-        JSON response format, 50k max output tokens, separate system instruction.
-        """
+        """Call Google Gemini and return (raw_text, tokens_used)."""
         from google.genai import types
 
-        # Gemini SDK is synchronous — run in thread pool to not block the event loop
+        config_kwargs: dict = {
+            "system_instruction": system_prompt,
+            "max_output_tokens": 50000,
+            "response_mime_type": "application/json",
+        }
+        if self.temperature is not None:
+            config_kwargs["temperature"] = self.temperature
+        if self.thinking_level:
+            config_kwargs["thinking_config"] = types.ThinkingConfig(
+                thinking_budget={"off": 0, "low": 1024, "medium": 8192, "high": 32768}.get(
+                    self.thinking_level, 0
+                )
+            )
+
         loop = asyncio.get_event_loop()
         response = await loop.run_in_executor(
             None,
@@ -242,11 +421,7 @@ class Judge:
                         parts=[types.Part.from_text(text=user_prompt)],
                     ),
                 ],
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    max_output_tokens=50000,
-                    response_mime_type="application/json",
-                ),
+                config=types.GenerateContentConfig(**config_kwargs),
             ),
         )
 
@@ -264,22 +439,20 @@ class Judge:
         report: str,
         criterion: Criterion,
         task_id: str,
+        query: str = "",
     ) -> Verdict:
         """Judge a single criterion against a report."""
-        user_prompt = build_user_prompt(report, criterion)
+        system_prompt = get_system_prompt(self.benchmark)
+        user_prompt = build_user_prompt(report, criterion, self.benchmark, query)
         start = time.monotonic()
 
         for attempt in range(self.max_retries):
             try:
                 async with self._sem:
                     if self._use_gemini:
-                        raw, tokens = await self._judge_gemini(
-                            user_prompt, task_id, criterion.id
-                        )
+                        raw, tokens = await self._judge_gemini(system_prompt, user_prompt)
                     else:
-                        raw, tokens = await self._judge_anthropic(
-                            user_prompt, task_id, criterion.id
-                        )
+                        raw, tokens = await self._judge_anthropic(system_prompt, user_prompt)
                 elapsed = time.monotonic() - start
                 verdict = parse_verdict_response(raw, task_id, criterion.id)
                 return Verdict(
@@ -319,6 +492,7 @@ class Judge:
         criteria: list[Criterion],
         task_id: str,
         results_dir: Path,
+        query: str = "",
     ) -> list[Verdict]:
         """Judge all criteria for a single task with resume support."""
         report = report_path.read_text()
@@ -331,7 +505,7 @@ class Judge:
             return existing
 
         async def _judge_and_save(criterion: Criterion) -> Verdict:
-            verdict = await self.judge_criterion(report, criterion, task_id)
+            verdict = await self.judge_criterion(report, criterion, task_id, query)
             save_verdict(verdict, verdicts_path)
             return verdict
 
@@ -342,15 +516,18 @@ class Judge:
 
     async def judge_benchmark(
         self,
-        tasks: list[tuple[str, Path, list[Criterion]]],
+        tasks: list[tuple[str, Path, list[Criterion], str]],
         results_dir: Path,
     ) -> dict[str, list[Verdict]]:
-        """Judge all tasks in a benchmark."""
+        """Judge all tasks in a benchmark.
+
+        tasks: list of (task_id, report_path, criteria, query) tuples.
+        """
         results_dir.mkdir(parents=True, exist_ok=True)
         all_verdicts: dict[str, list[Verdict]] = {}
-        for task_id, report_path, criteria in tasks:
+        for task_id, report_path, criteria, query in tasks:
             verdicts = await self.judge_task(
-                report_path, criteria, task_id, results_dir
+                report_path, criteria, task_id, results_dir, query
             )
             all_verdicts[task_id] = verdicts
         return all_verdicts
