@@ -34,7 +34,7 @@ export function getAgentModel(cliOverride?: Model<Api>): Model<Api> {
 
 /** Get the reasoning effort for the agent loop. */
 export function getAgentReasoning(): ThinkingLevel | undefined {
-  return parseReasoningEffort(process.env.AGENT_REASONING) ?? "low";
+  return parseReasoningEffort(process.env.AGENT_REASONING) ?? "high";
 }
 
 /** Get the model used for utility LLM calls (summarization, planning, fuzzy matching, clarification). */
