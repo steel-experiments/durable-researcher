@@ -139,6 +139,30 @@ def run(
             console.print(f"  [red]FAIL[/red] {r.task_id}: {r.error}")
 
 
+def _resolve_results_dir(
+    results_dir: Path, benchmark: str, judge_model: str | None
+) -> tuple[Path, str | None]:
+    """Resolve the results directory for a benchmark + judge model.
+
+    Returns (resolved_dir, detected_model_name).
+    Supports both new layout (results/{benchmark}/{model}/) and
+    legacy flat layout (results/{benchmark}/).
+    """
+    bench_base = results_dir / benchmark
+
+    if judge_model:
+        return bench_base / judge_model, judge_model
+
+    # Auto-detect: look for model subdirectories
+    if bench_base.exists():
+        model_dirs = sorted(p.name for p in bench_base.iterdir() if p.is_dir())
+        if model_dirs:
+            return bench_base / model_dirs[0], model_dirs[0]
+
+    # Fallback: flat layout (legacy) — results/{benchmark}/*.jsonl
+    return bench_base, None
+
+
 def _resolve_judge_config(benchmark: str) -> dict:
     """Resolve benchmark-specific judge defaults from env vars.
 
@@ -247,7 +271,7 @@ def judge(
     # Canary check before full run
     with console.status("Running canary check (1 criterion)..."):
         try:
-            asyncio.run(j.canary_check(judge_tasks))
+            asyncio.run(j.canary_check(judge_tasks, bench_results_dir))
         except RuntimeError as e:
             console.print(f"[red]Canary check failed:[/red] {e}")
             raise typer.Exit(1)
@@ -289,20 +313,9 @@ def score(
     data_path = _resolve_data_path(benchmark, data_dir)
     tasks = load_benchmark(benchmark, data_path)
 
-    # Resolve judge model subdir: results/{benchmark}/{model}/
-    bench_base = results_dir / benchmark
-    if judge_model:
-        bench_results_dir = bench_base / judge_model
-    elif bench_base.exists() and any(p.is_dir() for p in bench_base.iterdir()):
-        models = sorted(p.name for p in bench_base.iterdir() if p.is_dir())
-        if models:
-            judge_model = models[0]
-            bench_results_dir = bench_base / judge_model
-            console.print(f"Auto-detected judge model: {judge_model}")
-        else:
-            bench_results_dir = bench_base
-    else:
-        bench_results_dir = bench_base
+    bench_results_dir, detected_model = _resolve_results_dir(results_dir, benchmark, judge_model)
+    if detected_model and not judge_model:
+        console.print(f"Auto-detected judge model: {detected_model}")
 
     scores = []
     for task in tasks:
@@ -357,19 +370,9 @@ def report(
     data_path = _resolve_data_path(benchmark, data_dir)
     tasks = load_benchmark(benchmark, data_path)
 
-    bench_base = results_dir / benchmark
-    if judge_model:
-        bench_results_dir = bench_base / judge_model
-    elif bench_base.exists() and any(p.is_dir() for p in bench_base.iterdir()):
-        models = sorted(p.name for p in bench_base.iterdir() if p.is_dir())
-        if models:
-            judge_model = models[0]
-            bench_results_dir = bench_base / judge_model
-            console.print(f"Auto-detected judge model: {judge_model}")
-        else:
-            bench_results_dir = bench_base
-    else:
-        bench_results_dir = bench_base
+    bench_results_dir, detected_model = _resolve_results_dir(results_dir, benchmark, judge_model)
+    if detected_model and not judge_model:
+        console.print(f"Auto-detected judge model: {detected_model}")
 
     scores = []
     for task in tasks:

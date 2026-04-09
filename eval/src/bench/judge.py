@@ -581,9 +581,11 @@ class Judge:
     async def canary_check(
         self,
         tasks: list[tuple[str, Path, list[Criterion], str]],
+        results_dir: Path,
     ) -> None:
         """Judge a single criterion to verify API + parsing before full run.
 
+        Persists the verdict so it's not re-judged during the full run.
         Raises RuntimeError if the canary fails, preventing wasted token spend.
         """
         if not tasks:
@@ -593,8 +595,15 @@ class Judge:
         if not criteria:
             return
 
+        # Check if canary criterion is already judged
+        verdicts_path = results_dir / f"{task_id}.jsonl"
+        existing = load_existing_verdicts(verdicts_path)
+        remaining = self.remaining_criteria(criteria, existing)
+        if not remaining:
+            return  # All criteria already judged, canary unnecessary
+
         report = report_path.read_text()
-        criterion = criteria[0]
+        criterion = remaining[0]
 
         verdict = await self.judge_criterion(report, criterion, task_id, query)
 
@@ -604,6 +613,9 @@ class Judge:
                 f"{verdict.reasoning}. "
                 f"Aborting before full run to avoid wasting tokens."
             )
+
+        # Persist canary verdict so it's not re-judged in the full run
+        save_verdict(verdict, verdicts_path)
 
     async def judge_benchmark(
         self,
@@ -618,7 +630,7 @@ class Judge:
         progress: optional Rich Progress instance for live display.
         """
         if not skip_canary:
-            await self.canary_check(tasks)
+            await self.canary_check(tasks, results_dir)
 
         results_dir.mkdir(parents=True, exist_ok=True)
         all_verdicts: dict[str, list[Verdict]] = {}
@@ -648,7 +660,6 @@ class Judge:
                     report_path, criteria, task_id, results_dir, query,
                 )
 
-            met_count = sum(1 for v in verdicts if v.met)
             all_verdicts[task_id] = verdicts
 
         return all_verdicts
