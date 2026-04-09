@@ -919,16 +919,26 @@ class Judge:
                 else:
                     gen_config["response_mime_type"] = "application/json"
 
+                request: dict = {
+                    "contents": [{"parts": [{"text": user_prompt}], "role": "user"}],
+                    "systemInstruction": {"parts": [{"text": system_prompt}]},
+                }
+                # Map gen_config keys to camelCase API field names
+                gen_config_api: dict = {}
+                if "max_output_tokens" in gen_config:
+                    gen_config_api["maxOutputTokens"] = gen_config["max_output_tokens"]
+                if "temperature" in gen_config:
+                    gen_config_api["temperature"] = gen_config["temperature"]
+                if "thinking_config" in gen_config:
+                    gen_config_api["thinkingConfig"] = gen_config["thinking_config"]
+                if "response_mime_type" in gen_config:
+                    gen_config_api["responseMimeType"] = gen_config["response_mime_type"]
+                if gen_config_api:
+                    request["generationConfig"] = gen_config_api
+
                 batch_requests.append({
                     "key": key,
-                    "request": {
-                        "contents": [{"parts": [{"text": user_prompt}], "role": "user"}],
-                        "metadata": {"request_key": key},
-                        "config": {
-                            "system_instruction": system_prompt,
-                            **gen_config,
-                        },
-                    },
+                    "request": request,
                 })
                 request_keys.append(key)
                 request_map[key] = (task_id, criterion.id)
