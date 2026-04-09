@@ -88,3 +88,37 @@ class TestRunTaskSkipLogic:
         # Empty file means we need to re-run, but since bench.ts doesn't exist
         # in tmp_path, this will fail — that's fine, we're testing skip logic
         assert result.skipped is False
+
+
+class TestRunTaskExecution:
+    @pytest.mark.asyncio
+    async def test_passes_timeout_to_agent_via_env(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        captured: dict[str, object] = {}
+
+        class FakeProcess:
+            returncode = 0
+
+            async def communicate(self):
+                return b"", b""
+
+        async def fake_create_subprocess_exec(*cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["env"] = kwargs["env"]
+            return FakeProcess()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+        result = await run_task(
+            task_id="task1",
+            benchmark="test",
+            prompt="test prompt",
+            responses_dir=tmp_path / "responses",
+            depth="quick",
+            max_sources=10,
+            timeout=123,
+            project_root=tmp_path,
+        )
+
+        assert result.success is True
+        assert result.skipped is False
+        assert captured["env"]["MAX_DURATION"] == "123"

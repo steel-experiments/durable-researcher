@@ -95,8 +95,8 @@ function saveReport(topic: string, report: string): string {
   if (!existsSync(outputDir)) {
     mkdirSync(outputDir, { recursive: true });
   }
-  const date = new Date().toISOString().slice(0, 10);
-  const filename = `${slugify(topic)}-${date}.md`;
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const filename = `${slugify(topic)}-${timestamp}.md`;
   const filepath = resolve(outputDir, filename);
   writeFileSync(filepath, `# ${topic}\n\n${report}\n`);
   return filepath;

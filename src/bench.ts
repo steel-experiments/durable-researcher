@@ -5,6 +5,7 @@ import "dotenv/config";
 import { writeFileSync, mkdirSync } from "fs";
 import { dirname } from "path";
 import { createResearchApp } from "./agent.js";
+import { getMaxDuration } from "./config.js";
 import type { ResearchParams } from "./types.js";
 
 function parseArgs(argv: string[]): {
@@ -59,7 +60,9 @@ async function main() {
     onError: (err: Error) => console.error("Worker error:", err.message),
   });
 
-  const result = await app.awaitTaskResult(taskID, { timeout: 600_000 });
+  const result = await app.awaitTaskResult(taskID, {
+    timeout: getMaxDuration() + 30_000,
+  });
 
   if (result.state === "completed" && result.result) {
     const research = result.result as unknown as { report: string };
@@ -71,8 +74,11 @@ async function main() {
       console.error("Task completed but no report generated.");
       process.exit(1);
     }
+  } else if (result.state === "failed") {
+    console.error(`Task failed: ${JSON.stringify(result.failure) ?? "unknown error"}`);
+    process.exit(1);
   } else {
-    console.error(`Task ${result.state}: ${result.failure ?? "unknown error"}`);
+    console.error(`Task ${result.state}.`);
     process.exit(1);
   }
 

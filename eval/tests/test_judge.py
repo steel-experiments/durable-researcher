@@ -8,8 +8,10 @@ from bench.judge import (
     Judge,
     Verdict,
     build_user_prompt,
+    extract_batch_row_error,
     load_existing_verdicts,
     parse_verdict_response,
+    resolve_batch_output_key,
 )
 from bench.score import Criterion
 
@@ -176,3 +178,71 @@ class TestJudgeResumeLogic:
         remaining = Judge.remaining_criteria(all_criteria, existing)
         assert len(remaining) == 1
         assert remaining[0].id == "t:1"
+
+
+class TestBatchHelpers:
+    def test_resolve_batch_output_key_prefers_explicit_key(self):
+        key = resolve_batch_output_key({"key": "task1:t:0"}, 0, ["task1:t:0"])
+        assert key == "task1:t:0"
+
+    def test_resolve_batch_output_key_falls_back_to_submission_order(self):
+        key = resolve_batch_output_key({}, 1, ["task1:t:0", "task1:t:1"])
+        assert key == "task1:t:1"
+
+    def test_extract_batch_row_error_from_error_dict(self):
+        error = extract_batch_row_error(
+            {"error": {"message": "quota exceeded"}, "response": None}
+        )
+        assert error == "quota exceeded"
+
+    def test_save_batch_response_rejects_missing_response(self, tmp_path: Path):
+        judge = Judge.__new__(Judge)
+        judge.model = "gemini-2.5-pro"
+
+        saved, error = Judge._save_batch_response(
+            judge,
+            {"error": {"message": "rate limited"}, "response": None},
+            "task1",
+            "task1:0",
+            tmp_path,
+        )
+
+        assert saved is False
+        assert error == "rate limited"
+
+    def test_save_batch_response_persists_successful_row(self, tmp_path: Path):
+        judge = Judge.__new__(Judge)
+        judge.model = "gemini-2.5-pro"
+
+        saved, error = Judge._save_batch_response(
+            judge,
+            {
+                "response": {
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {
+                                        "text": '{"criterion_status":"MET","explanation":"Found it."}'
+                                    }
+                                ]
+                            }
+                        }
+                    ],
+                    "usageMetadata": {
+                        "promptTokenCount": 10,
+                        "candidatesTokenCount": 5,
+                    },
+                }
+            },
+            "task1",
+            "task1:0",
+            tmp_path,
+        )
+
+        assert saved is True
+        assert error is None
+        verdicts = load_existing_verdicts(tmp_path / "task1.jsonl")
+        assert len(verdicts) == 1
+        assert verdicts[0].met is True
+        assert verdicts[0].tokens_used == 15

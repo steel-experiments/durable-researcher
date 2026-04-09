@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -83,11 +84,14 @@ async def run_task(
     start = time.monotonic()
 
     try:
+        env = os.environ.copy()
+        env["MAX_DURATION"] = str(timeout)
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(project_root),
+            env=env,
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         elapsed = time.monotonic() - start

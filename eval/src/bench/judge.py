@@ -319,6 +319,38 @@ def save_verdict(verdict: Verdict, jsonl_path: Path) -> None:
         f.write(json.dumps(asdict(verdict)) + "\n")
 
 
+def resolve_batch_output_key(
+    entry: dict, index: int, request_keys: list[str]
+) -> str | None:
+    """Resolve a batch output row to its original request key.
+
+    Gemini batch result files may include the request key, but they can also be
+    returned as an ordered JSONL stream with no explicit key per row. In that
+    case, fall back to the request submission order.
+    """
+    key = entry.get("key")
+    if isinstance(key, str) and key:
+        return key
+    if index < len(request_keys):
+        return request_keys[index]
+    return None
+
+
+def extract_batch_row_error(entry: dict) -> str | None:
+    """Extract a human-readable error from a batch output row, if present."""
+    error = entry.get("error")
+    if isinstance(error, dict):
+        message = error.get("message") or error.get("code")
+        if message:
+            return str(message)
+        return json.dumps(error)
+    if error:
+        return str(error)
+    if entry.get("response") is None:
+        return "missing response"
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Model detection
 # ---------------------------------------------------------------------------
@@ -785,8 +817,11 @@ class Judge:
                     "key": key,
                     "request": {
                         "contents": [{"parts": [{"text": user_prompt}], "role": "user"}],
-                        "system_instruction": {"parts": [{"text": system_prompt}]},
-                        "generation_config": gen_config,
+                        "metadata": {"request_key": key},
+                        "config": {
+                            "system_instruction": system_prompt,
+                            **gen_config,
+                        },
                     },
                 })
                 request_keys.append(key)
@@ -800,9 +835,9 @@ class Judge:
                 all_verdicts[task_id] = load_existing_verdicts(results_dir / f"{task_id}.jsonl")
             return all_verdicts
 
-        # Submit via JSONL file upload — the file format supports "key" fields
-        # for mapping responses back to requests. Inline format does not support
-        # keys, so we always use file upload for reliable response mapping.
+        # Submit via JSONL file upload. The output file may preserve request
+        # keys, but the Gemini contract is also compatible with ordered rows, so
+        # parsing must support both keyed and positional mapping.
         if on_status:
             on_status(f"Submitting {len(batch_requests)} criteria...")
 
@@ -869,28 +904,57 @@ class Judge:
 
         # Parse results from the output file
         verdicts_saved = 0
+        seen_keys: set[str] = set()
+        row_failures: list[str] = []
 
         if batch_job.dest and batch_job.dest.file_name:
             content_bytes = self._gemini_client.files.download(
                 file=batch_job.dest.file_name
             )
             content = content_bytes.decode("utf-8")
-            for line in content.splitlines():
+            for index, line in enumerate(content.splitlines()):
                 if not line.strip():
                     continue
                 entry = json.loads(line)
-                key = entry.get("key", "")
-                if key not in request_map:
+                key = resolve_batch_output_key(entry, index, request_keys)
+                if not key:
+                    row_failures.append(
+                        f"Batch output row {index} could not be mapped to a request"
+                    )
                     continue
+                if key not in request_map:
+                    row_failures.append(f"Unknown batch output key: {key}")
+                    continue
+                if key in seen_keys:
+                    row_failures.append(f"Duplicate batch output row for {key}")
+                    continue
+                seen_keys.add(key)
                 task_id, criterion_id = request_map[key]
-                self._save_batch_response(entry.get("response"), task_id, criterion_id, results_dir)
-                verdicts_saved += 1
+                saved, error = self._save_batch_response(
+                    entry, task_id, criterion_id, results_dir
+                )
+                if saved:
+                    verdicts_saved += 1
+                else:
+                    row_failures.append(f"{criterion_id}: {error}")
         else:
-            if on_status:
-                on_status("Warning: no result file found in batch response")
+            raise RuntimeError("Batch job succeeded but returned no result file")
+
+        missing_keys = [key for key in request_keys if key not in seen_keys]
+        if missing_keys:
+            sample = ", ".join(missing_keys[:5])
+            row_failures.append(
+                f"Missing {len(missing_keys)} batch output row(s), including: {sample}"
+            )
 
         if on_status:
             on_status(f"Saved {verdicts_saved} verdicts")
+
+        if row_failures:
+            sample = "; ".join(row_failures[:5])
+            raise RuntimeError(
+                f"Batch output was incomplete or contained row failures ({len(row_failures)} issue(s)): {sample}"
+            )
 
         # Load all verdicts (existing + new batch results)
         all_verdicts_final: dict[str, list[Verdict]] = {}
@@ -899,19 +963,24 @@ class Judge:
         return all_verdicts_final
 
     def _save_batch_response(
-        self, response: dict | None, task_id: str, criterion_id: str, results_dir: Path
-    ) -> None:
+        self, entry: dict, task_id: str, criterion_id: str, results_dir: Path
+    ) -> tuple[bool, str | None]:
         """Parse and save a single batch response entry."""
+        response = entry.get("response")
         if not response:
-            return
+            return False, extract_batch_row_error(entry)
         raw_text = ""
         tokens = 0
         if "candidates" in response and response["candidates"]:
             parts = response["candidates"][0].get("content", {}).get("parts", [])
             raw_text = "".join(p.get("text", "") for p in parts)
+        elif "text" in response and response["text"]:
+            raw_text = str(response["text"])
         if "usageMetadata" in response:
             um = response["usageMetadata"]
             tokens = (um.get("promptTokenCount", 0) + um.get("candidatesTokenCount", 0))
+        if not raw_text.strip():
+            return False, "empty response text"
 
         verdict = parse_verdict_response(raw_text, task_id, criterion_id)
         save_verdict(Verdict(
@@ -920,3 +989,4 @@ class Judge:
             reasoning=verdict.reasoning, tokens_used=tokens,
             model=self.model, duration_seconds=0.0,
         ), results_dir / f"{task_id}.jsonl")
+        return True, None
