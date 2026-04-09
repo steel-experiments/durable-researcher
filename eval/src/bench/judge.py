@@ -529,22 +529,15 @@ class Judge:
                     duration_seconds=round(elapsed, 2),
                 )
             except Exception as e:
-                is_rate_limit = isinstance(e, anthropic.RateLimitError)
                 if attempt < self.max_retries - 1:
                     await asyncio.sleep(2**attempt)
                     continue
-                if is_rate_limit:
-                    raise
-                return Verdict(
-                    task_id=task_id,
-                    criterion_id=criterion.id,
-                    met=False,
-                    confidence=0.0,
-                    reasoning=f"API error after {self.max_retries} retries: {e}",
-                    tokens_used=0,
-                    model=self.model,
-                    duration_seconds=round(time.monotonic() - start, 2),
-                )
+                # Don't save a fake verdict — raise so the criterion stays
+                # unjudged and gets retried on the next run via resume support
+                raise RuntimeError(
+                    f"Failed to judge criterion {criterion.id} "
+                    f"after {self.max_retries} retries: {e}"
+                ) from e
         raise RuntimeError("Exhausted retries without returning")
 
     async def judge_task(
