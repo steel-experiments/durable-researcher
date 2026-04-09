@@ -766,12 +766,9 @@ class Judge:
                 key = f"{task_id}:{criterion.id}"
                 user_prompt = build_user_prompt(report, criterion, self.benchmark, query)
 
-                request_config: dict = {
-                    "system_instruction": {"parts": [{"text": system_prompt}]},
-                    "max_output_tokens": 50000,
-                }
+                gen_config: dict = {"max_output_tokens": 50000}
                 if self.temperature is not None:
-                    request_config["temperature"] = self.temperature
+                    gen_config["temperature"] = self.temperature
 
                 if self.thinking_level:
                     level_map = {
@@ -780,15 +777,16 @@ class Judge:
                     }
                     level_str = level_map.get(self.thinking_level)
                     if level_str:
-                        request_config["thinking_config"] = {"thinking_level": level_str}
+                        gen_config["thinking_config"] = {"thinking_level": level_str}
                 else:
-                    request_config["response_mime_type"] = "application/json"
+                    gen_config["response_mime_type"] = "application/json"
 
                 batch_requests.append({
                     "key": key,
                     "request": {
                         "contents": [{"parts": [{"text": user_prompt}], "role": "user"}],
-                        "config": request_config,
+                        "system_instruction": {"parts": [{"text": system_prompt}]},
+                        "generation_config": gen_config,
                     },
                 })
                 request_keys.append(key)
@@ -802,41 +800,34 @@ class Judge:
                 all_verdicts[task_id] = load_existing_verdicts(results_dir / f"{task_id}.jsonl")
             return all_verdicts
 
-        # Submit: use JSONL file for large batches, inline for small ones
+        # Submit via JSONL file upload — the file format supports "key" fields
+        # for mapping responses back to requests. Inline format does not support
+        # keys, so we always use file upload for reliable response mapping.
         if on_status:
             on_status(f"Submitting {len(batch_requests)} criteria...")
 
-        use_file = len(batch_requests) > 200
+        import tempfile
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".jsonl", delete=False, prefix="batch_judge_"
+        ) as f:
+            for req in batch_requests:
+                f.write(json.dumps(req) + "\n")
+            tmp_path = f.name
 
-        if use_file:
-            import tempfile
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".jsonl", delete=False, prefix="batch_judge_"
-            ) as f:
-                for req in batch_requests:
-                    f.write(json.dumps(req) + "\n")
-                tmp_path = f.name
+        uploaded = self._gemini_client.files.upload(
+            file=tmp_path,
+            config=types.UploadFileConfig(
+                display_name=f"judge-{self.benchmark}",
+                mime_type="jsonl",
+            ),
+        )
+        os.unlink(tmp_path)
 
-            uploaded = self._gemini_client.files.upload(
-                file=tmp_path,
-                config=types.UploadFileConfig(
-                    display_name=f"judge-{self.benchmark}",
-                    mime_type="jsonl",
-                ),
-            )
-            os.unlink(tmp_path)
-
-            batch_job = self._gemini_client.batches.create(
-                model=self.model,
-                src=uploaded.name,
-                config={"display_name": f"judge-{self.benchmark}"},
-            )
-        else:
-            batch_job = self._gemini_client.batches.create(
-                model=self.model,
-                src=batch_requests,
-                config={"display_name": f"judge-{self.benchmark}"},
-            )
+        batch_job = self._gemini_client.batches.create(
+            model=self.model,
+            src=uploaded.name,
+            config={"display_name": f"judge-{self.benchmark}"},
+        )
 
         if on_status:
             on_status(f"Batch job created: {batch_job.name}")
@@ -845,19 +836,27 @@ class Judge:
         completed_states = {"JOB_STATE_SUCCEEDED", "JOB_STATE_FAILED",
                            "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED"}
 
+        last_status = ""
         while True:
             batch_job = self._gemini_client.batches.get(name=batch_job.name)
             state = batch_job.state.name
             if state in completed_states:
                 break
             stats = ""
-            if batch_job.batch_stats:
-                bs = batch_job.batch_stats
-                done = (bs.successful_request_count or 0) + (bs.failed_request_count or 0)
-                total = bs.total_request_count or len(batch_requests)
-                stats = f" ({done}/{total} done)"
-            if on_status:
-                on_status(f"{state}{stats}")
+            try:
+                if batch_job.completion_stats:
+                    cs = batch_job.completion_stats
+                    done = (cs.successful_count or 0) + (cs.failed_count or 0)
+                    total = done + (cs.incomplete_count or 0)
+                    if total == 0:
+                        total = len(batch_requests)
+                    stats = f" ({done}/{total} done)"
+            except Exception:
+                pass
+            current_status = f"{state}{stats}"
+            if on_status and current_status != last_status:
+                on_status(current_status)
+                last_status = current_status
             _time.sleep(poll_interval)
 
         if batch_job.state.name != "JOB_STATE_SUCCEEDED":
@@ -868,8 +867,7 @@ class Judge:
         if on_status:
             on_status("Batch succeeded — downloading results...")
 
-        # Parse results
-        total_tokens = 0
+        # Parse results from the output file
         verdicts_saved = 0
 
         if batch_job.dest and batch_job.dest.file_name:
@@ -887,30 +885,9 @@ class Judge:
                 task_id, criterion_id = request_map[key]
                 self._save_batch_response(entry.get("response"), task_id, criterion_id, results_dir)
                 verdicts_saved += 1
-
-        elif batch_job.dest and batch_job.dest.inlined_responses:
-            for i, inline_resp in enumerate(batch_job.dest.inlined_responses):
-                if i >= len(request_keys):
-                    break
-                key = request_keys[i]
-                task_id, criterion_id = request_map[key]
-
-                if inline_resp.response:
-                    raw_text = inline_resp.response.text or ""
-                    tokens = 0
-                    if inline_resp.response.usage_metadata:
-                        um = inline_resp.response.usage_metadata
-                        tokens = (um.prompt_token_count or 0) + (um.candidates_token_count or 0)
-                    total_tokens += tokens
-
-                    verdict = parse_verdict_response(raw_text, task_id, criterion_id)
-                    save_verdict(Verdict(
-                        task_id=verdict.task_id, criterion_id=verdict.criterion_id,
-                        met=verdict.met, confidence=verdict.confidence,
-                        reasoning=verdict.reasoning, tokens_used=tokens,
-                        model=self.model, duration_seconds=0.0,
-                    ), results_dir / f"{task_id}.jsonl")
-                    verdicts_saved += 1
+        else:
+            if on_status:
+                on_status("Warning: no result file found in batch response")
 
         if on_status:
             on_status(f"Saved {verdicts_saved} verdicts")
