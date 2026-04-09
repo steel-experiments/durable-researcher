@@ -49,16 +49,21 @@ export function getUtilityReasoning(): ThinkingLevel | undefined {
   return parseReasoningEffort(process.env.UTILITY_REASONING);
 }
 
-/** Default max task duration in milliseconds. */
-const DEFAULT_MAX_DURATION = 1200_000; // 20 minutes
+/** Default max task duration in seconds. */
+const DEFAULT_MAX_DURATION_SECONDS = 1200; // 20 minutes
 
-/** Get the maximum task duration in milliseconds. */
-export function getMaxDuration(): number {
+/** Get the maximum task duration in seconds. */
+export function getMaxDurationSeconds(): number {
   const envVal = process.env.MAX_DURATION;
   if (envVal) {
     const seconds = parseInt(envVal, 10);
-    if (!isNaN(seconds) && seconds > 0) return seconds * 1000;
-    console.warn(`Invalid MAX_DURATION "${envVal}" — using default ${DEFAULT_MAX_DURATION / 1000}s`);
+    if (!isNaN(seconds) && seconds > 0) return seconds;
+    console.warn(`Invalid MAX_DURATION "${envVal}" — using default ${DEFAULT_MAX_DURATION_SECONDS}s`);
   }
-  return DEFAULT_MAX_DURATION;
+  return DEFAULT_MAX_DURATION_SECONDS;
+}
+
+/** Get the maximum task duration in milliseconds. */
+export function getMaxDurationMs(): number {
+  return getMaxDurationSeconds() * 1000;
 }

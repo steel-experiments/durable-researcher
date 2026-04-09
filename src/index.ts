@@ -11,7 +11,7 @@ import { resolve } from "node:path";
 import { createResearchApp, type ResearchAppOptions } from "./agent.js";
 import type { ResearchParams } from "./types.js";
 import type { UsageStats } from "./durable-turns.js";
-import { getMaxDuration } from "./config.js";
+import { getMaxDurationSeconds } from "./config.js";
 import { cleanupBrowseCache, expireBrowseCache } from "./browse-cache.js";
 import { getModel } from "@mariozechner/pi-ai";
 import {
@@ -446,7 +446,7 @@ async function main() {
   });
 
   const result = await app.awaitTaskResult(taskID, {
-    timeout: getMaxDuration() + 30_000, // extra buffer beyond task max duration
+    timeout: getMaxDurationSeconds() + 30, // extra buffer beyond task max duration
   });
 
   if (result.state === "completed" && result.result) {

@@ -5,7 +5,7 @@ import "dotenv/config";
 import { writeFileSync, mkdirSync } from "fs";
 import { dirname } from "path";
 import { createResearchApp } from "./agent.js";
-import { getMaxDuration } from "./config.js";
+import { getMaxDurationSeconds } from "./config.js";
 import type { ResearchParams } from "./types.js";
 
 function parseArgs(argv: string[]): {
@@ -61,7 +61,7 @@ async function main() {
   });
 
   const result = await app.awaitTaskResult(taskID, {
-    timeout: getMaxDuration() + 30_000,
+    timeout: getMaxDurationSeconds() + 30,
   });
 
   if (result.state === "completed" && result.result) {

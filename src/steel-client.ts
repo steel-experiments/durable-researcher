@@ -242,8 +242,10 @@ function wordsMatch(a: string, b: string): boolean {
   return stemA === stemB || stemA === b || a === stemB;
 }
 
-/** Minimum number of topic keywords that must match for a result to be considered relevant. */
-const MIN_KEYWORD_MATCHES = 2;
+/** Multi-keyword topics need two matches; one-word topics need one. */
+function getMinKeywordMatches(keywordCount: number): number {
+  return Math.min(2, keywordCount);
+}
 
 export function scoreRelevance(result: SearchResult, topic: string): number {
   const topicWords = new Set(
@@ -266,9 +268,10 @@ export function scoreRelevance(result: SearchResult, topic: string): number {
     }
   }
 
-  // Require at least MIN_KEYWORD_MATCHES absolute matches to score at all.
-  // A single keyword hit (e.g. "trustworthy" on a dictionary page) is noise.
-  if (matches < MIN_KEYWORD_MATCHES) return 0;
+  // Require stronger overlap for multi-keyword topics, but still allow one-word
+  // topics/queries such as "OpenAI" or "CUDA" to return relevant results.
+  const minKeywordMatches = getMinKeywordMatches(topicWords.size);
+  if (matches < minKeywordMatches) return 0;
 
   return matches / topicWords.size;
 }

@@ -17,7 +17,7 @@ describe("rebuildStateFromMessages", () => {
     expect(scrapedUrls.size).toBe(0);
   });
 
-  it("extracts notes from assistant tool calls", () => {
+  it("extracts notes from successful take_note tool results", () => {
     const messages: AgentMessage[] = [
       {
         role: "user",
@@ -51,6 +51,15 @@ describe("rebuildStateFromMessages", () => {
         stopReason: "toolUse",
         timestamp: Date.now(),
       } satisfies AssistantMessage,
+      {
+        role: "toolResult",
+        toolCallId: "tc-1",
+        toolName: "take_note",
+        content: [{ type: "text", text: "Note recorded" }],
+        details: { noteIndex: 0, mergedCount: 0 },
+        isError: false,
+        timestamp: Date.now(),
+      } satisfies ToolResultMessage,
     ];
 
     const { notes } = rebuildStateFromMessages(messages);
@@ -60,7 +69,7 @@ describe("rebuildStateFromMessages", () => {
     expect(notes[0].sourceUrls).toEqual(["https://research.google/qec"]);
   });
 
-  it("extracts scraped URLs from browse_url tool calls", () => {
+  it("does not mark browse_url tool calls as scraped before a tool result exists", () => {
     const messages: AgentMessage[] = [
       {
         role: "assistant",
@@ -90,6 +99,58 @@ describe("rebuildStateFromMessages", () => {
         stopReason: "toolUse",
         timestamp: Date.now(),
       } satisfies AssistantMessage,
+    ];
+
+    const { scrapedUrls } = rebuildStateFromMessages(messages);
+    expect(scrapedUrls.size).toBe(0);
+  });
+
+  it("extracts scraped URLs from successful browse_url tool results", () => {
+    const messages: AgentMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "tc-1",
+            name: "browse_url",
+            arguments: { url: "https://example.com/page1" },
+          },
+          {
+            type: "toolCall",
+            id: "tc-2",
+            name: "browse_url",
+            arguments: { url: "https://example.com/page2" },
+          },
+        ],
+        api: "anthropic-messages",
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        usage: {
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+        },
+        stopReason: "toolUse",
+        timestamp: Date.now(),
+      } satisfies AssistantMessage,
+      {
+        role: "toolResult",
+        toolCallId: "tc-1",
+        toolName: "browse_url",
+        content: [{ type: "text", text: "Page 1 content" }],
+        isError: false,
+        timestamp: Date.now(),
+      } satisfies ToolResultMessage,
+      {
+        role: "toolResult",
+        toolCallId: "tc-2",
+        toolName: "browse_url",
+        content: [{ type: "text", text: "Page 2 content" }],
+        isError: false,
+        timestamp: Date.now(),
+      } satisfies ToolResultMessage,
     ];
 
     const { scrapedUrls } = rebuildStateFromMessages(messages);
@@ -210,6 +271,15 @@ describe("rebuildStateFromMessages", () => {
         stopReason: "toolUse",
         timestamp: Date.now(),
       } satisfies AssistantMessage,
+      {
+        role: "toolResult",
+        toolCallId: "tc-2",
+        toolName: "take_note",
+        content: [{ type: "text", text: "Note recorded" }],
+        details: { noteIndex: 0, mergedCount: 0 },
+        isError: false,
+        timestamp: Date.now(),
+      } satisfies ToolResultMessage,
     ];
 
     const { notes, scrapedUrls } = rebuildStateFromMessages(messages);

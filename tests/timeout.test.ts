@@ -7,6 +7,7 @@ import type {
   AssistantMessage,
   UserMessage,
 } from "@mariozechner/pi-ai";
+import { getMaxDurationMs, getMaxDurationSeconds } from "../src/config.js";
 
 // We test buildResult and the timeout steering logic as exported from agent.ts
 // buildResult is not currently exported, so we'll test via the module boundary.
@@ -214,5 +215,29 @@ describe("buildResult with partial reports", () => {
 
     const result = buildResult(notes, "test topic", messages);
     expect(result.report).toContain("[Partial results");
+  });
+});
+
+describe("max duration config", () => {
+  const originalMaxDuration = process.env.MAX_DURATION;
+
+  afterEach(() => {
+    if (originalMaxDuration === undefined) {
+      delete process.env.MAX_DURATION;
+    } else {
+      process.env.MAX_DURATION = originalMaxDuration;
+    }
+  });
+
+  it("uses 20 minutes by default in both seconds and milliseconds", () => {
+    delete process.env.MAX_DURATION;
+    expect(getMaxDurationSeconds()).toBe(1200);
+    expect(getMaxDurationMs()).toBe(1_200_000);
+  });
+
+  it("converts MAX_DURATION from seconds to milliseconds", () => {
+    process.env.MAX_DURATION = "90";
+    expect(getMaxDurationSeconds()).toBe(90);
+    expect(getMaxDurationMs()).toBe(90_000);
   });
 });

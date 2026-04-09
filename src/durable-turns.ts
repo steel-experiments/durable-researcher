@@ -237,9 +237,9 @@ function formatToolArgs(toolName: string, args: Record<string, unknown>): string
 /**
  * Rebuild in-memory state from replayed messages.
  *
- * Walks through tool result messages to reconstruct:
- * - notes: from take_note tool results
- * - scrapedUrls: from browse_url tool results
+ * Walks through assistant tool calls and successful tool result messages to reconstruct:
+ * - notes: from successful take_note tool executions
+ * - scrapedUrls: from successful browse_url/prefetch_sources/scout tool executions
  */
 export function rebuildStateFromMessages(messages: AgentMessage[]): {
   notes: ResearchNote[];
@@ -247,11 +247,13 @@ export function rebuildStateFromMessages(messages: AgentMessage[]): {
 } {
   const notes: ResearchNote[] = [];
   const scrapedUrls = new Set<string>();
+  const noteCalls = new Map<string, ResearchNote>();
+  const browseCalls = new Map<string, string>();
 
   for (const msg of messages) {
     if (!("role" in msg)) continue;
 
-    // Extract notes and scraped URLs from assistant tool calls
+    // Record tool call arguments so successful tool results can be replayed safely.
     if (msg.role === "assistant") {
       for (const content of msg.content) {
         if (content.type !== "toolCall") continue;
@@ -263,7 +265,7 @@ export function rebuildStateFromMessages(messages: AgentMessage[]): {
             sourceUrls: string[];
             confidence: "high" | "medium" | "low";
           };
-          notes.push({
+          noteCalls.set(content.id, {
             title: args.title,
             content: args.content,
             sourceUrls: args.sourceUrls,
@@ -271,13 +273,27 @@ export function rebuildStateFromMessages(messages: AgentMessage[]): {
           });
         } else if (content.name === "browse_url") {
           const args = content.arguments as { url: string };
-          scrapedUrls.add(args.url);
+          browseCalls.set(content.id, args.url);
         }
       }
     }
 
-    // Extract scraped URLs from prefetch_sources and scout tool results
-    if (msg.role === "toolResult" && (msg.toolName === "prefetch_sources" || msg.toolName === "scout")) {
+    if (msg.role !== "toolResult" || msg.isError) continue;
+
+    if (msg.toolName === "take_note") {
+      const note = noteCalls.get(msg.toolCallId);
+      if (note) notes.push(note);
+      continue;
+    }
+
+    if (msg.toolName === "browse_url") {
+      const url = browseCalls.get(msg.toolCallId);
+      if (url) scrapedUrls.add(url);
+      continue;
+    }
+
+    // Extract scraped URLs from prefetch_sources and scout tool results.
+    if (msg.toolName === "prefetch_sources" || msg.toolName === "scout") {
       const details = msg.details as {
         browsedUrls?: string[];
       } | undefined;

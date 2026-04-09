@@ -9,7 +9,12 @@ import {
   type AgentMessage,
 } from "@mariozechner/pi-agent-core";
 import { getEnvApiKey, type Message, type Model, type Api } from "@mariozechner/pi-ai";
-import { getAgentModel, getAgentReasoning, getMaxDuration } from "./config.js";
+import {
+  getAgentModel,
+  getAgentReasoning,
+  getMaxDurationMs,
+  getMaxDurationSeconds,
+} from "./config.js";
 import type { ResearchParams, ResearchResult, MessageLogEntry } from "./types.js";
 import { DEPTH_CONFIG } from "./types.js";
 import { createSteelClient } from "./steel-client.js";
@@ -172,7 +177,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
     {
       name: "research",
       defaultMaxAttempts: 3,
-      defaultCancellation: { maxDuration: getMaxDuration() },
+      defaultCancellation: { maxDuration: getMaxDurationSeconds() },
     },
     async (params, ctx) => {
       const steelClient = createSteelClient();
@@ -248,7 +253,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
 
       // Timeout handling: detect approaching deadline and force report
       const taskStartTime = Date.now();
-      const maxDuration = getMaxDuration();
+      const maxDuration = getMaxDurationMs();
       const TIMEOUT_BUFFER = 60_000;
       const timeoutCheck = createTimeoutSteeringCheck(taskStartTime, maxDuration, TIMEOUT_BUFFER);
 

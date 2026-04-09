@@ -142,6 +142,15 @@ describe("scoreRelevance", () => {
     expect(score).toBe(0);
   });
 
+  it("scores one-word topics when the result clearly matches", () => {
+    const result: SearchResult = {
+      title: "OpenAI launches new API",
+      url: "https://openai.com/blog/new-api",
+      snippet: "New API features from OpenAI",
+    };
+    expect(scoreRelevance(result, "OpenAI")).toBeGreaterThan(0);
+  });
+
   it("scores dictionary pages matching one topic word as zero", () => {
     const result: SearchResult = {
       title: "TRUSTWORTHY Definition & Meaning - Merriam-Webster",
@@ -223,5 +232,15 @@ describe("filterByRelevance", () => {
     ];
     const filtered = filterByRelevance(results, topic);
     expect(filtered).toHaveLength(0);
+  });
+
+  it("keeps relevant results for one-word topics", () => {
+    const results: SearchResult[] = [
+      { title: "OpenAI launches new API", url: "https://openai.com/blog", snippet: "New API capabilities" },
+      { title: "Cooking Recipes Blog", url: "https://example.com/recipes", snippet: "Pasta and soup ideas" },
+    ];
+    const filtered = filterByRelevance(results, "OpenAI");
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0].url).toBe("https://openai.com/blog");
   });
 });
