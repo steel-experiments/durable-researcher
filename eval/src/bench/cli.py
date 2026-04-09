@@ -204,7 +204,14 @@ def _resolve_judge_config(benchmark: str) -> dict:
     if thinking_level == "none" or thinking_level == "off" or thinking_level == "disabled":
         thinking_level = None
 
-    return {"model": model, "temperature": temperature, "thinking_level": thinking_level}
+    # Rate limit: requests per minute (0 = no limit)
+    rpm_str = (
+        os.environ.get(f"{bm}_JUDGE_RPM")
+        or os.environ.get("JUDGE_RPM")
+    )
+    rpm = int(rpm_str) if rpm_str else 0
+
+    return {"model": model, "temperature": temperature, "thinking_level": thinking_level, "rpm": rpm}
 
 
 @app.command()
@@ -221,7 +228,7 @@ def judge(
 ) -> None:
     """Judge agent reports using LLM-as-judge with benchmark-specific prompts and config."""
     from bench.data import load_benchmark
-    from bench.judge import Judge, estimate_batch_cost
+    from bench.judge import Judge, RateLimitExceeded, estimate_batch_cost
 
     # Resolve config: CLI --model overrides env vars, which override paper defaults
     config = _resolve_judge_config(benchmark)
@@ -255,6 +262,8 @@ def judge(
         config_desc += f", temp={config['temperature']}"
     if config["thinking_level"]:
         config_desc += f", thinking={config['thinking_level']}"
+    if config["rpm"]:
+        config_desc += f", rpm={config['rpm']}"
 
     console.print(
         f"Judging {len(judge_tasks)} tasks from {benchmark} "
@@ -268,6 +277,7 @@ def judge(
         max_concurrent=concurrency,
         temperature=config["temperature"],
         thinking_level=config["thinking_level"],
+        rpm=config["rpm"],
     )
 
     # Cost estimate and confirmation
@@ -323,7 +333,12 @@ def judge(
             ) as progress:
                 return await j.judge_benchmark(judge_tasks, bench_results_dir, skip_canary=True, progress=progress)
 
-        all_verdicts = asyncio.run(_run_with_progress())
+        try:
+            all_verdicts = asyncio.run(_run_with_progress())
+        except RateLimitExceeded as e:
+            console.print(f"\n[red bold]RATE LIMIT ABORT:[/red bold] {e}")
+            console.print("[yellow]Partial results saved. Re-run to resume from where it stopped.[/yellow]")
+            raise typer.Exit(1)
 
     total_criteria = sum(len(v) for v in all_verdicts.values())
     total_met = sum(sum(1 for v in vs if v.met) for vs in all_verdicts.values())

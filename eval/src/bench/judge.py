@@ -361,6 +361,36 @@ def _is_gemini_model(model: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Rate limiter
+# ---------------------------------------------------------------------------
+
+class RateLimiter:
+    """Async token-bucket rate limiter that enforces requests-per-minute."""
+
+    def __init__(self, rpm: int):
+        self.rpm = rpm
+        self.interval = 60.0 / rpm if rpm > 0 else 0
+        self._lock = asyncio.Lock()
+        self._last_request = 0.0
+
+    async def acquire(self) -> None:
+        """Wait until a request slot is available."""
+        if self.interval <= 0:
+            return
+        async with self._lock:
+            now = time.monotonic()
+            wait = self._last_request + self.interval - now
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._last_request = time.monotonic()
+
+
+class RateLimitExceeded(Exception):
+    """Raised when too many consecutive rate limit errors occur."""
+    pass
+
+
+# ---------------------------------------------------------------------------
 # Batch pricing (per 1M tokens) — 50% of standard pricing
 # ---------------------------------------------------------------------------
 
@@ -453,16 +483,29 @@ class Judge:
         max_retries: int = 3,
         temperature: float | None = None,
         thinking_level: str | None = None,
+        rpm: int = 0,
+        max_consecutive_failures: int = 5,
     ):
         self.model = model
         self.benchmark = benchmark
         self.max_retries = max_retries
         self.temperature = temperature
         self.thinking_level = thinking_level
+        self.max_consecutive_failures = max_consecutive_failures
+        self._consecutive_failures = 0
+        self._failure_lock = asyncio.Lock()
+        self._aborted = False
+
+        # Rate limiter: if RPM is set, space requests accordingly
+        self._rate_limiter = RateLimiter(rpm) if rpm > 0 else None
+
         # Z.ai has lower rate limits — cap concurrency automatically
         effective_concurrent = max_concurrent
         if _is_zai_model(model) and max_concurrent > 5:
             effective_concurrent = 5
+        # If RPM is set, cap concurrency to avoid burst
+        if rpm > 0:
+            effective_concurrent = min(effective_concurrent, max(1, rpm // 4))
         self._sem = asyncio.Semaphore(effective_concurrent)
         self._use_gemini = _is_gemini_model(model)
         self._use_zai = _is_zai_model(model)
@@ -595,6 +638,18 @@ class Judge:
             tokens = (response.usage.prompt_tokens or 0) + (response.usage.completion_tokens or 0)
         return raw, tokens
 
+    async def _track_failure(self) -> None:
+        """Increment consecutive failure count and abort if threshold reached."""
+        async with self._failure_lock:
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= self.max_consecutive_failures:
+                self._aborted = True
+
+    async def _track_success(self) -> None:
+        """Reset consecutive failure count on success."""
+        async with self._failure_lock:
+            self._consecutive_failures = 0
+
     async def judge_criterion(
         self,
         report: str,
@@ -603,12 +658,22 @@ class Judge:
         query: str = "",
     ) -> Verdict:
         """Judge a single criterion against a report."""
+        if self._aborted:
+            raise RateLimitExceeded("Run aborted due to consecutive rate limit failures")
+
         system_prompt = get_system_prompt(self.benchmark)
         user_prompt = build_user_prompt(report, criterion, self.benchmark, query)
         start = time.monotonic()
 
         for attempt in range(self.max_retries):
+            if self._aborted:
+                raise RateLimitExceeded("Run aborted due to consecutive rate limit failures")
+
             try:
+                # Rate limit: wait for a slot before acquiring the semaphore
+                if self._rate_limiter:
+                    await self._rate_limiter.acquire()
+
                 async with self._sem:
                     if self._use_gemini:
                         raw, tokens = await self._judge_gemini(system_prompt, user_prompt)
@@ -616,6 +681,8 @@ class Judge:
                         raw, tokens = await self._judge_zai(system_prompt, user_prompt)
                     else:
                         raw, tokens = await self._judge_anthropic(system_prompt, user_prompt)
+
+                await self._track_success()
                 elapsed = time.monotonic() - start
                 verdict = parse_verdict_response(raw, task_id, criterion.id)
                 return Verdict(
@@ -628,12 +695,24 @@ class Judge:
                     model=self.model,
                     duration_seconds=round(elapsed, 2),
                 )
+            except RateLimitExceeded:
+                raise
             except Exception as e:
+                is_rate_limit = "429" in str(e) or "rate" in str(e).lower() or "quota" in str(e).lower()
+                if is_rate_limit:
+                    await self._track_failure()
+                    if self._aborted:
+                        raise RateLimitExceeded(
+                            f"Aborting: {self._consecutive_failures} consecutive rate limit errors. "
+                            f"Last error: {e}. "
+                            f"Set JUDGE_RPM to throttle requests."
+                        ) from e
+
                 if attempt < self.max_retries - 1:
-                    await asyncio.sleep(2**attempt)
+                    backoff = (2 ** attempt) * (5 if is_rate_limit else 1)
+                    await asyncio.sleep(backoff)
                     continue
-                # Don't save a fake verdict — raise so the criterion stays
-                # unjudged and gets retried on the next run via resume support
+
                 raise RuntimeError(
                     f"Failed to judge criterion {criterion.id} "
                     f"after {self.max_retries} retries: {e}"
@@ -647,9 +726,12 @@ class Judge:
         task_id: str,
         results_dir: Path,
         query: str = "",
-        on_criterion_done: Callable[[], None] | None = None,
+        on_criterion_done: Callable[[bool], None] | None = None,
     ) -> list[Verdict]:
-        """Judge all criteria for a single task with resume support."""
+        """Judge all criteria for a single task with resume support.
+
+        on_criterion_done: called with True on success, False on failure.
+        """
         report = report_path.read_text()
         verdicts_path = results_dir / f"{task_id}.jsonl"
 
@@ -664,17 +746,25 @@ class Judge:
                 verdict = await self.judge_criterion(report, criterion, task_id, query)
                 save_verdict(verdict, verdicts_path)
                 if on_criterion_done:
-                    on_criterion_done()
+                    on_criterion_done(True)
                 return verdict
-            except RuntimeError:
-                # Rate limit or API failure — don't save, will be retried next run
+            except RateLimitExceeded:
                 if on_criterion_done:
-                    on_criterion_done()
+                    on_criterion_done(False)
+                raise  # Propagate to cancel remaining work
+            except RuntimeError:
+                if on_criterion_done:
+                    on_criterion_done(False)
                 return None
 
-        new_verdicts = await asyncio.gather(
-            *[_judge_and_save(c) for c in remaining]
-        )
+        try:
+            new_verdicts = await asyncio.gather(
+                *[_judge_and_save(c) for c in remaining]
+            )
+        except RateLimitExceeded:
+            # Some criteria succeeded before the abort — load what we have
+            return load_existing_verdicts(verdicts_path)
+
         successful = [v for v in new_verdicts if v is not None]
         return existing + successful
 
@@ -728,28 +818,35 @@ class Judge:
 
         tasks: list of (task_id, report_path, criteria, query) tuples.
         progress: optional Rich Progress instance for live display.
+        Raises RateLimitExceeded if too many consecutive failures.
         """
         if not skip_canary:
             await self.canary_check(tasks, results_dir)
 
         results_dir.mkdir(parents=True, exist_ok=True)
         all_verdicts: dict[str, list[Verdict]] = {}
+        failed_count = 0
 
         for i, (task_id, report_path, criteria, query) in enumerate(tasks, 1):
+            if self._aborted:
+                break
+
             task_label = f"[{i}/{len(tasks)}] {task_id[:12]}…"
 
             if progress:
                 task_bar = progress.add_task(
                     task_label, total=len(criteria),
                 )
-                # Count skipped (already judged) criteria
                 existing = load_existing_verdicts(results_dir / f"{task_id}.jsonl")
                 skipped = len(criteria) - len(self.remaining_criteria(criteria, existing))
                 if skipped > 0:
                     progress.advance(task_bar, skipped)
 
-                def _advance(bar=task_bar):
+                def _advance(success: bool, bar=task_bar):
+                    nonlocal failed_count
                     progress.advance(bar)
+                    if not success:
+                        failed_count += 1
 
                 verdicts = await self.judge_task(
                     report_path, criteria, task_id, results_dir, query,
@@ -761,6 +858,14 @@ class Judge:
                 )
 
             all_verdicts[task_id] = verdicts
+
+        if self._aborted:
+            raise RateLimitExceeded(
+                f"Run aborted after {self._consecutive_failures} consecutive rate limit errors. "
+                f"{failed_count} criteria skipped. "
+                f"Saved verdicts are preserved — re-run to resume. "
+                f"Consider setting JUDGE_RPM or using --batch mode."
+            )
 
         return all_verdicts
 
