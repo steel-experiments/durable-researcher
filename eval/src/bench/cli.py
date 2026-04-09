@@ -179,7 +179,7 @@ def _resolve_judge_config(benchmark: str) -> dict:
             "thinking_level": None,
         },
         "draco": {
-            "model": "gemini-3-pro-preview",
+            "model": "gemini-3.1-pro-preview",
             "temperature": 0.2,
             "thinking_level": "low",
         },

@@ -368,6 +368,7 @@ BATCH_PRICING: dict[str, dict[str, float]] = {
     "gemini-2.5-pro-preview-06-05": {"input": 0.625, "output": 5.00},
     "gemini-2.5-pro": {"input": 0.625, "output": 5.00},
     "gemini-3-pro-preview": {"input": 1.00, "output": 6.00},
+    "gemini-3.1-pro-preview": {"input": 1.00, "output": 6.00},
 }
 
 # Fallback for unknown models — use gemini-2.5-pro pricing
@@ -441,7 +442,7 @@ class Judge:
 
     Per-benchmark configuration:
     - ResearchRubrics: gemini-2.5-pro-preview-06-05, no thinking, JSON response
-    - DRACO: gemini-3-pro-preview, thinking=low, temperature=0.2, raw JSON response
+    - DRACO: gemini-3.1-pro-preview, thinking=low, temperature=0.2, raw JSON response
     """
 
     def __init__(
