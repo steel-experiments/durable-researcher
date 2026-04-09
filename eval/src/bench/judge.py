@@ -328,6 +328,73 @@ def _is_gemini_model(model: str) -> bool:
     return model.startswith("gemini-")
 
 
+# ---------------------------------------------------------------------------
+# Batch pricing (per 1M tokens) — 50% of standard pricing
+# ---------------------------------------------------------------------------
+
+BATCH_PRICING: dict[str, dict[str, float]] = {
+    "gemini-2.5-pro-preview-06-05": {"input": 0.625, "output": 5.00},
+    "gemini-2.5-pro": {"input": 0.625, "output": 5.00},
+    "gemini-3-pro-preview": {"input": 1.00, "output": 6.00},
+}
+
+# Fallback for unknown models — use gemini-2.5-pro pricing
+_DEFAULT_BATCH_PRICING = {"input": 0.625, "output": 5.00}
+
+
+def estimate_batch_cost(
+    tasks: list[tuple[str, Path, list[Criterion], str]],
+    results_dir: Path,
+    model: str,
+    benchmark: str,
+) -> dict:
+    """Estimate cost for a batch judge run.
+
+    Returns dict with: total_criteria, remaining_criteria, est_input_tokens,
+    est_output_tokens, est_cost_usd, pricing_per_1m.
+    """
+    pricing = BATCH_PRICING.get(model, _DEFAULT_BATCH_PRICING)
+
+    total_criteria = 0
+    remaining_criteria = 0
+    est_input_chars = 0
+
+    system_prompt = get_system_prompt(benchmark)
+    system_chars = len(system_prompt)
+
+    for task_id, report_path, criteria, query in tasks:
+        total_criteria += len(criteria)
+        existing = load_existing_verdicts(results_dir / f"{task_id}.jsonl")
+        remaining = Judge.remaining_criteria(criteria, existing)
+        remaining_criteria += len(remaining)
+
+        if remaining:
+            report_chars = report_path.stat().st_size
+            for criterion in remaining:
+                # Each request: system prompt + user prompt (report + criterion + query)
+                criterion_chars = len(criterion.text) + len(criterion.section)
+                query_chars = len(query) if benchmark == "draco" else 0
+                est_input_chars += system_chars + report_chars + criterion_chars + query_chars + 200  # overhead
+
+    # Rough estimate: 1 token ≈ 4 characters
+    est_input_tokens = est_input_chars // 4
+    est_output_tokens = remaining_criteria * 150  # ~150 tokens per verdict JSON
+
+    est_cost = (
+        (est_input_tokens / 1_000_000) * pricing["input"]
+        + (est_output_tokens / 1_000_000) * pricing["output"]
+    )
+
+    return {
+        "total_criteria": total_criteria,
+        "remaining_criteria": remaining_criteria,
+        "est_input_tokens": est_input_tokens,
+        "est_output_tokens": est_output_tokens,
+        "est_cost_usd": est_cost,
+        "pricing": pricing,
+    }
+
+
 def _is_zai_model(model: str) -> bool:
     """Check if a model string refers to a Z.ai GLM model."""
     return model.startswith("glm-")
@@ -663,3 +730,216 @@ class Judge:
             all_verdicts[task_id] = verdicts
 
         return all_verdicts
+
+    def judge_batch(
+        self,
+        tasks: list[tuple[str, Path, list[Criterion], str]],
+        results_dir: Path,
+        on_status: Callable[[str], None] | None = None,
+        poll_interval: int = 15,
+    ) -> dict[str, list[Verdict]]:
+        """Judge all tasks using Gemini Batch API (synchronous, blocking).
+
+        Submits all unjudged criteria as a single batch job, polls for
+        completion, then parses and saves results. Only supports Gemini models.
+        """
+        if not self._use_gemini:
+            raise ValueError("Batch mode is only supported for Gemini models")
+
+        from google.genai import types
+        import time as _time
+
+        results_dir.mkdir(parents=True, exist_ok=True)
+        system_prompt = get_system_prompt(self.benchmark)
+
+        # Build batch requests for all unjudged criteria
+        batch_requests: list[dict] = []
+        request_keys: list[str] = []
+        request_map: dict[str, tuple[str, str]] = {}  # key → (task_id, criterion_id)
+
+        for task_id, report_path, criteria, query in tasks:
+            report = report_path.read_text()
+            existing = load_existing_verdicts(results_dir / f"{task_id}.jsonl")
+            remaining = self.remaining_criteria(criteria, existing)
+
+            for criterion in remaining:
+                key = f"{task_id}:{criterion.id}"
+                user_prompt = build_user_prompt(report, criterion, self.benchmark, query)
+
+                request_config: dict = {
+                    "system_instruction": {"parts": [{"text": system_prompt}]},
+                    "max_output_tokens": 50000,
+                }
+                if self.temperature is not None:
+                    request_config["temperature"] = self.temperature
+
+                if self.thinking_level:
+                    level_map = {
+                        "low": "LOW", "medium": "MEDIUM",
+                        "high": "HIGH", "minimal": "MINIMAL",
+                    }
+                    level_str = level_map.get(self.thinking_level)
+                    if level_str:
+                        request_config["thinking_config"] = {"thinking_level": level_str}
+                else:
+                    request_config["response_mime_type"] = "application/json"
+
+                batch_requests.append({
+                    "key": key,
+                    "request": {
+                        "contents": [{"parts": [{"text": user_prompt}], "role": "user"}],
+                        "config": request_config,
+                    },
+                })
+                request_keys.append(key)
+                request_map[key] = (task_id, criterion.id)
+
+        if not batch_requests:
+            if on_status:
+                on_status("All criteria already judged")
+            all_verdicts: dict[str, list[Verdict]] = {}
+            for task_id, _, criteria, _ in tasks:
+                all_verdicts[task_id] = load_existing_verdicts(results_dir / f"{task_id}.jsonl")
+            return all_verdicts
+
+        # Submit: use JSONL file for large batches, inline for small ones
+        if on_status:
+            on_status(f"Submitting {len(batch_requests)} criteria...")
+
+        use_file = len(batch_requests) > 200
+
+        if use_file:
+            import tempfile
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".jsonl", delete=False, prefix="batch_judge_"
+            ) as f:
+                for req in batch_requests:
+                    f.write(json.dumps(req) + "\n")
+                tmp_path = f.name
+
+            uploaded = self._gemini_client.files.upload(
+                file=tmp_path,
+                config=types.UploadFileConfig(
+                    display_name=f"judge-{self.benchmark}",
+                    mime_type="jsonl",
+                ),
+            )
+            os.unlink(tmp_path)
+
+            batch_job = self._gemini_client.batches.create(
+                model=self.model,
+                src=uploaded.name,
+                config={"display_name": f"judge-{self.benchmark}"},
+            )
+        else:
+            batch_job = self._gemini_client.batches.create(
+                model=self.model,
+                src=batch_requests,
+                config={"display_name": f"judge-{self.benchmark}"},
+            )
+
+        if on_status:
+            on_status(f"Batch job created: {batch_job.name}")
+
+        # Poll for completion
+        completed_states = {"JOB_STATE_SUCCEEDED", "JOB_STATE_FAILED",
+                           "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED"}
+
+        while True:
+            batch_job = self._gemini_client.batches.get(name=batch_job.name)
+            state = batch_job.state.name
+            if state in completed_states:
+                break
+            stats = ""
+            if batch_job.batch_stats:
+                bs = batch_job.batch_stats
+                done = (bs.successful_request_count or 0) + (bs.failed_request_count or 0)
+                total = bs.total_request_count or len(batch_requests)
+                stats = f" ({done}/{total} done)"
+            if on_status:
+                on_status(f"{state}{stats}")
+            _time.sleep(poll_interval)
+
+        if batch_job.state.name != "JOB_STATE_SUCCEEDED":
+            raise RuntimeError(
+                f"Batch job {batch_job.name} finished with state: {batch_job.state.name}"
+            )
+
+        if on_status:
+            on_status("Batch succeeded — downloading results...")
+
+        # Parse results
+        total_tokens = 0
+        verdicts_saved = 0
+
+        if batch_job.dest and batch_job.dest.file_name:
+            content_bytes = self._gemini_client.files.download(
+                file=batch_job.dest.file_name
+            )
+            content = content_bytes.decode("utf-8")
+            for line in content.splitlines():
+                if not line.strip():
+                    continue
+                entry = json.loads(line)
+                key = entry.get("key", "")
+                if key not in request_map:
+                    continue
+                task_id, criterion_id = request_map[key]
+                self._save_batch_response(entry.get("response"), task_id, criterion_id, results_dir)
+                verdicts_saved += 1
+
+        elif batch_job.dest and batch_job.dest.inlined_responses:
+            for i, inline_resp in enumerate(batch_job.dest.inlined_responses):
+                if i >= len(request_keys):
+                    break
+                key = request_keys[i]
+                task_id, criterion_id = request_map[key]
+
+                if inline_resp.response:
+                    raw_text = inline_resp.response.text or ""
+                    tokens = 0
+                    if inline_resp.response.usage_metadata:
+                        um = inline_resp.response.usage_metadata
+                        tokens = (um.prompt_token_count or 0) + (um.candidates_token_count or 0)
+                    total_tokens += tokens
+
+                    verdict = parse_verdict_response(raw_text, task_id, criterion_id)
+                    save_verdict(Verdict(
+                        task_id=verdict.task_id, criterion_id=verdict.criterion_id,
+                        met=verdict.met, confidence=verdict.confidence,
+                        reasoning=verdict.reasoning, tokens_used=tokens,
+                        model=self.model, duration_seconds=0.0,
+                    ), results_dir / f"{task_id}.jsonl")
+                    verdicts_saved += 1
+
+        if on_status:
+            on_status(f"Saved {verdicts_saved} verdicts")
+
+        # Load all verdicts (existing + new batch results)
+        all_verdicts_final: dict[str, list[Verdict]] = {}
+        for task_id, _, criteria, _ in tasks:
+            all_verdicts_final[task_id] = load_existing_verdicts(results_dir / f"{task_id}.jsonl")
+        return all_verdicts_final
+
+    def _save_batch_response(
+        self, response: dict | None, task_id: str, criterion_id: str, results_dir: Path
+    ) -> None:
+        """Parse and save a single batch response entry."""
+        if not response:
+            return
+        raw_text = ""
+        tokens = 0
+        if "candidates" in response and response["candidates"]:
+            parts = response["candidates"][0].get("content", {}).get("parts", [])
+            raw_text = "".join(p.get("text", "") for p in parts)
+        if "usageMetadata" in response:
+            um = response["usageMetadata"]
+            tokens = (um.get("promptTokenCount", 0) + um.get("candidatesTokenCount", 0))
+
+        verdict = parse_verdict_response(raw_text, task_id, criterion_id)
+        save_verdict(Verdict(
+            task_id=verdict.task_id, criterion_id=verdict.criterion_id,
+            met=verdict.met, confidence=verdict.confidence,
+            reasoning=verdict.reasoning, tokens_used=tokens,
+            model=self.model, duration_seconds=0.0,
+        ), results_dir / f"{task_id}.jsonl")

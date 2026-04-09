@@ -216,10 +216,12 @@ def judge(
     model: Optional[str] = typer.Option(None, help="Override judge model"),
     concurrency: int = typer.Option(20, help="Max concurrent judge API calls"),
     limit: Optional[int] = typer.Option(None, help="Max tasks to judge"),
+    batch: bool = typer.Option(False, help="Use Gemini Batch API (50% cost, async)"),
+    yes: bool = typer.Option(False, "-y", "--yes", help="Skip confirmation prompts"),
 ) -> None:
     """Judge agent reports using LLM-as-judge with benchmark-specific prompts and config."""
     from bench.data import load_benchmark
-    from bench.judge import Judge
+    from bench.judge import Judge, estimate_batch_cost
 
     # Resolve config: CLI --model overrides env vars, which override paper defaults
     config = _resolve_judge_config(benchmark)
@@ -268,28 +270,60 @@ def judge(
         thinking_level=config["thinking_level"],
     )
 
-    # Canary check before full run
-    with console.status("Running canary check (1 criterion)..."):
-        try:
-            asyncio.run(j.canary_check(judge_tasks, bench_results_dir))
-        except RuntimeError as e:
-            console.print(f"[red]Canary check failed:[/red] {e}")
+    # Cost estimate and confirmation
+    estimate = estimate_batch_cost(judge_tasks, bench_results_dir, config["model"], benchmark)
+    if estimate["remaining_criteria"] == 0:
+        console.print("[yellow]All criteria already judged — nothing to do.[/yellow]")
+        raise typer.Exit(0)
+
+    mode_label = "batch (50% off)" if batch else "real-time"
+    cost_multiplier = 1.0 if batch else 2.0  # estimate uses batch pricing, double for real-time
+    est_cost = estimate["est_cost_usd"] * cost_multiplier
+
+    console.print(f"\n  Criteria to judge: [bold]{estimate['remaining_criteria']}[/bold] of {estimate['total_criteria']} ({estimate['total_criteria'] - estimate['remaining_criteria']} cached)")
+    console.print(f"  Estimated tokens:  ~{estimate['est_input_tokens']:,} input + ~{estimate['est_output_tokens']:,} output")
+    console.print(f"  Estimated cost:    [bold]${est_cost:.2f}[/bold] ({mode_label})")
+    console.print()
+
+    if not yes:
+        confirm = typer.confirm("Proceed?", default=True)
+        if not confirm:
+            console.print("[yellow]Aborted.[/yellow]")
+            raise typer.Exit(0)
+
+    if batch:
+        # Batch mode — Gemini only
+        if not config["model"].startswith("gemini-"):
+            console.print("[red]Batch mode is only supported for Gemini models.[/red]")
             raise typer.Exit(1)
-    console.print("[green]Canary passed[/green] — proceeding with full run")
 
-    from rich.progress import Progress, BarColumn, TextColumn, MofNCompleteColumn, TimeElapsedColumn
+        all_verdicts = j.judge_batch(
+            judge_tasks, bench_results_dir,
+            on_status=lambda msg: console.print(f"  [dim]{msg}[/dim]"),
+        )
+    else:
+        # Real-time mode — canary check first
+        with console.status("Running canary check (1 criterion)..."):
+            try:
+                asyncio.run(j.canary_check(judge_tasks, bench_results_dir))
+            except RuntimeError as e:
+                console.print(f"[red]Canary check failed:[/red] {e}")
+                raise typer.Exit(1)
+        console.print("[green]Canary passed[/green] — proceeding with full run")
 
-    async def _run_with_progress():
-        with Progress(
-            TextColumn("[bold]{task.description}"),
-            BarColumn(),
-            MofNCompleteColumn(),
-            TimeElapsedColumn(),
-            console=console,
-        ) as progress:
-            return await j.judge_benchmark(judge_tasks, bench_results_dir, skip_canary=True, progress=progress)
+        from rich.progress import Progress, BarColumn, TextColumn, MofNCompleteColumn, TimeElapsedColumn
 
-    all_verdicts = asyncio.run(_run_with_progress())
+        async def _run_with_progress():
+            with Progress(
+                TextColumn("[bold]{task.description}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TimeElapsedColumn(),
+                console=console,
+            ) as progress:
+                return await j.judge_benchmark(judge_tasks, bench_results_dir, skip_canary=True, progress=progress)
+
+        all_verdicts = asyncio.run(_run_with_progress())
 
     total_criteria = sum(len(v) for v in all_verdicts.values())
     total_met = sum(sum(1 for v in vs if v.met) for vs in all_verdicts.values())
