@@ -403,7 +403,7 @@ class Judge:
         """Call Anthropic Claude and return (raw_text, tokens_used)."""
         kwargs: dict = {
             "model": self.model,
-            "max_tokens": 50000,
+            "max_tokens": 4096,
             "system": system_prompt,
             "messages": [{"role": "user", "content": user_prompt}],
         }
