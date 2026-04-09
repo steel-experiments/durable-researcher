@@ -328,12 +328,17 @@ def _is_gemini_model(model: str) -> bool:
     return model.startswith("gemini-")
 
 
+def _is_zai_model(model: str) -> bool:
+    """Check if a model string refers to a Z.ai GLM model."""
+    return model.startswith("glm-")
+
+
 # ---------------------------------------------------------------------------
 # Judge class
 # ---------------------------------------------------------------------------
 
 class Judge:
-    """LLM-as-judge supporting Anthropic Claude and Google Gemini models.
+    """LLM-as-judge supporting Anthropic Claude, Google Gemini, and Z.ai GLM models.
 
     Per-benchmark configuration:
     - ResearchRubrics: gemini-2.5-pro-preview-06-05, no thinking, JSON response
@@ -354,8 +359,13 @@ class Judge:
         self.max_retries = max_retries
         self.temperature = temperature
         self.thinking_level = thinking_level
-        self._sem = asyncio.Semaphore(max_concurrent)
+        # Z.ai has lower rate limits — cap concurrency automatically
+        effective_concurrent = max_concurrent
+        if _is_zai_model(model) and max_concurrent > 5:
+            effective_concurrent = 5
+        self._sem = asyncio.Semaphore(effective_concurrent)
         self._use_gemini = _is_gemini_model(model)
+        self._use_zai = _is_zai_model(model)
 
         if self._use_gemini:
             from google import genai
@@ -365,6 +375,17 @@ class Judge:
                     "GEMINI_API_KEY environment variable is required for Gemini judge models"
                 )
             self._gemini_client = genai.Client(api_key=api_key)
+        elif self._use_zai:
+            from openai import AsyncOpenAI
+            api_key = os.environ.get("ZAI_API_KEY")
+            if not api_key:
+                raise ValueError(
+                    "ZAI_API_KEY environment variable is required for Z.ai judge models"
+                )
+            self._zai_client = AsyncOpenAI(
+                api_key=api_key,
+                base_url="https://api.z.ai/api/paas/v4/",
+            )
         else:
             self._anthropic_client = anthropic.AsyncAnthropic()
 
@@ -451,6 +472,29 @@ class Judge:
             )
         return raw, tokens
 
+    async def _judge_zai(
+        self, system_prompt: str, user_prompt: str
+    ) -> tuple[str, int]:
+        """Call Z.ai GLM via OpenAI-compatible API and return (raw_text, tokens_used)."""
+        kwargs: dict = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "max_tokens": 4096,
+        }
+        if self.temperature is not None:
+            kwargs["temperature"] = self.temperature
+
+        response = await self._zai_client.chat.completions.create(**kwargs)
+
+        raw = response.choices[0].message.content or ""
+        tokens = 0
+        if response.usage:
+            tokens = (response.usage.prompt_tokens or 0) + (response.usage.completion_tokens or 0)
+        return raw, tokens
+
     async def judge_criterion(
         self,
         report: str,
@@ -468,6 +512,8 @@ class Judge:
                 async with self._sem:
                     if self._use_gemini:
                         raw, tokens = await self._judge_gemini(system_prompt, user_prompt)
+                    elif self._use_zai:
+                        raw, tokens = await self._judge_zai(system_prompt, user_prompt)
                     else:
                         raw, tokens = await self._judge_anthropic(system_prompt, user_prompt)
                 elapsed = time.monotonic() - start
@@ -520,22 +566,57 @@ class Judge:
         if not remaining:
             return existing
 
-        async def _judge_and_save(criterion: Criterion) -> Verdict:
-            verdict = await self.judge_criterion(report, criterion, task_id, query)
-            save_verdict(verdict, verdicts_path)
-            if on_criterion_done:
-                on_criterion_done()
-            return verdict
+        async def _judge_and_save(criterion: Criterion) -> Verdict | None:
+            try:
+                verdict = await self.judge_criterion(report, criterion, task_id, query)
+                save_verdict(verdict, verdicts_path)
+                if on_criterion_done:
+                    on_criterion_done()
+                return verdict
+            except RuntimeError:
+                # Rate limit or API failure — don't save, will be retried next run
+                if on_criterion_done:
+                    on_criterion_done()
+                return None
 
         new_verdicts = await asyncio.gather(
             *[_judge_and_save(c) for c in remaining]
         )
-        return existing + list(new_verdicts)
+        successful = [v for v in new_verdicts if v is not None]
+        return existing + successful
+
+    async def canary_check(
+        self,
+        tasks: list[tuple[str, Path, list[Criterion], str]],
+    ) -> None:
+        """Judge a single criterion to verify API + parsing before full run.
+
+        Raises RuntimeError if the canary fails, preventing wasted token spend.
+        """
+        if not tasks:
+            return
+
+        task_id, report_path, criteria, query = tasks[0]
+        if not criteria:
+            return
+
+        report = report_path.read_text()
+        criterion = criteria[0]
+
+        verdict = await self.judge_criterion(report, criterion, task_id, query)
+
+        if verdict.reasoning.startswith("Failed to parse") or verdict.reasoning.startswith("API error"):
+            raise RuntimeError(
+                f"Canary check failed for model={self.model}: "
+                f"{verdict.reasoning}. "
+                f"Aborting before full run to avoid wasting tokens."
+            )
 
     async def judge_benchmark(
         self,
         tasks: list[tuple[str, Path, list[Criterion], str]],
         results_dir: Path,
+        skip_canary: bool = False,
         progress: Progress | None = None,
     ) -> dict[str, list[Verdict]]:
         """Judge all tasks in a benchmark.
@@ -543,6 +624,9 @@ class Judge:
         tasks: list of (task_id, report_path, criteria, query) tuples.
         progress: optional Rich Progress instance for live display.
         """
+        if not skip_canary:
+            await self.canary_check(tasks)
+
         results_dir.mkdir(parents=True, exist_ok=True)
         all_verdicts: dict[str, list[Verdict]] = {}
 

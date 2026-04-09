@@ -235,7 +235,7 @@ def judge(
         f"({config_desc}, concurrency={concurrency})"
     )
 
-    bench_results_dir = results_dir / benchmark
+    bench_results_dir = results_dir / benchmark / config["model"]
     j = Judge(
         model=config["model"],
         benchmark=benchmark,
@@ -243,6 +243,15 @@ def judge(
         temperature=config["temperature"],
         thinking_level=config["thinking_level"],
     )
+
+    # Canary check before full run
+    with console.status("Running canary check (1 criterion)..."):
+        try:
+            asyncio.run(j.canary_check(judge_tasks))
+        except RuntimeError as e:
+            console.print(f"[red]Canary check failed:[/red] {e}")
+            raise typer.Exit(1)
+    console.print("[green]Canary passed[/green] — proceeding with full run")
 
     from rich.progress import Progress, BarColumn, TextColumn, MofNCompleteColumn, TimeElapsedColumn
 
@@ -254,7 +263,7 @@ def judge(
             TimeElapsedColumn(),
             console=console,
         ) as progress:
-            return await j.judge_benchmark(judge_tasks, bench_results_dir, progress=progress)
+            return await j.judge_benchmark(judge_tasks, bench_results_dir, skip_canary=True, progress=progress)
 
     all_verdicts = asyncio.run(_run_with_progress())
 
@@ -270,6 +279,7 @@ def score(
     benchmark: str = typer.Argument(..., help="Benchmark: researchrubrics or draco"),
     data_dir: Path = typer.Option("data"),
     results_dir: Path = typer.Option("results"),
+    judge_model: Optional[str] = typer.Option(None, help="Judge model subdir to score"),
 ) -> None:
     """Compute scores from judge verdicts."""
     from bench.data import load_benchmark
@@ -278,7 +288,21 @@ def score(
 
     data_path = _resolve_data_path(benchmark, data_dir)
     tasks = load_benchmark(benchmark, data_path)
-    bench_results_dir = results_dir / benchmark
+
+    # Resolve judge model subdir: results/{benchmark}/{model}/
+    bench_base = results_dir / benchmark
+    if judge_model:
+        bench_results_dir = bench_base / judge_model
+    elif bench_base.exists() and any(p.is_dir() for p in bench_base.iterdir()):
+        models = sorted(p.name for p in bench_base.iterdir() if p.is_dir())
+        if models:
+            judge_model = models[0]
+            bench_results_dir = bench_base / judge_model
+            console.print(f"Auto-detected judge model: {judge_model}")
+        else:
+            bench_results_dir = bench_base
+    else:
+        bench_results_dir = bench_base
 
     scores = []
     for task in tasks:
@@ -321,6 +345,7 @@ def report(
     benchmark: str = typer.Argument(..., help="Benchmark: researchrubrics or draco"),
     data_dir: Path = typer.Option("data"),
     results_dir: Path = typer.Option("results"),
+    judge_model: Optional[str] = typer.Option(None, help="Judge model subdir to report on"),
     output: Optional[Path] = typer.Option(None, help="Output path for report markdown"),
 ) -> None:
     """Generate summary report from scores."""
@@ -331,7 +356,20 @@ def report(
 
     data_path = _resolve_data_path(benchmark, data_dir)
     tasks = load_benchmark(benchmark, data_path)
-    bench_results_dir = results_dir / benchmark
+
+    bench_base = results_dir / benchmark
+    if judge_model:
+        bench_results_dir = bench_base / judge_model
+    elif bench_base.exists() and any(p.is_dir() for p in bench_base.iterdir()):
+        models = sorted(p.name for p in bench_base.iterdir() if p.is_dir())
+        if models:
+            judge_model = models[0]
+            bench_results_dir = bench_base / judge_model
+            console.print(f"Auto-detected judge model: {judge_model}")
+        else:
+            bench_results_dir = bench_base
+    else:
+        bench_results_dir = bench_base
 
     scores = []
     for task in tasks:
