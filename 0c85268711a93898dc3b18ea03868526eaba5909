@@ -1,0 +1,12 @@
+# Context
+
+## Background
+This commit fixes confirmed review findings in the durable runtime and includes the current eval response markdown files present in the worktree.
+
+## Why This Way
+- Replay now rebuilds browsed URLs and notes from successful tool results only, avoiding crash/resume state corruption.
+- Max-duration handling is split into seconds for Absurd APIs and milliseconds for local timers.
+- Relevance scoring now supports one-word topics without weakening broader multi-keyword filtering.
+
+## Gotchas
+The eval response files were committed as-is because the requested scope was to commit and push all current changes.
