@@ -1,5 +1,5 @@
 # ABOUTME: LLM-as-judge for binary criterion evaluation.
-# ABOUTME: Supports Anthropic Claude and Google Gemini with benchmark-specific prompts and configs.
+# ABOUTME: Supports Anthropic Claude, Google Gemini, and Z.ai GLM with benchmark-specific prompts and configs.
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import time
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
+from typing import Literal
 
 from rich.progress import Progress
 
@@ -357,7 +358,7 @@ def extract_batch_row_error(entry: dict) -> str | None:
 
 def _is_gemini_model(model: str) -> bool:
     """Check if a model string refers to a Google Gemini model."""
-    return model.startswith("gemini-")
+    return model.strip().lower().startswith("gemini-")
 
 
 # ---------------------------------------------------------------------------
@@ -391,32 +392,170 @@ class RateLimitExceeded(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Batch pricing (per 1M tokens) — 50% of standard pricing
+# Pricing + concurrency metadata
 # ---------------------------------------------------------------------------
 
-BATCH_PRICING: dict[str, dict[str, float]] = {
+# Gemini batch pricing (per 1M tokens) — 50% of standard pricing
+GEMINI_BATCH_PRICING: dict[str, dict[str, float]] = {
     "gemini-2.5-pro-preview-06-05": {"input": 0.625, "output": 5.00},
     "gemini-2.5-pro": {"input": 0.625, "output": 5.00},
     "gemini-3-pro-preview": {"input": 1.00, "output": 6.00},
     "gemini-3.1-pro-preview": {"input": 1.00, "output": 6.00},
 }
 
-# Fallback for unknown models — use gemini-2.5-pro pricing
-_DEFAULT_BATCH_PRICING = {"input": 0.625, "output": 5.00}
+# Fallback for unknown Gemini models — use gemini-2.5-pro pricing.
+_DEFAULT_GEMINI_BATCH_PRICING = {"input": 0.625, "output": 5.00}
+
+# Gemini real-time pricing is 2x the batch pricing.
+GEMINI_REALTIME_PRICING: dict[str, dict[str, float]] = {
+    model: {"input": rates["input"] * 2, "output": rates["output"] * 2}
+    for model, rates in GEMINI_BATCH_PRICING.items()
+}
+_DEFAULT_GEMINI_REALTIME_PRICING = {
+    "input": _DEFAULT_GEMINI_BATCH_PRICING["input"] * 2,
+    "output": _DEFAULT_GEMINI_BATCH_PRICING["output"] * 2,
+}
+
+# Z.ai text model pricing from docs.z.ai/pricing (USD per 1M tokens).
+ZAI_REALTIME_PRICING: dict[str, dict[str, float]] = {
+    "glm-5.1": {"input": 1.40, "cached_input": 0.26, "output": 4.40},
+    "glm-5": {"input": 1.00, "cached_input": 0.20, "output": 3.20},
+    "glm-5-turbo": {"input": 1.20, "cached_input": 0.24, "output": 4.00},
+    "glm-4.7": {"input": 0.60, "cached_input": 0.11, "output": 2.20},
+    "glm-4.7-flashx": {"input": 0.07, "cached_input": 0.01, "output": 0.40},
+    "glm-4.6": {"input": 0.60, "cached_input": 0.11, "output": 2.20},
+    "glm-4.5": {"input": 0.60, "cached_input": 0.11, "output": 2.20},
+    "glm-4.5-x": {"input": 2.20, "cached_input": 0.45, "output": 8.90},
+    "glm-4.5-air": {"input": 0.20, "cached_input": 0.03, "output": 1.10},
+    "glm-4.5-airx": {"input": 1.10, "cached_input": 0.22, "output": 4.50},
+    "glm-4-32b-0414-128k": {"input": 0.10, "output": 0.10},
+    "glm-4.7-flash": {"input": 0.00, "cached_input": 0.00, "output": 0.00},
+    "glm-4.5-flash": {"input": 0.00, "cached_input": 0.00, "output": 0.00},
+}
+
+# Z.ai API concurrency limits from docs.z.ai/rate-limits for balance-based API use.
+ZAI_CONCURRENCY_LIMITS: dict[str, int] = {
+    "glm-4.6": 3,
+    "glm-4.6v-flashx": 3,
+    "glm-4.7": 2,
+    "glm-5-turbo": 1,
+    "glm-5v-turbo": 1,
+    "glm-5.1": 1,
+    "glm-4.5": 10,
+    "glm-4.6v": 10,
+    "glm-4.7-flash": 1,
+    "glm-4.7-flashx": 3,
+    "glm-ocr": 2,
+    "glm-5": 2,
+    "glm-4-plus": 20,
+    "glm-4.5v": 10,
+    "glm-4.6v-flash": 1,
+    "autoglm-phone-multilingual": 5,
+    "glm-4.5-air": 5,
+    "glm-4.5-airx": 5,
+    "glm-4.5-flash": 2,
+    "glm-4-32b-0414-128k": 15,
+}
 
 
-def estimate_batch_cost(
+def _normalize_model_name(model: str) -> str:
+    """Normalize provider model identifiers for table lookups."""
+    return model.strip().lower()
+
+
+def get_zai_concurrency_limit(model: str) -> int | None:
+    """Return the documented concurrency limit for a Z.ai model, if known."""
+    return ZAI_CONCURRENCY_LIMITS.get(_normalize_model_name(model))
+
+
+def resolve_effective_concurrency(model: str, requested: int) -> tuple[int, str | None]:
+    """Apply provider-specific concurrency caps and return (effective, note)."""
+    effective = max(1, requested)
+    if not _is_zai_model(model):
+        return effective, None
+
+    documented_limit = get_zai_concurrency_limit(model)
+    if documented_limit is None:
+        conservative_limit = 1
+        effective = min(effective, conservative_limit)
+        note = (
+            f"no documented Z.ai API concurrency limit found for {model}; "
+            f"using conservative cap={conservative_limit}"
+        )
+        return effective, note if requested > effective else note
+
+    if effective > documented_limit:
+        return (
+            documented_limit,
+            f"capped to documented Z.ai API concurrency limit for {model} ({documented_limit})",
+        )
+    return effective, None
+
+
+def _judge_provider(model: str) -> Literal["gemini", "zai", "anthropic"]:
+    """Identify the judge provider from the model name."""
+    if _is_gemini_model(model):
+        return "gemini"
+    if _is_zai_model(model):
+        return "zai"
+    return "anthropic"
+
+
+def _resolve_pricing(
+    model: str, mode: Literal["realtime", "batch"]
+) -> tuple[dict[str, float] | None, str, bool]:
+    """Resolve per-model pricing.
+
+    Returns (pricing, label, exact_match).
+    """
+    normalized = _normalize_model_name(model)
+    provider = _judge_provider(model)
+
+    if mode == "batch":
+        if provider != "gemini":
+            return None, "batch pricing unavailable for non-Gemini judges", False
+        pricing = GEMINI_BATCH_PRICING.get(normalized)
+        if pricing:
+            return pricing, "Gemini batch pricing", True
+        return (
+            _DEFAULT_GEMINI_BATCH_PRICING,
+            "Gemini batch pricing fallback",
+            False,
+        )
+
+    if provider == "gemini":
+        pricing = GEMINI_REALTIME_PRICING.get(normalized)
+        if pricing:
+            return pricing, "Gemini real-time pricing", True
+        return (
+            _DEFAULT_GEMINI_REALTIME_PRICING,
+            "Gemini real-time pricing fallback",
+            False,
+        )
+
+    if provider == "zai":
+        pricing = ZAI_REALTIME_PRICING.get(normalized)
+        if pricing:
+            return pricing, "Z.ai real-time pricing", True
+        return None, "Z.ai pricing unavailable for this model", False
+
+    return None, "pricing unavailable for this provider", False
+
+
+def estimate_judge_cost(
     tasks: list[tuple[str, Path, list[Criterion], str]],
     results_dir: Path,
     model: str,
     benchmark: str,
+    mode: Literal["realtime", "batch"] = "realtime",
+    thinking_level: str | None = None,
 ) -> dict:
-    """Estimate cost for a batch judge run.
+    """Estimate cost for a judge run.
 
     Returns dict with: total_criteria, remaining_criteria, est_input_tokens,
-    est_output_tokens, est_cost_usd, pricing_per_1m.
+    est_output_tokens, est_cost_usd, pricing, pricing_label, and pricing_exact.
     """
-    pricing = BATCH_PRICING.get(model, _DEFAULT_BATCH_PRICING)
+    pricing, pricing_label, pricing_exact = _resolve_pricing(model, mode)
 
     total_criteria = 0
     remaining_criteria = 0
@@ -441,12 +580,17 @@ def estimate_batch_cost(
 
     # Rough estimate: 1 token ≈ 4 characters
     est_input_tokens = est_input_chars // 4
-    est_output_tokens = remaining_criteria * 150  # ~150 tokens per verdict JSON
+    # Output tokens per verdict: thinking mode generates ~500 tokens (including
+    # thinking tokens), non-thinking mode ~150. Calibrated from actual batch runs.
+    tokens_per_output = 500 if thinking_level else 150
+    est_output_tokens = remaining_criteria * tokens_per_output
 
-    est_cost = (
-        (est_input_tokens / 1_000_000) * pricing["input"]
-        + (est_output_tokens / 1_000_000) * pricing["output"]
-    )
+    est_cost = None
+    if pricing:
+        est_cost = (
+            (est_input_tokens / 1_000_000) * pricing["input"]
+            + (est_output_tokens / 1_000_000) * pricing["output"]
+        )
 
     return {
         "total_criteria": total_criteria,
@@ -455,12 +599,15 @@ def estimate_batch_cost(
         "est_output_tokens": est_output_tokens,
         "est_cost_usd": est_cost,
         "pricing": pricing,
+        "pricing_label": pricing_label,
+        "pricing_exact": pricing_exact,
+        "mode": mode,
     }
 
 
 def _is_zai_model(model: str) -> bool:
     """Check if a model string refers to a Z.ai GLM model."""
-    return model.startswith("glm-")
+    return model.strip().lower().startswith("glm-")
 
 
 # ---------------------------------------------------------------------------
@@ -496,17 +643,15 @@ class Judge:
         self._failure_lock = asyncio.Lock()
         self._aborted = False
 
-        # Rate limiter: if RPM is set, space requests accordingly
+        # Rate limiter: if RPM is set, space requests accordingly.
+        # This is a manual throttle; it does not replace provider concurrency caps.
         self._rate_limiter = RateLimiter(rpm) if rpm > 0 else None
 
-        # Z.ai has lower rate limits — cap concurrency automatically
-        effective_concurrent = max_concurrent
-        if _is_zai_model(model) and max_concurrent > 5:
-            effective_concurrent = 5
-        # If RPM is set, cap concurrency to avoid burst
-        if rpm > 0:
-            effective_concurrent = min(effective_concurrent, max(1, rpm // 4))
-        self._sem = asyncio.Semaphore(effective_concurrent)
+        # Apply provider-specific concurrency caps.
+        self.effective_concurrency, self.concurrency_note = (
+            resolve_effective_concurrency(model, max_concurrent)
+        )
+        self._sem = asyncio.Semaphore(self.effective_concurrency)
         self._use_gemini = _is_gemini_model(model)
         self._use_zai = _is_zai_model(model)
 

@@ -228,7 +228,7 @@ def judge(
 ) -> None:
     """Judge agent reports using LLM-as-judge with benchmark-specific prompts and config."""
     from bench.data import load_benchmark
-    from bench.judge import Judge, RateLimitExceeded, estimate_batch_cost
+    from bench.judge import Judge, RateLimitExceeded, estimate_judge_cost
 
     # Resolve config: CLI --model overrides env vars, which override paper defaults
     config = _resolve_judge_config(benchmark)
@@ -257,6 +257,10 @@ def judge(
         console.print("[red]No reports to judge.[/red]")
         raise typer.Exit(1)
 
+    if batch and not config["model"].strip().lower().startswith("gemini-"):
+        console.print("[red]Batch mode is only supported for Gemini models.[/red]")
+        raise typer.Exit(1)
+
     config_desc = f"model={config['model']}"
     if config["temperature"] is not None:
         config_desc += f", temp={config['temperature']}"
@@ -280,19 +284,41 @@ def judge(
         rpm=config["rpm"],
     )
 
+    effective_concurrency = j.effective_concurrency
+    if effective_concurrency != concurrency:
+        console.print(
+            f"  Requested concurrency {concurrency} reduced to [bold]{effective_concurrency}[/bold]"
+        )
+    if j.concurrency_note:
+        console.print(f"  [dim]{j.concurrency_note}[/dim]")
+
     # Cost estimate and confirmation
-    estimate = estimate_batch_cost(judge_tasks, bench_results_dir, config["model"], benchmark)
+    mode = "batch" if batch else "realtime"
+    estimate = estimate_judge_cost(
+        judge_tasks,
+        bench_results_dir,
+        config["model"],
+        benchmark,
+        mode=mode,
+        thinking_level=config["thinking_level"],
+    )
     if estimate["remaining_criteria"] == 0:
         console.print("[yellow]All criteria already judged — nothing to do.[/yellow]")
         raise typer.Exit(0)
 
-    mode_label = "batch (50% off)" if batch else "real-time"
-    cost_multiplier = 1.0 if batch else 2.0  # estimate uses batch pricing, double for real-time
-    est_cost = estimate["est_cost_usd"] * cost_multiplier
+    mode_label = "batch" if batch else "real-time"
 
     console.print(f"\n  Criteria to judge: [bold]{estimate['remaining_criteria']}[/bold] of {estimate['total_criteria']} ({estimate['total_criteria'] - estimate['remaining_criteria']} cached)")
     console.print(f"  Estimated tokens:  ~{estimate['est_input_tokens']:,} input + ~{estimate['est_output_tokens']:,} output")
-    console.print(f"  Estimated cost:    [bold]${est_cost:.2f}[/bold] ({mode_label})")
+    if estimate["est_cost_usd"] is not None:
+        console.print(f"  Estimated cost:    [bold]${estimate['est_cost_usd']:.2f}[/bold] ({mode_label})")
+    else:
+        console.print(f"  Estimated cost:    [yellow]unavailable[/yellow] ({mode_label})")
+    if estimate["pricing"]:
+        pricing_mode = "exact" if estimate["pricing_exact"] else "fallback"
+        console.print(f"  Pricing source:    {estimate['pricing_label']} ({pricing_mode})")
+    else:
+        console.print(f"  Pricing source:    {estimate['pricing_label']}")
     console.print()
 
     if not yes:
@@ -302,11 +328,6 @@ def judge(
             raise typer.Exit(0)
 
     if batch:
-        # Batch mode — Gemini only
-        if not config["model"].startswith("gemini-"):
-            console.print("[red]Batch mode is only supported for Gemini models.[/red]")
-            raise typer.Exit(1)
-
         all_verdicts = j.judge_batch(
             judge_tasks, bench_results_dir,
             on_status=lambda msg: console.print(f"  [dim]{msg}[/dim]"),
