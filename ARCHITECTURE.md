@@ -6,19 +6,19 @@ Durable Researcher is a fault-tolerant deep research agent. Every LLM turn is ch
 
 ```mermaid
 graph TB
-    subgraph CLI
+    subgraph cli_layer[CLI]
         INDEX["index.ts<br/>CLI entry point"]
         BENCH["bench.ts<br/>Eval bridge"]
     end
 
-    subgraph "Agent Core"
+    subgraph agent_core[Agent Core]
         AGENT["agent.ts<br/>Absurd task + agent loop"]
         DT["durable-turns.ts<br/>Checkpoint bridge"]
         PROMPTS["prompts/<br/>Handlebars templates"]
         CONFIG["config.ts<br/>Env-based config"]
     end
 
-    subgraph "Research Tools"
+    subgraph research_tools[Research Tools]
         PLAN["plan_research"]
         PREFETCH["prefetch_sources"]
         SCOUT["scout"]
@@ -29,13 +29,13 @@ graph TB
         EVAL["evaluate_progress"]
     end
 
-    subgraph "Infrastructure"
+    subgraph infra[Infrastructure]
         STEEL["steel-client.ts<br/>Steel SDK wrapper"]
         CACHE["browse-cache.ts<br/>Postgres cache"]
         RANKER["notes-ranker.ts<br/>Dedup + rank"]
     end
 
-    subgraph "External"
+    subgraph external[External]
         PG[("PostgreSQL<br/>Absurd + browse cache")]
         STEELAPI["Steel Cloud API<br/>Scrape / Screenshot"]
         LLM["LLM Provider<br/>Z.ai GLM-5.1"]
@@ -46,13 +46,21 @@ graph TB
     AGENT --> DT
     AGENT --> PROMPTS
     AGENT --> CONFIG
-    AGENT --> PLAN & PREFETCH & SCOUT & SEARCH & BROWSE & SCREENSHOT & NOTE & EVAL
+    AGENT --> PLAN
+    AGENT --> PREFETCH
+    AGENT --> SCOUT
+    AGENT --> SEARCH
+    AGENT --> BROWSE
+    AGENT --> SCREENSHOT
+    AGENT --> NOTE
+    AGENT --> EVAL
 
     PLAN --> LLM
     PREFETCH --> STEEL
     SCOUT --> STEEL
     SEARCH --> STEEL
-    BROWSE --> STEEL & CACHE
+    BROWSE --> STEEL
+    BROWSE --> CACHE
     NOTE --> RANKER
     EVAL --> RANKER
 
@@ -60,11 +68,11 @@ graph TB
     DT --> PG
     CACHE --> PG
 
-    style CLI fill:#1a1a2e,stroke:#e94560,color:#fff
-    style "Agent Core" fill:#16213e,stroke:#0f3460,color:#fff
-    style "Research Tools" fill:#0f3460,stroke:#533483,color:#fff
-    style "Infrastructure" fill:#533483,stroke:#e94560,color:#fff
-    style "External" fill:#1a1a2e,stroke:#e94560,color:#fff
+    style cli_layer fill:#1a1a2e,stroke:#e94560,color:#fff
+    style agent_core fill:#16213e,stroke:#0f3460,color:#fff
+    style research_tools fill:#0f3460,stroke:#533483,color:#fff
+    style infra fill:#533483,stroke:#e94560,color:#fff
+    style external fill:#1a1a2e,stroke:#e94560,color:#fff
 ```
 
 ---
@@ -83,36 +91,36 @@ sequenceDiagram
     participant LLM as LLM Provider
 
     User->>CLI: bun run src/index.ts "topic"
-    CLI->>App: spawn("research", params)
-    App->>PG: beginStep("message")
-    PG-->>App: { done: false } (fresh run)
+    CLI->>App: spawn task
+    App->>PG: beginStep
+    PG-->>App: done false, fresh run
 
     Note over App,LLM: First turn
-    App->>Loop: runAgentLoopContinue()
+    App->>Loop: runAgentLoopContinue
     Loop->>LLM: System prompt + user message
-    LLM-->>Loop: Assistant response (tool calls)
+    LLM-->>Loop: Assistant response with tool calls
     Loop->>App: message_end event
-    App->>PG: completeStep({ message })
-    App->>PG: beginStep("message") (next slot)
+    App->>PG: completeStep with message
+    App->>PG: beginStep for next slot
 
-    Note over App,LLM: Tool execution + next turn
-    Loop->>Loop: Execute tools (search, browse, note...)
+    Note over App,LLM: Tool execution and next turn
+    Loop->>Loop: Execute tools
     Loop->>LLM: Tool results + conversation
     LLM-->>Loop: More tool calls or final report
 
     Note over App,PG: CRASH happens here
 
-    User->>CLI: bun run src/index.ts "topic" (restart)
-    CLI->>App: spawn("research", same params)
-    App->>PG: beginStep("message")
-    PG-->>App: { done: true, state: msg1 }
-    App->>PG: beginStep("message")
-    PG-->>App: { done: true, state: msg2 }
-    App->>PG: beginStep("message")
-    PG-->>App: { done: false } (checkpoint reached)
+    User->>CLI: bun run src/index.ts "topic" restart
+    CLI->>App: spawn task with same params
+    App->>PG: beginStep
+    PG-->>App: done true, state msg1
+    App->>PG: beginStep
+    PG-->>App: done true, state msg2
+    App->>PG: beginStep
+    PG-->>App: done false, checkpoint reached
 
     Note over App: Rebuild state from replayed messages
-    App->>App: rebuildStateFromMessages()<br/>→ notes, scrapedUrls
+    App->>App: rebuildStateFromMessages
     App->>Loop: Continue from last checkpoint
     Loop->>LLM: Resumed conversation
 ```
@@ -136,26 +144,32 @@ The agent uses 8 tools in a structured research workflow. The LLM orchestrates w
 flowchart TD
     START([Topic received]) --> PLAN
 
-    subgraph "Phase 1: Planning"
+    subgraph phase1[Phase 1 - Planning]
         PLAN["plan_research<br/>Generate sub-queries<br/>via utility LLM"]
     end
 
     PLAN --> PREFETCH
 
-    subgraph "Phase 2: Parallel Gathering"
+    subgraph phase2[Phase 2 - Parallel Gathering]
         PREFETCH["prefetch_sources<br/>Fan-out search + browse<br/>Concurrency: 10"]
     end
 
     PREFETCH --> LOOP
 
-    subgraph "Phase 3: Iterative Research"
+    subgraph phase3[Phase 3 - Iterative Research]
         LOOP{"Agent decides<br/>next action"}
-        LOOP -->|"Targeted search"| SCOUT["scout<br/>Search + browse<br/>in one call"]
-        LOOP -->|"Broad search"| SEARCH["web_search<br/>Multi-engine SERP"]
-        LOOP -->|"Known URL"| BROWSE["browse_url<br/>Scrape + summarize"]
-        LOOP -->|"Visual content"| SCREENSHOT["screenshot<br/>Steel screenshot"]
-        LOOP -->|"Record finding"| NOTE["take_note<br/>Structured finding"]
-        LOOP -->|"Check coverage"| EVAL["evaluate_progress<br/>Rank notes, gaps"]
+        SCOUT["scout<br/>Search + browse<br/>in one call"]
+        SEARCH["web_search<br/>Multi-engine SERP"]
+        BROWSE["browse_url<br/>Scrape + summarize"]
+        SCREENSHOT["screenshot<br/>Steel screenshot"]
+        NOTE["take_note<br/>Structured finding"]
+        EVAL["evaluate_progress<br/>Rank notes and gaps"]
+        LOOP -->|"Targeted search"| SCOUT
+        LOOP -->|"Broad search"| SEARCH
+        LOOP -->|"Known URL"| BROWSE
+        LOOP -->|"Visual content"| SCREENSHOT
+        LOOP -->|"Record finding"| NOTE
+        LOOP -->|"Check coverage"| EVAL
         NOTE --> LOOP
         EVAL --> LOOP
         SCOUT --> LOOP
@@ -166,16 +180,16 @@ flowchart TD
 
     LOOP -->|"Sufficient coverage<br/>or timeout"| REPORT
 
-    subgraph "Phase 4: Synthesis"
+    subgraph phase4[Phase 4 - Synthesis]
         REPORT["Final report<br/>Written by LLM from<br/>accumulated notes"]
     end
 
     REPORT --> DONE([Result saved])
 
-    style "Phase 1: Planning" fill:#1a1a2e,stroke:#e94560,color:#fff
-    style "Phase 2: Parallel Gathering" fill:#16213e,stroke:#0f3460,color:#fff
-    style "Phase 3: Iterative Research" fill:#0f3460,stroke:#533483,color:#fff
-    style "Phase 4: Synthesis" fill:#533483,stroke:#e94560,color:#fff
+    style phase1 fill:#1a1a2e,stroke:#e94560,color:#fff
+    style phase2 fill:#16213e,stroke:#0f3460,color:#fff
+    style phase3 fill:#0f3460,stroke:#533483,color:#fff
+    style phase4 fill:#533483,stroke:#e94560,color:#fff
 ```
 
 ### Tool Summary
@@ -199,24 +213,24 @@ The agent loop has three mechanisms to prevent runaway execution:
 
 ```mermaid
 flowchart LR
-    subgraph "Steering Triggers"
-        T["Timeout<br/>(60s before deadline)"]
-        S["Source limit<br/>(maxSources reached)"]
-        R["Turn limit<br/>(iterations x 15)"]
-        A["Auto-eval<br/>(every 5 browses)"]
+    subgraph triggers[Steering Triggers]
+        T["Timeout<br/>60s before deadline"]
+        S["Source limit<br/>maxSources reached"]
+        R["Turn limit<br/>iterations x 15"]
+        A["Auto-eval<br/>every 5 browses"]
     end
 
-    T --> MSG["Inject steering message:<br/>Stop tools, write report NOW"]
+    T --> MSG["Inject steering message<br/>Stop tools, write report NOW"]
     S --> MSG
     R --> MSG
-    A --> EVAL_MSG["Inject eval data:<br/>notes count, source count, domains"]
+    A --> EVAL_MSG["Inject eval data<br/>notes count, source count, domains"]
 
-    MSG --> LLM["LLM receives<br/>steering message"]
-    EVAL_MSG --> LLM
+    MSG --> LLM_NODE["LLM receives<br/>steering message"]
+    EVAL_MSG --> LLM_NODE
 
-    LLM -->|"Hard limits"| ABORT["AbortController.abort()<br/>+ build partial report from notes"]
+    LLM_NODE -->|"Hard limits"| ABORT["AbortController.abort<br/>+ build partial report from notes"]
 
-    style "Steering Triggers" fill:#1a1a2e,stroke:#e94560,color:#fff
+    style triggers fill:#1a1a2e,stroke:#e94560,color:#fff
 ```
 
 - **Timeout steering**: 60s before `MAX_DURATION`, a user message is injected telling the agent to stop and write the report. At the hard deadline, `AbortController.abort()` kills the loop and a partial report is built from accumulated notes.
@@ -234,15 +248,15 @@ flowchart LR
     BROWSE["browse_url called"] --> CHECK{"Cache<br/>hit?"}
     CHECK -->|"Yes"| RETURN["Return cached<br/>RefinedContent"]
     CHECK -->|"No"| SCRAPE["Steel scrape"]
-    SCRAPE --> STORE["Store in Postgres<br/>(task_id, url, content)"]
+    SCRAPE --> STORE["Store in Postgres<br/>task_id, url, content"]
     STORE --> RETURN
 
-    subgraph "Cache lifecycle"
+    subgraph lifecycle[Cache lifecycle]
         EXPIRE["7-day expiry<br/>on cleanup"]
         ORPHAN["Orphan cleanup<br/>when task deleted"]
     end
 
-    style "Cache lifecycle" fill:#1a1a2e,stroke:#e94560,color:#fff
+    style lifecycle fill:#1a1a2e,stroke:#e94560,color:#fff
 ```
 
 ---
@@ -251,14 +265,14 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    URL["URL to browse"] --> STEEL["Steel scrape<br/>(markdown)"]
-    STEEL --> CLEAN["Clean content<br/>(whitespace, blank lines)"]
+    URL["URL to browse"] --> STEEL_NODE["Steel scrape<br/>markdown"]
+    STEEL_NODE --> CLEAN["Clean content<br/>whitespace, blank lines"]
     CLEAN --> VALID{"Meaningful<br/>content?"}
-    VALID -->|"No"| REJECT["Reject<br/>(too short/garbage)"]
+    VALID -->|"No"| REJECT["Reject<br/>too short or garbage"]
     VALID -->|"Yes"| SIZE{"Content<br/>length?"}
-    SIZE -->|"<= 4KB"| RAW["Return raw"]
-    SIZE -->|"> 4KB"| LLM_SUMM["LLM summarize<br/>(500 tokens,<br/>45s timeout)"]
-    LLM_SUMM --> RESULT["RefinedContent<br/>(title, url, summary)"]
+    SIZE -->|"4KB or less"| RAW["Return raw"]
+    SIZE -->|"Over 4KB"| LLM_SUMM["LLM summarize<br/>500 tokens<br/>45s timeout"]
+    LLM_SUMM --> RESULT["RefinedContent<br/>title, url, summary"]
     RAW --> RESULT
 
     style RESULT fill:#0f3460,stroke:#533483,color:#fff
@@ -273,10 +287,10 @@ Notes are deduplicated using trigram Jaccard similarity and ranked by quality.
 ```mermaid
 flowchart TD
     INPUT["New note added"] --> COUNT{"Notes<br/>count?"}
-    COUNT -->|"< 8"| STORE["Store note"]
-    COUNT -->|">= 8"| DEDUP["Dedup pass<br/>(trigram Jaccard > 0.6)"]
-    DEDUP --> MERGE["Merge near-duplicates<br/>(keep longer)"]
-    MERGE --> RANK["Rank by:<br/>1. Confidence (high > med > low)<br/>2. Source count<br/>3. Content length"]
+    COUNT -->|"Less than 8"| STORE["Store note"]
+    COUNT -->|"8 or more"| DEDUP["Dedup pass<br/>trigram Jaccard over 0.6"]
+    DEDUP --> MERGE["Merge near-duplicates<br/>keep longer"]
+    MERGE --> RANK["Rank by confidence<br/>then source count<br/>then content length"]
     RANK --> STORE
 
     style DEDUP fill:#533483,stroke:#e94560,color:#fff
@@ -290,38 +304,38 @@ A separate Python harness benchmarks the agent against academic datasets.
 
 ```mermaid
 flowchart LR
-    subgraph "Stage 1: Download"
-        DL["bench download all"] --> HF["HuggingFace<br/>ResearchRubrics (101 tasks)<br/>DRACO (100 tasks)"]
+    subgraph stage1[Stage 1 - Download]
+        DL["bench download all"] --> HF["HuggingFace<br/>ResearchRubrics 101 tasks<br/>DRACO 100 tasks"]
     end
 
-    subgraph "Stage 2: Run Agent"
-        RUN["bench run researchrubrics<br/>bench run draco"] --> AGENT_RUN["Spawn agent subprocess<br/>per task<br/>(bun run src/bench.ts)"]
-        AGENT_RUN --> REPORTS["responses/{bench}/<br/>{task_id}.md"]
+    subgraph stage2[Stage 2 - Run Agent]
+        RUN["bench run"] --> AGENT_RUN["Spawn agent subprocess<br/>per task"]
+        AGENT_RUN --> REPORTS["responses/task_id.md"]
     end
 
-    subgraph "Stage 3: Judge"
-        JUDGE["bench judge researchrubrics<br/>bench judge draco"] --> LLM_JUDGE["LLM-as-Judge<br/>(Gemini 2.5 Pro /<br/>Gemini 3.1 Pro /<br/>Claude Haiku 4.5)"]
-        LLM_JUDGE --> VERDICTS["results/{bench}/{model}/<br/>{task_id}.jsonl"]
+    subgraph stage3[Stage 3 - Judge]
+        JUDGE["bench judge"] --> LLM_JUDGE["LLM-as-Judge<br/>Gemini 2.5 Pro<br/>Gemini 3.1 Pro<br/>Claude Haiku 4.5"]
+        LLM_JUDGE --> VERDICTS["results/model/task_id.jsonl"]
     end
 
-    subgraph "Stage 4: Score"
-        SCORE["bench score"] --> CALC["Normalized score<br/>sum(weight*met) / sum(pos_weights)"]
+    subgraph stage4[Stage 4 - Score]
+        SCORE["bench score"] --> CALC["Normalized score"]
     end
 
-    subgraph "Stage 5: Report"
-        REPORT["bench report"] --> MD["Markdown summary<br/>per-section breakdowns"]
+    subgraph stage5[Stage 5 - Report]
+        REPORT_CMD["bench report"] --> MD["Markdown summary<br/>per-section breakdowns"]
     end
 
     HF --> RUN
     REPORTS --> JUDGE
     VERDICTS --> SCORE
-    CALC --> REPORT
+    CALC --> REPORT_CMD
 
-    style "Stage 1: Download" fill:#1a1a2e,stroke:#e94560,color:#fff
-    style "Stage 2: Run Agent" fill:#16213e,stroke:#0f3460,color:#fff
-    style "Stage 3: Judge" fill:#0f3460,stroke:#533483,color:#fff
-    style "Stage 4: Score" fill:#533483,stroke:#e94560,color:#fff
-    style "Stage 5: Report" fill:#1a1a2e,stroke:#e94560,color:#fff
+    style stage1 fill:#1a1a2e,stroke:#e94560,color:#fff
+    style stage2 fill:#16213e,stroke:#0f3460,color:#fff
+    style stage3 fill:#0f3460,stroke:#533483,color:#fff
+    style stage4 fill:#533483,stroke:#e94560,color:#fff
+    style stage5 fill:#1a1a2e,stroke:#e94560,color:#fff
 ```
 
 ### Judge Providers
@@ -330,12 +344,12 @@ flowchart LR
 flowchart TD
     JUDGE_CLI["bench judge --model X"] --> PROVIDER{"Which<br/>provider?"}
 
-    PROVIDER -->|"gemini-*"| GEMINI["Google Gemini<br/>system_instruction<br/>thinking=low, temp=0.2<br/>(DRACO) / no thinking (RR)"]
+    PROVIDER -->|"gemini-*"| GEMINI["Google Gemini<br/>system_instruction<br/>thinking=low, temp=0.2"]
     PROVIDER -->|"claude-*"| ANTHROPIC["Anthropic Claude<br/>streaming required<br/>max_tokens=4096"]
     PROVIDER -->|"glm-*"| ZAI["Z.ai GLM<br/>OpenAI-compatible<br/>response_format=json<br/>concurrency=1"]
 
     GEMINI --> BATCH{"--batch<br/>flag?"}
-    BATCH -->|"Yes"| BATCH_API["Gemini Batch API<br/>50% cost reduction<br/>JSONL upload + poll"]
+    BATCH -->|"Yes"| BATCH_API["Gemini Batch API<br/>50 pct cost reduction<br/>JSONL upload + poll"]
     BATCH -->|"No"| REALTIME["Real-time API"]
 
     BATCH_API --> VERDICT["Binary MET/UNMET<br/>per criterion"]
@@ -344,8 +358,8 @@ flowchart TD
     ZAI --> VERDICT
 
     VERDICT --> SKIP{"Rate limited<br/>or error?"}
-    SKIP -->|"Yes"| RETRY["Skip saving<br/>(retry on next run)"]
-    SKIP -->|"No"| SAVE["Save to<br/>results/{bench}/{model}/"]
+    SKIP -->|"Yes"| RETRY["Skip saving<br/>retry on next run"]
+    SKIP -->|"No"| SAVE["Save to<br/>results/bench/model/"]
 
     style PROVIDER fill:#533483,stroke:#e94560,color:#fff
 ```
@@ -358,17 +372,17 @@ The full lifecycle of a research task from the user's perspective:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> ParseArgs: bun run src/index.ts "topic"
+    [*] --> ParseArgs: bun run src/index.ts topic
 
     ParseArgs --> FindExisting: Check for matching tasks
 
-    FindExisting --> CompletedMatch: Exact match found (completed)
-    FindExisting --> InProgressMatch: Similar match found (in-progress)
+    FindExisting --> CompletedMatch: Exact match found completed
+    FindExisting --> InProgressMatch: Similar match found in-progress
     FindExisting --> SpawnNew: No match
 
-    CompletedMatch --> ViewReport: User chose [v]iew
-    CompletedMatch --> ExtendResearch: User chose [e]xtend
-    CompletedMatch --> SpawnNew: User chose [n]ew
+    CompletedMatch --> ViewReport: User chose view
+    CompletedMatch --> ExtendResearch: User chose extend
+    CompletedMatch --> SpawnNew: User chose new
 
     InProgressMatch --> ResumeTask: Auto-resume
 
@@ -387,10 +401,10 @@ stateDiagram-v2
     AgentLoop --> Timeout: MAX_DURATION reached
     Timeout --> PartialReport: Build from notes
 
-    Completed --> SaveReport: Write to output/
+    Completed --> SaveReport: Write to output
     PartialReport --> SaveReport
 
-    SaveReport --> FollowUp: Offer Q&A (interactive TTY)
+    SaveReport --> FollowUp: Offer Q and A
     FollowUp --> [*]
     SaveReport --> [*]: Non-interactive
 ```
@@ -413,21 +427,21 @@ All configurable via `--depth` flag and `--max-sources`.
 
 ```mermaid
 graph LR
-    subgraph "Durable Researcher"
+    subgraph dr[Durable Researcher]
         AGENT[Agent Runtime]
     end
 
-    subgraph "LLM Providers"
-        ZAI["Z.ai API<br/>GLM-5.1 (reasoning)<br/>Agent + utility calls"]
+    subgraph llm[LLM Providers]
+        ZAI["Z.ai API<br/>GLM-5.1 reasoning<br/>Agent + utility calls"]
         GEMINI_J["Google Gemini<br/>2.5 Pro / 3.1 Pro<br/>Judge only"]
         ANTHROPIC_J["Anthropic<br/>Claude Haiku 4.5<br/>Judge only"]
     end
 
-    subgraph "Browser"
+    subgraph browser[Browser]
         STEEL["Steel Cloud<br/>Scrape, Screenshot<br/>Multi-engine search"]
     end
 
-    subgraph "Persistence"
+    subgraph persist[Persistence]
         PG["PostgreSQL<br/>Absurd schema<br/>Browse cache"]
     end
 
@@ -438,7 +452,7 @@ graph LR
     ZAI -.->|"Eval only"| GEMINI_J
     ZAI -.->|"Eval only"| ANTHROPIC_J
 
-    style "Durable Researcher" fill:#0f3460,stroke:#533483,color:#fff
+    style dr fill:#0f3460,stroke:#533483,color:#fff
 ```
 
 ---
