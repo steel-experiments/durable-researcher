@@ -775,6 +775,10 @@ class Judge:
         if self.temperature is not None:
             kwargs["temperature"] = self.temperature
 
+        # Z.ai supports JSON mode via response_format (same as OpenAI API).
+        # Ensures valid JSON output for verdict parsing.
+        kwargs["response_format"] = {"type": "json_object"}
+
         response = await self._zai_client.chat.completions.create(**kwargs)
 
         raw = response.choices[0].message.content or ""
