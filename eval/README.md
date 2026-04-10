@@ -121,8 +121,8 @@ eval/
 │   ├── test_runner.py         # Subprocess skip/command tests
 │   └── test_score.py          # Scoring formula tests
 ├── data/                      # Downloaded datasets (gitignored)
-├── responses/                 # Agent reports (gitignored)
-└── results/                   # Judge verdicts (gitignored)
+├── responses/                 # Agent reports
+└── results/                   # Judge verdicts (per benchmark/model)
 ```
 
 ## Tests
@@ -133,9 +133,19 @@ uv run python -m pytest tests/ -v
 
 73 unit tests covering scoring math, data parsing, judge prompt construction, verdict parsing, pricing/concurrency helpers, and runner skip logic. No LLM calls in tests.
 
-## Reference Scores
+## Completed Evaluation Runs
 
-Published scores from the benchmark papers for calibration:
+Agent: durable-researcher with `zai:glm-5.1` (high reasoning), `depth=quick`, `max-sources=10`.
+
+| Benchmark | Tasks | Judge Model | Mean Score | Pass Rate | Verdicts |
+|-----------|-------|-------------|------------|-----------|----------|
+| ResearchRubrics | 101 | gemini-2.5-pro | 0.598 | — | 2,593 criteria |
+| DRACO | 100 | claude-haiku-4-5-20251001 | 0.471 | — | ~3,934 criteria |
+| DRACO | 100 | gemini-3.1-pro-preview | 0.694 | — | ~3,934 criteria |
+
+Results stored in `results/{benchmark}/{model}/` as per-task JSONL verdict files.
+
+### Reference Scores (from benchmark papers)
 
 **ResearchRubrics** (compliance score):
 | System | Score |
