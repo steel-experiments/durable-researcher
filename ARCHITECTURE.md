@@ -87,7 +87,7 @@ sequenceDiagram
     participant CLI as index.ts
     participant App as Absurd App
     participant PG as PostgreSQL
-    participant Loop as Pi Agent Loop
+    participant AgentLoop as Pi Agent Loop
     participant LLM as LLM Provider
 
     User->>CLI: bun run src/index.ts "topic"
@@ -96,17 +96,17 @@ sequenceDiagram
     PG-->>App: done false, fresh run
 
     Note over App,LLM: First turn
-    App->>Loop: runAgentLoopContinue
-    Loop->>LLM: System prompt + user message
-    LLM-->>Loop: Assistant response with tool calls
-    Loop->>App: message_end event
+    App->>AgentLoop: runAgentLoopContinue
+    AgentLoop->>LLM: System prompt + user message
+    LLM-->>AgentLoop: Assistant response with tool calls
+    AgentLoop->>App: message_end event
     App->>PG: completeStep with message
     App->>PG: beginStep for next slot
 
     Note over App,LLM: Tool execution and next turn
-    Loop->>Loop: Execute tools
-    Loop->>LLM: Tool results + conversation
-    LLM-->>Loop: More tool calls or final report
+    AgentLoop->>AgentLoop: Execute tools
+    AgentLoop->>LLM: Tool results + conversation
+    LLM-->>AgentLoop: More tool calls or final report
 
     Note over App,PG: CRASH happens here
 
@@ -121,8 +121,8 @@ sequenceDiagram
 
     Note over App: Rebuild state from replayed messages
     App->>App: rebuildStateFromMessages
-    App->>Loop: Continue from last checkpoint
-    Loop->>LLM: Resumed conversation
+    App->>AgentLoop: Continue from last checkpoint
+    AgentLoop->>LLM: Resumed conversation
 ```
 
 ### State Rebuilding
