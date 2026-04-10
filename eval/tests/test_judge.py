@@ -8,9 +8,12 @@ from bench.judge import (
     Judge,
     Verdict,
     build_user_prompt,
+    estimate_judge_cost,
     extract_batch_row_error,
+    get_zai_concurrency_limit,
     load_existing_verdicts,
     parse_verdict_response,
+    resolve_effective_concurrency,
     resolve_batch_output_key,
 )
 from bench.score import Criterion
@@ -246,3 +249,74 @@ class TestBatchHelpers:
         assert len(verdicts) == 1
         assert verdicts[0].met is True
         assert verdicts[0].tokens_used == 15
+
+
+class TestZaiConcurrencyHelpers:
+    def test_known_limit_for_glm_5_1(self):
+        assert get_zai_concurrency_limit("glm-5.1") == 1
+
+    def test_known_limit_for_glm_5(self):
+        assert get_zai_concurrency_limit("GLM-5") == 2
+
+    def test_resolve_effective_concurrency_caps_to_documented_limit(self):
+        effective, note = resolve_effective_concurrency("glm-5.1", 8)
+        assert effective == 1
+        assert note is not None
+        assert "documented Z.ai API concurrency limit" in note
+
+    def test_resolve_effective_concurrency_handles_uppercase_model_names(self):
+        effective, note = resolve_effective_concurrency("GLM-5.1", 8)
+        assert effective == 1
+        assert note is not None
+        assert "documented Z.ai API concurrency limit" in note
+
+    def test_resolve_effective_concurrency_is_conservative_for_unknown_glm(self):
+        effective, note = resolve_effective_concurrency("glm-9-experimental", 4)
+        assert effective == 1
+        assert note is not None
+        assert "conservative cap=1" in note
+
+
+class TestJudgeCostEstimate:
+    def test_glm_5_1_uses_zai_realtime_pricing(self, tmp_path: Path):
+        report_path = tmp_path / "task1.md"
+        report_path.write_text("A short report.")
+        criteria = [
+            Criterion(id="task1:0", text="Mentions X", weight=1.0, section="accuracy")
+        ]
+
+        estimate = estimate_judge_cost(
+            [("task1", report_path, criteria, "What is X?")],
+            tmp_path / "results",
+            "glm-5.1",
+            "draco",
+            mode="realtime",
+        )
+
+        assert estimate["pricing"] == {
+            "input": 1.40,
+            "cached_input": 0.26,
+            "output": 4.40,
+        }
+        assert estimate["pricing_label"] == "Z.ai real-time pricing"
+        assert estimate["pricing_exact"] is True
+        assert estimate["est_cost_usd"] is not None
+
+    def test_anthropic_pricing_is_reported_as_unavailable(self, tmp_path: Path):
+        report_path = tmp_path / "task1.md"
+        report_path.write_text("A short report.")
+        criteria = [
+            Criterion(id="task1:0", text="Mentions X", weight=1.0, section="accuracy")
+        ]
+
+        estimate = estimate_judge_cost(
+            [("task1", report_path, criteria, "")],
+            tmp_path / "results",
+            "claude-sonnet-4-5",
+            "researchrubrics",
+            mode="realtime",
+        )
+
+        assert estimate["pricing"] is None
+        assert estimate["pricing_label"] == "pricing unavailable for this provider"
+        assert estimate["est_cost_usd"] is None

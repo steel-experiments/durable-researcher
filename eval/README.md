@@ -1,6 +1,6 @@
 # Evaluation Harness
 
-Benchmarks durable-researcher against two open-source deep research evaluation suites using Claude as an LLM-as-judge.
+Benchmarks durable-researcher against two open-source deep research evaluation suites using an LLM-as-judge. The harness supports Anthropic Claude, Google Gemini, and Z.ai GLM judge models.
 
 | Benchmark | Source | Tasks | Criteria | Measures |
 |-----------|--------|-------|----------|----------|
@@ -11,7 +11,10 @@ Benchmarks durable-researcher against two open-source deep research evaluation s
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/)
-- `ANTHROPIC_API_KEY` environment variable (for the judge)
+- A judge API key for the model you use:
+  - `ANTHROPIC_API_KEY` for Claude
+  - `GEMINI_API_KEY` for Gemini
+  - `ZAI_API_KEY` for Z.ai GLM
 - A running durable-researcher instance (Postgres + Steel) for the `run` step
 
 ## Setup
@@ -59,15 +62,23 @@ This calls `bun run src/bench.ts` for each benchmark prompt and writes reports t
 ```bash
 uv run bench judge researchrubrics
 uv run bench judge draco --concurrency 20
+uv run bench judge draco --model glm-5.1 --concurrency 8
 ```
 
-For each report, every criterion is evaluated independently by Claude with a binary MET/UNMET verdict. Results are stored per-task in `results/{benchmark}/{task_id}.jsonl` — criteria already judged are skipped on re-run.
+For each report, every criterion is evaluated independently by the selected judge model with a binary MET/UNMET verdict. Results are stored per-task in `results/{benchmark}/{model}/{task_id}.jsonl` — criteria already judged are skipped on re-run.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--model` | `claude-haiku-4-5-20251001` | Anthropic model for judging |
+| `--model` | benchmark-specific default | Judge model for scoring |
 | `--concurrency` | `20` | Max concurrent API calls |
 | `--limit` | all | Cap the number of tasks to judge |
+| `--batch` | `false` | Use Gemini Batch API (Gemini only) |
+
+Notes:
+- Batch mode is Gemini-only.
+- Z.ai judge models use model-specific API concurrency caps. For example, `glm-5.1` is capped to concurrency `1` and `glm-5` is capped to `2`.
+- The harness does not invent a provider RPM limit for Z.ai. `JUDGE_RPM` is an optional manual throttle if you encounter 429s.
+- The published Z.ai concurrency page for balance-based API usage is the relevant source for eval judging. The separate GLM Coding subscription limits are for coding-plan usage and are not what this harness uses.
 
 ### 4. Compute scores
 
@@ -99,7 +110,7 @@ eval/
 ├── src/bench/
 │   ├── cli.py                 # Typer CLI entry point
 │   ├── data.py                # Download + parse benchmark datasets
-│   ├── judge.py               # LLM-as-judge (Anthropic SDK)
+│   ├── judge.py               # LLM-as-judge (Claude, Gemini, Z.ai)
 │   ├── runner.py              # Agent subprocess execution
 │   ├── score.py               # Scoring formulas
 │   └── report.py              # Markdown report generation
@@ -120,7 +131,7 @@ eval/
 uv run python -m pytest tests/ -v
 ```
 
-52 unit tests covering scoring math, data parsing, judge prompt construction, verdict parsing, and runner skip logic. No LLM calls in tests.
+73 unit tests covering scoring math, data parsing, judge prompt construction, verdict parsing, pricing/concurrency helpers, and runner skip logic. No LLM calls in tests.
 
 ## Reference Scores
 
@@ -143,5 +154,5 @@ Published scores from the benchmark papers for calibration:
 | Stage | Cost Driver | Estimate (full run) |
 |-------|-------------|---------------------|
 | Run agent (201 tasks, quick) | Agent LLM + Steel API | Varies by provider |
-| Judge (6,500 criteria) | Claude Sonnet API | ~$5-15 |
+| Judge (6,500 criteria) | Judge model API | Printed by `bench judge` for Gemini and supported Z.ai GLM models |
 | Score + Report | Local compute | Free |
