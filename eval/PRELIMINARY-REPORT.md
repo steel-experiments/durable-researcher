@@ -1,150 +1,221 @@
 # Preliminary Evaluation Report — Durable Researcher Agent
 
-**Date**: 2026-04-10 | **Agent Model**: Z.ai GLM-5.1 (high reasoning) | **Status**: Partial — full runs pending
+**Date**: 2026-04-10 | **Agent Model**: Z.ai GLM-5.1 (high reasoning) | **Status**: Partial — final paper-aligned runs still pending
 
-## Summary
+## Executive Summary
 
-We evaluated our durable-researcher agent against two public research-quality benchmarks: **ResearchRubrics** (101 tasks, 2,593 criteria) and **DRACO** (100 tasks, 3,934 criteria across 10 domains). Results show our agent is competitive with established deep-research products on ResearchRubrics, while DRACO reveals significant room for improvement — consistent with the benchmark's difficulty.
+The current evidence is promising on ResearchRubrics and weaker on DRACO, but the dataset coverage is still uneven enough that the results should be treated as directional.
 
-**Caveat**: ResearchRubrics results cover only 10 of 101 tasks. DRACO results span all 100 tasks but were judged by two different models, revealing a 22-point score swing. We recommend treating these as directional, not final.
+- **Best paper-comparable DRACO signal today**: 47.1% normalized score on **10/100 tasks** using **Gemini 3.1 Pro** as the judge.
+- **Best full-coverage DRACO signal today**: 69.4% normalized score on **100/100 tasks** using **Claude Haiku 4.5** as the judge, but this is **not directly comparable** to the DRACO paper baselines.
+- **Best ResearchRubrics signal today**: 0.598 pass rate on **10/101 tasks**, judged with the paper’s default judge.
 
----
-
-## How to Read This Report
-
-All scores use **binary pass/fail grading** — each criterion in a rubric is judged MET or UNMET by an LLM judge. Two metrics are reported:
-
-- **Normalized Score**: Sum of criterion weights for MET criteria, divided by total positive weights. Negative-weight criteria (penalizing errors) subtract from the score. Range 0–100%.
-- **Pass Rate**: Simple percentage of criteria passed (MET for positive criteria, UNMET for negative criteria). Range 0–100%.
-
-The normalized score is the primary metric — it rewards getting high-importance criteria right. Pass rate treats all criteria equally. The DRACO paper reports both; ResearchRubrics uses pass rate.
-
-**Judge sensitivity**: The same agent outputs scored by different judge models can produce very different numbers. The DRACO paper tested three judges (Gemini-3-Pro, GPT-5.2, Sonnet-4.5) and found that **rankings were stable across judges but absolute scores varied**. This means our scores should be compared against paper baselines judged by the same model, not across judges.
+**Bottom line**: Durable Researcher already looks competitive on ResearchRubrics, while DRACO suggests the main gaps are breadth/depth and factual accuracy. The single most important next step is to complete the **100-task Gemini-judged DRACO run**.
 
 ---
 
-## DRACO — Main Results vs. Paper Baselines
+## Evaluation Status
 
-The DRACO paper (Perplexity AI, 2026) evaluated seven deep research systems on 100 expert-curated tasks across 10 domains (Finance, Academic, Medicine, Law, Technology, etc.). The primary judge was Gemini-3-Pro with thinking=low, temperature=0.2 — the same configuration we use.
+This section is the key to interpreting the rest of the report.
 
-### Normalized Score (primary metric)
+| Benchmark | Judge | Tasks Completed | Comparable to Paper? | Status |
+|---|---|---:|---|---|
+| ResearchRubrics | Gemini 2.5 Pro Preview | 10 / 101 | Yes, same default judge | Partial |
+| DRACO | Gemini 3.1 Pro Preview | 10 / 100 | Yes, closest available successor to paper judge | Partial |
+| DRACO | Claude Haiku 4.5 | 100 / 100 | No | Complete but exploratory |
+
+**Interpretation rule**:
+
+- Compare our DRACO score against paper baselines **only** when the judge is Gemini.
+- Treat the Haiku-judged DRACO run as a **diagnostic signal**, not a leaderboard placement.
+
+---
+
+## Methodology and Comparison Rules
+
+All scores use **binary pass/fail grading**: each criterion in a rubric is judged MET or UNMET by an LLM judge.
+
+- **Normalized Score**: Sum of criterion weights for MET criteria, divided by total positive weights. Negative-weight criteria subtract from the score. Range 0–100%.
+- **Pass Rate**: Simple percentage of criteria passed. Range 0–100%.
+
+The normalized score is the primary metric for DRACO because it rewards getting high-importance criteria right. ResearchRubrics uses pass rate.
+
+### Judge Sensitivity
+
+Judge choice materially changes absolute scores.
+
+The DRACO paper reports that rankings are relatively stable across judges, but absolute scores vary significantly. In our runs, the same agent outputs produced a **22-point swing** between Haiku and Gemini. That means:
+
+- **Gemini-judged DRACO** is the right basis for paper comparison.
+- **Haiku-judged DRACO** is useful for diagnosis, but not for claiming parity with paper baselines.
+
+### Judge Configuration
+
+| Benchmark | Our Judge | Paper’s Judge | Temperature | Thinking | Method |
+|---|---|---|---|---|---|
+| ResearchRubrics | Gemini 2.5 Pro Preview | Gemini 2.5 Pro Preview | default | none | Real-time |
+| DRACO (paper-aligned) | Gemini 3.1 Pro Preview | Gemini 3 Pro (deprecated → 3.1) | 0.2 | low | Batch API |
+| DRACO (exploratory) | Claude Haiku 4.5 | — | — | — | Real-time |
+
+Judge prompts are exact copies from the respective benchmark repositories. For DRACO, Gemini-3-Pro is now deprecated, so we use Gemini-3.1-Pro with the same judging configuration.
+
+---
+
+## Paper-Comparable Results
+
+This section contains the results that are most defensible for benchmark comparison, even when sample sizes are still incomplete.
+
+### DRACO — Gemini-Judged, 10/100 Tasks
+
+The DRACO paper (Perplexity AI, 2026) evaluates frontier deep research systems on 100 expert-curated tasks across 10 domains. Our Gemini 3.1 Pro run follows the paper’s judge setup as closely as possible, but it currently covers only **10 tasks**.
+
+#### Normalized Score
 
 | System | Score (%) | Judge | Tasks |
-|---|---|---|---|
+|---|---:|---|---:|
 | Perplexity Deep Research (Opus 4.6) | **70.5** ± 0.3 | Gemini-3-Pro | 100 |
 | Perplexity Deep Research (Opus 4.5) | 67.2 ± 0.3 | Gemini-3-Pro | 100 |
 | Claude Opus 4.6 (standard + search) | 59.8 ± 0.3 | Gemini-3-Pro | 100 |
 | Gemini Deep Research | 59.0 ± 0.4 | Gemini-3-Pro | 100 |
 | OpenAI Deep Research (o3) | 52.1 ± 0.2 | Gemini-3-Pro | 100 |
-| OpenAI Deep Research (o4-mini) | 41.9 ± 0.4 | Gemini-3-Pro | 100 |
+| **Durable Researcher (ours)** | **47.1** | Gemini-3.1-Pro | 10 |
 | Claude Opus 4.5 (standard + search) | 46.7 ± 0.3 | Gemini-3-Pro | 100 |
-| **Durable Researcher (ours, Gemini 3.1 Pro judge)** | **47.1** | Gemini-3.1-Pro | 10 |
-| **Durable Researcher (ours, Haiku judge)** | **69.4** | Claude Haiku 4.5 | 100 |
+| OpenAI Deep Research (o4-mini) | 41.9 ± 0.4 | Gemini-3-Pro | 100 |
 
-> **Interpretation**: Our agent scores ~47% under the strict Gemini 3.1 Pro judge (paper-aligned methodology), placing it between OpenAI o4-mini (41.9%) and Claude Opus 4.5 (46.7%). The Haiku judge scores us at 69.4% — comparable to the top systems — but the DRACO paper's cross-judge comparison shows Haiku/Sonnet judges consistently produce higher absolute scores than Gemini judges (e.g., Sonnet-4.5 scored Perplexity at 75.5% vs Gemini's 70.5%). The 69.4% Haiku score is therefore inflated and not directly comparable to the Gemini-judged paper baselines.
-
-### Pass Rate
+#### Pass Rate
 
 | System | Pass Rate (%) | Judge | Tasks |
-|---|---|---|---|
+|---|---:|---|---:|
 | Perplexity Deep Research (Opus 4.6) | **72.8** ± 0.3 | Gemini-3-Pro | 100 |
 | Perplexity Deep Research (Opus 4.5) | 70.9 ± 0.6 | Gemini-3-Pro | 100 |
 | Claude Opus 4.6 (standard + search) | 63.1 ± 0.2 | Gemini-3-Pro | 100 |
 | Gemini Deep Research | 62.7 ± 0.5 | Gemini-3-Pro | 100 |
 | OpenAI Deep Research (o3) | 56.9 ± 0.2 | Gemini-3-Pro | 100 |
-| OpenAI Deep Research (o4-mini) | 48.0 ± 0.5 | Gemini-3-Pro | 100 |
+| **Durable Researcher (ours)** | **50.2** | Gemini-3.1-Pro | 10 |
 | Claude Opus 4.5 (standard + search) | 50.2 ± 0.2 | Gemini-3-Pro | 100 |
-| **Durable Researcher (ours, Gemini 3.1 Pro judge)** | **50.2** | Gemini-3.1-Pro | 10 |
-| **Durable Researcher (ours, Haiku judge)** | **73.0** | Claude Haiku 4.5 | 100 |
+| OpenAI Deep Research (o4-mini) | 48.0 ± 0.5 | Gemini-3-Pro | 100 |
 
-### Score by Rubric Axis (Quality Breakdown)
+**Interpretation**:
 
-The DRACO paper breaks down performance into four rubric axes. This shows *where* our agent is strong and weak compared to the competition.
+- On the paper-aligned judge, Durable Researcher currently lands in the lower-middle tier of the published DRACO range.
+- Because this is only **10 tasks**, the exact placement is provisional.
+- The current gap to the top DRACO system is large enough to take seriously, even before the full run is complete.
 
-| Axis | Perplexity (Opus 4.6) | Gemini DR | Claude Opus 4.6 | OpenAI (o3) | **Ours (Gemini judge, 10 tasks)** | **Ours (Haiku judge, 100 tasks)** |
-|---|---|---|---|---|---|---|
-| Factual Accuracy | **67.9** | 54.9 | 57.9 | 51.4 | 41.8 | 66.0 |
-| Breadth & Depth | **73.1** (4.5) | 59.9 | 57.3 | 51.4 | 25.6 | 78.6 |
-| Presentation Quality | **90.3** | 87.1 | 73.8 | 63.2 | 79.3 | 80.1 |
-| Citation Quality | **64.6** | 51.5 | 56.2 | 45.8 | 68.6 | 59.1 |
+### ResearchRubrics — Gemini-Judged, 10/101 Tasks
 
-> **Interpretation**: Our agent's **presentation quality** (79.3%) is genuinely competitive — only 8 points behind Gemini Deep Research and above OpenAI o3. **Citation quality** also looks solid (68.6%). The critical weakness is **breadth and depth of analysis** (25.6% under Gemini judge) — the strict judge sees our reports as lacking thoroughness and analytical depth. Factual accuracy (41.8%) is also below all paper baselines. These two axes are the biggest improvement targets.
-
-### Score by Domain
-
-| Domain | Perplexity (Opus 4.6) | Gemini DR | Claude Opus 4.6 | OpenAI (o3) |
-|---|---|---|---|---|
-| Finance | **71.0** | 49.4 | 48.5 | 42.1 |
-| Shopping/Product | **64.7** | 53.8 | 51.9 | 44.7 |
-| Academic | **82.8** | 72.7 | 72.0 | 73.5 |
-| Technology | **66.6** (4.5) | 56.8 | 53.2 | 46.3 |
-| General Knowledge | **70.8** (4.5) | 59.6 | 67.0 | 51.5 |
-| UX Design | **62.4** | 50.8 | 54.3 | 51.9 |
-| Law | **90.2** | 83.5 | 88.6 | 66.7 |
-| Medicine | **80.5** | 58.8 | 72.5 | 65.0 |
-| Needle in a Haystack | **68.4** (4.5) | 62.8 | 66.2 | 54.5 |
-| Personalized Assistant | **68.5** (4.5) | 61.9 | 55.2 | 49.4 |
-
-*Per-domain breakdown for our agent requires re-judging all 100 tasks with Gemini 3.1 Pro — pending.*
-
-### Resource Usage Comparison
-
-| System | Avg Input Tokens | Avg Output Tokens | Avg Latency |
-|---|---|---|---|
-| Perplexity Deep Research (Opus 4.6) | 778,711 | 8,807 | 245s (~4 min) |
-| Gemini Deep Research | 315,548 | 22,066 | 592s (~10 min) |
-| OpenAI Deep Research (o3) | 44,587 | 24,944 | 1,808s (~30 min) |
-| Claude Opus 4.6 (standard + search) | 691,338 | 8,143 | 193s (~3 min) |
-| **Durable Researcher (GLM-5.1)** | — | — | ~650s (~11 min avg) |
-
-> **Interpretation**: Our agent runs at ~11 min/task, comparable to Gemini Deep Research. The total DRACO run (100 tasks) took ~18 hours wall-clock. Token usage for GLM-5.1 is not yet instrumented.
-
-### Judge Sensitivity (Cross-Judge Comparison from Paper)
-
-The DRACO paper validated that judge choice affects absolute scores but not rankings:
-
-| System | Gemini-3-Pro | GPT-5.2 | Sonnet-4.5 |
-|---|---|---|---|
-| Perplexity Deep Research (Opus 4.6) | 70.5 | 50.4 | 75.5 |
-| Gemini Deep Research | 59.0 | 37.8 | 61.4 |
-| Claude Opus 4.6 | 59.8 | 42.7 | 70.1 |
-| OpenAI Deep Research (o3) | 52.1 | 31.7 | 49.4 |
-
-> **Interpretation**: GPT-5.2 is the harshest judge (all scores ~20 points lower). Sonnet-4.5 is the most lenient (~5 points higher than Gemini). Our Haiku judge (69.4%) behaves similarly to Sonnet-4.5 in producing inflated scores. This is why the Gemini-judged score of 47.1% is the more reliable number for comparing against paper baselines.
-
----
-
-## ResearchRubrics — Binary Criterion Pass Rate
+ResearchRubrics uses the paper’s default judge configuration, which makes this comparison cleaner than DRACO, but the task coverage is still only **10 of 101**.
 
 | System | Pass Rate | Judge Model | Tasks |
-|---|---|---|---|
+|---|---:|---|---:|
 | Gemini Deep Research | 0.615 | Gemini 2.5 Pro (paper default) | 101 |
 | **Durable Researcher (ours)** | **0.598** | Gemini 2.5 Pro (paper default) | 10 |
 | OpenAI Deep Research | 0.597 | Gemini 2.5 Pro (paper default) | 101 |
 | Perplexity Deep Research | 0.487 | Gemini 2.5 Pro (paper default) | 101 |
 
-*Paper baselines from ResearchRubrics (Scale AI, ICLR 2026) Table 5. Our score is a 10-task subsample. Judge model matches the paper's default (Gemini 2.5 Pro Preview 06-05), making scores directly comparable.*
+**Interpretation**:
 
-> **Interpretation**: Our agent scores 0.598 — within 2 points of Gemini Deep Research (0.615) and OpenAI Deep Research (0.597), and well above Perplexity (0.487). This is promising but based on only 10/101 tasks. The full 101-task run (response files already generated) will confirm whether this holds.
-
----
-
-## Judge Configuration
-
-| Benchmark | Our Judge | Paper's Judge | Temperature | Thinking | Method |
-|---|---|---|---|---|---|
-| ResearchRubrics | Gemini 2.5 Pro Preview | Gemini 2.5 Pro Preview | default | none | Real-time |
-| DRACO (primary) | Gemini 3.1 Pro Preview | Gemini 3 Pro (deprecated → 3.1) | 0.2 | low | Batch API |
-| DRACO (secondary) | Claude Haiku 4.5 | — | — | — | Real-time |
-
-Judge prompts are exact copies from the respective benchmark repositories. DRACO used Gemini-3-Pro which is now deprecated; we use the successor Gemini-3.1-Pro with the same config (thinking=low, temp=0.2).
+- This is the strongest result in the report.
+- On the current subsample, Durable Researcher is effectively in line with Gemini and OpenAI deep research.
+- The full **101-task** judging pass is required before treating this as stable.
 
 ---
 
-## Cost and Infrastructure
+## Exploratory Results
+
+This section contains useful evidence, but it should not be used for paper-baseline ranking claims.
+
+### DRACO — Haiku-Judged, 100/100 Tasks
+
+This run covers the full DRACO benchmark, which makes it much more complete than the Gemini run, but the judge is not paper-aligned.
+
+| Metric | Score | Judge | Tasks |
+|---|---:|---|---:|
+| Normalized Score | **69.4** | Claude Haiku 4.5 | 100 |
+| Pass Rate | **73.0** | Claude Haiku 4.5 | 100 |
+
+**Interpretation**:
+
+- The full-run Haiku result is encouraging because it suggests the agent can produce many reports that look strong to a more permissive judge.
+- It does **not** overturn the Gemini result.
+- The correct reading is: the system likely has real capability, but the stricter judge sees material weaknesses that must be fixed.
+
+---
+
+## Diagnostic Breakdown
+
+This section is for improvement prioritization, not headline comparison.
+
+### DRACO Axis Breakdown
+
+#### Paper Baselines
+
+| Axis | Perplexity (Opus 4.6) | Gemini DR | Claude Opus 4.6 | OpenAI (o3) |
+|---|---:|---:|---:|---:|
+| Factual Accuracy | **67.9** | 54.9 | 57.9 | 51.4 |
+| Breadth & Depth | **73.1** | 59.9 | 57.3 | 51.4 |
+| Presentation Quality | **90.3** | 87.1 | 73.8 | 63.2 |
+| Citation Quality | **64.6** | 51.5 | 56.2 | 45.8 |
+
+#### Durable Researcher
+
+| Axis | Gemini Judge (10 tasks) | Haiku Judge (100 tasks) |
+|---|---:|---:|
+| Factual Accuracy | 41.8 | 66.0 |
+| Breadth & Depth | 25.6 | 78.6 |
+| Presentation Quality | 79.3 | 80.1 |
+| Citation Quality | 68.6 | 59.1 |
+
+**Interpretation**:
+
+- The reliable signal from the Gemini run is that **breadth/depth** and **factual accuracy** are the main weaknesses.
+- **Presentation quality** looks genuinely strong.
+- **Citation quality** is at least not the primary failure mode.
+- The Haiku axis profile is too optimistic to use as the primary diagnosis, but it suggests the system’s writing and structure are already good enough that judge strictness is not the only issue.
+
+### DRACO Domain Breakdown
+
+The DRACO paper reports domain-level performance, but we do **not** yet have a paper-aligned domain breakdown for Durable Researcher because the full Gemini DRACO run is still incomplete.
+
+| Domain | Perplexity (Opus 4.6) | Gemini DR | Claude Opus 4.6 | OpenAI (o3) |
+|---|---:|---:|---:|---:|
+| Finance | **71.0** | 49.4 | 48.5 | 42.1 |
+| Shopping/Product | **64.7** | 53.8 | 51.9 | 44.7 |
+| Academic | **82.8** | 72.7 | 72.0 | 73.5 |
+| Technology | **66.6** | 56.8 | 53.2 | 46.3 |
+| General Knowledge | **70.8** | 59.6 | 67.0 | 51.5 |
+| UX Design | **62.4** | 50.8 | 54.3 | 51.9 |
+| Law | **90.2** | 83.5 | 88.6 | 66.7 |
+| Medicine | **80.5** | 58.8 | 72.5 | 65.0 |
+| Needle in a Haystack | **68.4** | 62.8 | 66.2 | 54.5 |
+| Personalized Assistant | **68.5** | 61.9 | 55.2 | 49.4 |
+
+**Status**: per-domain Durable Researcher results remain pending until the **100-task Gemini DRACO run** is complete.
+
+---
+
+## Resource Usage and Cost
+
+### Latency Comparison
+
+We can compare latency today. Token usage for Durable Researcher is not yet available for the archived runs summarized here, so this section is intentionally limited to latency.
+
+| System | Avg Latency |
+|---|---:|
+| Perplexity Deep Research (Opus 4.6) | 245s (~4 min) |
+| Claude Opus 4.6 (standard + search) | 193s (~3 min) |
+| Gemini Deep Research | 592s (~10 min) |
+| **Durable Researcher (GLM-5.1)** | **~650s (~11 min avg)** |
+| OpenAI Deep Research (o3) | 1,808s (~30 min) |
+
+**Interpretation**:
+
+- Durable Researcher is in the same rough latency band as Gemini Deep Research.
+- The total DRACO run took about **18 hours** wall-clock.
+
+### Cost and Infrastructure
 
 | Item | Cost | Method |
-|---|---|---|
+|---|---:|---|
 | Agent model (Z.ai GLM-5.1, 201 tasks) | ~$0 (beta) | — |
 | ResearchRubrics judging (10 tasks) | ~$1.50 | Gemini 2.5 Pro, real-time |
 | DRACO judging — Haiku (100 tasks) | ~$2.00 | Claude Haiku 4.5, real-time |
@@ -157,26 +228,27 @@ Agent runtime: ~18 hours for DRACO (100 tasks), ~12 hours for ResearchRubrics (1
 
 ---
 
-## Key Findings
+## What We Believe Today
 
-1. **Competitive on ResearchRubrics** — Our agent scores 0.598, matching Gemini and OpenAI deep research on the 10-task subsample. Full 101-task judging is the immediate next step.
+These are the conclusions that seem strong enough to act on now.
 
-2. **DRACO places us in the lower tier** — At 47.1% normalized score (strict, paper-aligned judge), we rank between OpenAI o4-mini (41.9%) and Claude Opus 4.5 (46.7%). The gap to the top (Perplexity at 70.5%) is 23 points. This is expected for a first evaluation against frontier systems.
+1. **ResearchRubrics is genuinely promising**. Even on a small sample, Durable Researcher is already near the top published systems.
+2. **DRACO is the harder benchmark for this agent**. The paper-aligned score is meaningfully below the frontier systems.
+3. **The main weaknesses are not presentation or citations**. They are breadth/depth and factual accuracy under a strict judge.
+4. **Judge sensitivity is large enough to distort intuition**. Any future external claim should clearly separate Gemini-judged and non-Gemini-judged DRACO results.
 
-3. **Presentation quality is a genuine strength** — At 79.3%, we exceed OpenAI o3 (63.2%) and Claude Opus 4.6 (73.8%) on presentation. Our reports look good even when the content has gaps.
+## What Is Still Uncertain
 
-4. **Breadth/depth and factual accuracy are the critical gaps** — Breadth (25.6%) and factual accuracy (41.8%) are well below all paper baselines. The agent needs to do deeper research and verify facts more carefully.
-
-5. **Judge sensitivity is significant** — A 22-point swing between Haiku and Gemini judges on the same outputs. The DRACO paper confirms this is normal: cross-judge scores vary by up to 20 points. Always compare scores judged by the same model.
-
-6. **Cost is manageable** — Full evaluation of both benchmarks costs ~$50 in judge API fees, with the agent itself running on free-tier GLM-5.1.
+1. Whether the current ResearchRubrics result holds over all 101 tasks.
+2. Where Durable Researcher really lands on DRACO once the full Gemini run is completed.
+3. Which DRACO domains are driving the Gemini weakness most strongly.
 
 ---
 
-## Next Steps
+## Next Actions
 
 - [ ] Judge full 101-task ResearchRubrics with Gemini 2.5 Pro
-- [ ] Re-judge all 100 DRACO tasks with Gemini 3.1 Pro (batch) for paper-aligned scores
-- [ ] Analyze per-domain DRACO breakdown to prioritize improvements
+- [ ] Re-judge all 100 DRACO tasks with Gemini 3.1 Pro (batch) for a paper-aligned final score
+- [ ] Produce per-domain DRACO analysis from the completed Gemini run
 - [ ] Improve agent breadth/depth and factual accuracy
-- [ ] Produce final report with per-domain analysis and confidence intervals
+- [ ] Regenerate this report as a final evaluation report once the comparable runs are complete

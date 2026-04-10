@@ -21,11 +21,13 @@ class RunResult:
     skipped: bool
     duration_seconds: float
     error: str | None = None
+    usage_path: str | None = None
 
 
 def build_command(
     topic: str,
     output: Path,
+    usage_output: Path,
     depth: str,
     max_sources: int,
     project_root: Path,
@@ -40,6 +42,8 @@ def build_command(
         topic,
         "--output",
         str(output),
+        "--usage-output",
+        str(usage_output),
         "--depth",
         depth,
         "--max-sources",
@@ -69,18 +73,25 @@ async def run_task(
     output_dir.mkdir(parents=True, exist_ok=True)
     # Must be absolute — bench.ts runs with cwd=project_root
     output_path = (output_dir / f"{task_id}.md").resolve()
+    usage_path = output_path.with_suffix(".usage.json")
 
-    # Skip if report already exists and is non-empty
-    if output_path.exists() and output_path.stat().st_size > 0:
+    # Skip only when both the report and its usage sidecar already exist.
+    # Older benchmark runs may have markdown reports without usage metadata.
+    if (
+        output_path.exists()
+        and output_path.stat().st_size > 0
+        and usage_path.exists()
+    ):
         return RunResult(
             task_id=task_id,
             benchmark=benchmark,
             success=True,
             skipped=True,
             duration_seconds=0.0,
+            usage_path=str(usage_path) if usage_path.exists() else None,
         )
 
-    cmd = build_command(prompt, output_path, depth, max_sources, project_root)
+    cmd = build_command(prompt, output_path, usage_path, depth, max_sources, project_root)
     start = time.monotonic()
 
     try:
@@ -103,6 +114,7 @@ async def run_task(
                 success=True,
                 skipped=False,
                 duration_seconds=round(elapsed, 2),
+                usage_path=str(usage_path) if usage_path.exists() else None,
             )
         else:
             return RunResult(
@@ -112,6 +124,7 @@ async def run_task(
                 skipped=False,
                 duration_seconds=round(elapsed, 2),
                 error=stderr.decode().strip()[:500] if stderr else "Unknown error",
+                usage_path=str(usage_path) if usage_path.exists() else None,
             )
     except TimeoutError:
         return RunResult(
@@ -121,6 +134,7 @@ async def run_task(
             skipped=False,
             duration_seconds=float(timeout),
             error=f"Timed out after {timeout}s",
+            usage_path=str(usage_path) if usage_path.exists() else None,
         )
     except FileNotFoundError as e:
         return RunResult(
@@ -130,6 +144,7 @@ async def run_task(
             skipped=False,
             duration_seconds=round(time.monotonic() - start, 2),
             error=str(e),
+            usage_path=str(usage_path) if usage_path.exists() else None,
         )
 
 

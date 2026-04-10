@@ -14,6 +14,7 @@ class TestBuildCommand:
         cmd = build_command(
             topic="quantum computing",
             output=Path("/tmp/out.md"),
+            usage_output=Path("/tmp/out.usage.json"),
             depth="quick",
             max_sources=10,
             project_root=Path("/proj"),
@@ -25,6 +26,8 @@ class TestBuildCommand:
         assert "quantum computing" in cmd
         assert "--output" in cmd
         assert "/tmp/out.md" in cmd
+        assert "--usage-output" in cmd
+        assert "/tmp/out.usage.json" in cmd
         assert "--depth" in cmd
         assert "quick" in cmd
         assert "--max-sources" in cmd
@@ -34,6 +37,7 @@ class TestBuildCommand:
         cmd = build_command(
             topic="test",
             output=Path("/tmp/out.md"),
+            usage_output=Path("/tmp/out.usage.json"),
             depth="standard",
             max_sources=20,
             project_root=Path("/my/project"),
@@ -51,6 +55,8 @@ class TestRunTaskSkipLogic:
         responses_dir.mkdir(parents=True)
         report_file = responses_dir / "task1.md"
         report_file.write_text("# Existing report")
+        usage_file = responses_dir / "task1.usage.json"
+        usage_file.write_text('{"inputTokens": 100, "outputTokens": 50, "cacheReadTokens": 0}')
 
         result = await run_task(
             task_id="task1",
@@ -66,6 +72,26 @@ class TestRunTaskSkipLogic:
         assert result.success is True
         assert result.skipped is True
         assert result.error is None
+
+    @pytest.mark.asyncio
+    async def test_reruns_when_usage_sidecar_missing(self, tmp_path: Path):
+        responses_dir = tmp_path / "responses" / "test"
+        responses_dir.mkdir(parents=True)
+        report_file = responses_dir / "task1.md"
+        report_file.write_text("# Existing report")
+
+        result = await run_task(
+            task_id="task1",
+            benchmark="test",
+            prompt="test prompt",
+            responses_dir=tmp_path / "responses",
+            depth="quick",
+            max_sources=10,
+            timeout=30,
+            project_root=tmp_path,
+        )
+
+        assert result.skipped is False
 
     @pytest.mark.asyncio
     async def test_skips_empty_report(self, tmp_path: Path):

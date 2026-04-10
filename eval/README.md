@@ -46,7 +46,8 @@ uv run bench run researchrubrics --limit 3 --depth quick --project-root ..
 uv run bench run draco --depth standard --project-root ..
 ```
 
-This calls `bun run src/bench.ts` for each benchmark prompt and writes reports to `responses/{benchmark}/{task_id}.md`. Existing reports are skipped automatically.
+This calls `bun run src/bench.ts` for each benchmark prompt and writes reports to `responses/{benchmark}/{task_id}.md`. Existing reports are skipped automatically once both the markdown report and its usage sidecar exist.
+When usage instrumentation is available, it also writes per-task token sidecars at `responses/{benchmark}/{task_id}.usage.json`.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -100,7 +101,7 @@ uv run bench report researchrubrics
 uv run bench report draco --output results/draco-report.md
 ```
 
-Produces a markdown summary with aggregate stats, per-section breakdowns (DRACO), and the lowest-scoring tasks for debugging.
+Produces a markdown summary with aggregate stats, per-section breakdowns (DRACO), resource usage averages when `.usage.json` sidecars exist, and the lowest-scoring tasks for debugging.
 
 ## Project Structure
 
@@ -121,7 +122,7 @@ eval/
 │   ├── test_runner.py         # Subprocess skip/command tests
 │   └── test_score.py          # Scoring formula tests
 ├── data/                      # Downloaded datasets (gitignored)
-├── responses/                 # Agent reports
+├── responses/                 # Agent reports + per-task usage sidecars
 └── results/                   # Judge verdicts (per benchmark/model)
 ```
 

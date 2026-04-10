@@ -428,6 +428,7 @@ def report(
     benchmark: str = typer.Argument(..., help="Benchmark: researchrubrics or draco"),
     data_dir: Path = typer.Option("data"),
     results_dir: Path = typer.Option("results"),
+    responses_dir: Path = typer.Option("responses"),
     judge_model: Optional[str] = typer.Option(None, help="Judge model subdir to report on"),
     output: Optional[Path] = typer.Option(None, help="Output path for report markdown"),
 ) -> None:
@@ -458,7 +459,22 @@ def report(
         console.print("[red]No scored tasks found.[/red]")
         raise typer.Exit(1)
 
-    report_text = generate_report(scores, benchmark)
+    usage_by_task = {}
+    usage_dir = responses_dir / benchmark
+    for score in scores:
+        usage_path = usage_dir / f"{score.task_id}.usage.json"
+        if not usage_path.exists():
+            continue
+        try:
+            usage_by_task[score.task_id] = json.loads(usage_path.read_text())
+        except json.JSONDecodeError:
+            console.print(f"[yellow]Skipping invalid usage file:[/yellow] {usage_path}")
+
+    report_text = generate_report(
+        scores,
+        benchmark,
+        usage_by_task=usage_by_task or None,
+    )
 
     if output:
         save_report(report_text, output)

@@ -9,7 +9,11 @@ from pathlib import Path
 from bench.score import TaskScore
 
 
-def generate_report(scores: list[TaskScore], benchmark: str) -> str:
+def generate_report(
+    scores: list[TaskScore],
+    benchmark: str,
+    usage_by_task: dict[str, dict] | None = None,
+) -> str:
     """Generate a markdown summary report from task scores."""
     if not scores:
         return f"# {benchmark} — No Results\n\nNo scored tasks found.\n"
@@ -50,6 +54,35 @@ def generate_report(scores: list[TaskScore], benchmark: str) -> str:
     lines.append(_row("Score", all_scores))
     lines.append(_row("Pass Rate", all_pass_rates))
     lines.append("")
+
+    if usage_by_task:
+        input_tokens = []
+        output_tokens = []
+        cache_read_tokens = []
+        for score in scores:
+            usage = usage_by_task.get(score.task_id)
+            if not usage:
+                continue
+            input_tokens.append(float(usage.get("inputTokens", 0)))
+            output_tokens.append(float(usage.get("outputTokens", 0)))
+            cache_read_tokens.append(float(usage.get("cacheReadTokens", 0)))
+
+        if input_tokens or output_tokens:
+            lines.extend([
+                "## Resource Usage",
+                "",
+                f"- **Tasks with usage data**: {len(input_tokens)}/{len(scores)}",
+                "",
+                "| Metric | Mean | Median | Std Dev | Min | Max |",
+                "|--------|------|--------|---------|-----|-----|",
+            ])
+            if input_tokens:
+                lines.append(_row("Input Tokens", input_tokens))
+            if output_tokens:
+                lines.append(_row("Output Tokens", output_tokens))
+            if any(val > 0 for val in cache_read_tokens):
+                lines.append(_row("Cache Read Tokens", cache_read_tokens))
+            lines.append("")
 
     # Per-section breakdown (DRACO)
     section_data: dict[str, list[float]] = {}
