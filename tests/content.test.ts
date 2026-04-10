@@ -27,7 +27,7 @@ describe("truncateContent", () => {
   it("uses custom suffix", () => {
     const text = "a ".repeat(100);
     const result = truncateContent(text, 20, "...");
-    expect(result).toEndWith("...");
+    expect(result.endsWith("...")).toBe(true);
   });
 
   it("handles text with no spaces gracefully", () => {

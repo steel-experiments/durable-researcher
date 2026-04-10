@@ -8,6 +8,7 @@ import type { SearchResult } from "../../src/types.js";
 vi.mock("../../src/steel-client.js", () => ({
   multiEngineSearch: vi.fn(),
   scrapeUrl: vi.fn(),
+  filterByRelevance: vi.fn((results: any[]) => results),
 }));
 
 // Mock the LLM summarization used internally by prefetch
@@ -16,6 +17,8 @@ vi.mock("@mariozechner/pi-ai", () => ({
     Object: (s: any) => s,
     Array: (s: any, opts: any) => ({ ...s, ...opts }),
     String: (opts: any) => opts ?? {},
+    Number: (opts: any) => opts ?? {},
+    Optional: (schema: any) => schema,
   },
   completeSimple: vi.fn().mockResolvedValue({
     content: [{ type: "text", text: "Mocked summary of the page content." }],

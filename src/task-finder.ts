@@ -7,6 +7,7 @@ import { getUtilityModel, getUtilityReasoning } from "./config.js";
 
 export type ExistingTask = {
   taskId: string;
+  queueName: string;
   topic: string;
   status: string;
   createdAt: Date;
@@ -16,21 +17,28 @@ export type ExistingTask = {
 
 const DEFAULT_DB_URL = "postgresql://postgres:postgres@localhost:5432/absurd";
 
-/** Query Postgres for recent research tasks with their params. */
-export async function findRecentTasks(
-  databaseUrl?: string,
-  limit = 20,
+function quoteIdent(name: string): string {
+  return `"${name.replace(/"/g, "\"\"")}"`;
+}
+
+async function listQueues(pool: pg.Pool): Promise<string[]> {
+  const result = await pool.query(`SELECT queue_name FROM absurd.list_queues()`);
+  return result.rows.map((row: { queue_name: string }) => row.queue_name);
+}
+
+async function queryQueueTasks(
+  pool: pg.Pool,
+  queueName: string,
+  limit: number,
 ): Promise<ExistingTask[]> {
-  const pool = new pg.Pool({
-    connectionString: databaseUrl ?? process.env.DATABASE_URL ?? DEFAULT_DB_URL,
-  });
+  const tableName = quoteIdent(`t_${queueName}`);
 
   try {
     const result = await pool.query(
-      `SELECT t.task_id, t.params, t.state, t.enqueue_at, t.attempts, t.max_attempts
-       FROM absurd.t_default t
-       WHERE t.task_name = 'research'
-       ORDER BY t.enqueue_at DESC
+      `SELECT task_id, params, state, enqueue_at, attempts, max_attempts
+       FROM absurd.${tableName}
+       WHERE task_name = 'research'
+       ORDER BY enqueue_at DESC
        LIMIT $1`,
       [limit],
     );
@@ -44,12 +52,97 @@ export async function findRecentTasks(
       max_attempts: number | null;
     }) => ({
       taskId: row.task_id,
+      queueName,
       topic: row.params?.topic ?? "unknown",
       status: row.state,
       createdAt: row.enqueue_at,
       attempt: row.attempts,
       maxAttempts: row.max_attempts ?? 3,
     }));
+  } catch (error) {
+    if ((error as { code?: string }).code === "42P01") {
+      return [];
+    }
+    throw error;
+  }
+}
+
+/** Query Postgres for recent research tasks with their params. */
+export async function findRecentTasks(
+  databaseUrl?: string,
+  limit = 20,
+): Promise<ExistingTask[]> {
+  const pool = new pg.Pool({
+    connectionString: databaseUrl ?? process.env.DATABASE_URL ?? DEFAULT_DB_URL,
+  });
+
+  try {
+    const queues = await listQueues(pool);
+    const taskGroups = await Promise.all(
+      queues.map((queueName) => queryQueueTasks(pool, queueName, limit)),
+    );
+
+    return taskGroups
+      .flat()
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, limit);
+  } finally {
+    await pool.end();
+  }
+}
+
+/** Find a specific task ID across all queues. */
+export async function findTaskById(
+  taskId: string,
+  databaseUrl?: string,
+): Promise<ExistingTask | undefined> {
+  const pool = new pg.Pool({
+    connectionString: databaseUrl ?? process.env.DATABASE_URL ?? DEFAULT_DB_URL,
+  });
+
+  try {
+    const queues = await listQueues(pool);
+
+    for (const queueName of queues) {
+      const tableName = quoteIdent(`t_${queueName}`);
+      try {
+        const result = await pool.query(
+          `SELECT task_id, params, state, enqueue_at, attempts, max_attempts
+           FROM absurd.${tableName}
+           WHERE task_id = $1
+           LIMIT 1`,
+          [taskId],
+        );
+
+        const row = result.rows[0] as {
+          task_id: string;
+          params: { topic?: string };
+          state: string;
+          enqueue_at: Date;
+          attempts: number;
+          max_attempts: number | null;
+        } | undefined;
+
+        if (row) {
+          return {
+            taskId: row.task_id,
+            queueName,
+            topic: row.params?.topic ?? "unknown",
+            status: row.state,
+            createdAt: row.enqueue_at,
+            attempt: row.attempts,
+            maxAttempts: row.max_attempts ?? 3,
+          };
+        }
+      } catch (error) {
+        if ((error as { code?: string }).code === "42P01") {
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    return undefined;
   } finally {
     await pool.end();
   }

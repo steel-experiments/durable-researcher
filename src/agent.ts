@@ -39,6 +39,7 @@ import { loadTemplate } from "./prompts.js";
 export type ResearchAppOptions = {
   databaseUrl?: string;
   model?: Model<Api>;
+  queueName?: string;
 };
 
 /**
@@ -168,7 +169,10 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
   const dbUrl = options.databaseUrl
     ?? process.env.DATABASE_URL
     ?? "postgresql://postgres:postgres@localhost:5432/absurd";
-  const app = new Absurd(dbUrl);
+  const app = new Absurd({
+    db: dbUrl,
+    queueName: options.queueName,
+  });
 
   // Store usage stats outside the task handler so the CLI can access them
   let lastUsage: UsageStats | undefined;

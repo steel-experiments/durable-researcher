@@ -18,6 +18,7 @@ import {
   findRecentTasks,
   findExactMatch,
   findSimilarTask,
+  findTaskById,
   type ExistingTask,
 } from "./task-finder.js";
 import { runFollowUp } from "./follow-up.js";
@@ -82,6 +83,11 @@ function formatTask(task: ExistingTask): string {
   return `  ${task.taskId}  "${task.topic}" [${task.status}] (${ageStr}, attempt ${task.attempt}/${task.maxAttempts})`;
 }
 
+function createIsolatedQueueName(): string {
+  const random = Math.random().toString(36).slice(2, 8);
+  return `cli_${Date.now().toString(36)}_${random}`;
+}
+
 function slugify(text: string): string {
   return text
     .toLowerCase()
@@ -119,39 +125,63 @@ function printUsage(usage: UsageStats) {
 
 const DEFAULT_DB_URL = "postgresql://postgres:postgres@localhost:5432/absurd";
 
+function quoteIdent(name: string): string {
+  return `"${name.replace(/"/g, "\"\"")}"`;
+}
+
 async function cleanupTasks() {
-  const pool = new pg.Pool({
-    connectionString: process.env.DATABASE_URL ?? DEFAULT_DB_URL,
-  });
+  const connectionString = process.env.DATABASE_URL ?? DEFAULT_DB_URL;
+  const pool = new pg.Pool({ connectionString });
   try {
-    // Delete checkpoints, waiters, runs, and events for terminal tasks, then the tasks themselves
-    await pool.query(`
-      DELETE FROM absurd.c_default
-      WHERE task_id IN (
-        SELECT task_id FROM absurd.t_default
+    const queuesResult = await pool.query(`SELECT queue_name FROM absurd.list_queues()`);
+    let deletedTasks = 0;
+
+    for (const row of queuesResult.rows as Array<{ queue_name: string }>) {
+      const queue = row.queue_name;
+      const tasksTable = `absurd.${quoteIdent(`t_${queue}`)}`;
+      const checkpointsTable = `absurd.${quoteIdent(`c_${queue}`)}`;
+      const waitersTable = `absurd.${quoteIdent(`w_${queue}`)}`;
+      const runsTable = `absurd.${quoteIdent(`r_${queue}`)}`;
+
+      // Delete checkpoints, waiters, runs, and events for terminal tasks, then the tasks themselves
+      await pool.query(`
+        DELETE FROM ${checkpointsTable}
+        WHERE task_id IN (
+          SELECT task_id FROM ${tasksTable}
+          WHERE state IN ('completed', 'failed', 'cancelled')
+        )
+      `);
+      await pool.query(`
+        DELETE FROM ${waitersTable}
+        WHERE task_id IN (
+          SELECT task_id FROM ${tasksTable}
+          WHERE state IN ('completed', 'failed', 'cancelled')
+        )
+      `);
+      await pool.query(`
+        DELETE FROM ${runsTable}
+        WHERE task_id IN (
+          SELECT task_id FROM ${tasksTable}
+          WHERE state IN ('completed', 'failed', 'cancelled')
+        )
+      `);
+      const deleted = await pool.query(`
+        DELETE FROM ${tasksTable}
         WHERE state IN ('completed', 'failed', 'cancelled')
-      )
-    `);
-    await pool.query(`
-      DELETE FROM absurd.w_default
-      WHERE task_id IN (
-        SELECT task_id FROM absurd.t_default
-        WHERE state IN ('completed', 'failed', 'cancelled')
-      )
-    `);
-    await pool.query(`
-      DELETE FROM absurd.r_default
-      WHERE task_id IN (
-        SELECT task_id FROM absurd.t_default
-        WHERE state IN ('completed', 'failed', 'cancelled')
-      )
-    `);
-    const deleted = await pool.query(`
-      DELETE FROM absurd.t_default
-      WHERE state IN ('completed', 'failed', 'cancelled')
-      RETURNING task_id
-    `);
-    console.log(`Cleaned up ${deleted.rowCount} tasks.`);
+        RETURNING task_id
+      `);
+      deletedTasks += deleted.rowCount ?? 0;
+
+      // Per-run CLI queues are ephemeral; remove them once empty.
+      if (queue.startsWith("cli_")) {
+        const remaining = await pool.query<{ count: string }>(`SELECT COUNT(*) AS count FROM ${tasksTable}`);
+        if (remaining.rows[0]?.count === "0") {
+          await pool.query(`SELECT absurd.drop_queue($1)`, [queue]);
+        }
+      }
+    }
+
+    console.log(`Cleaned up ${deletedTasks} tasks.`);
 
     // Clean up browse cache: remove entries for deleted tasks + expire old entries
     const cacheOrphans = await cleanupBrowseCache();
@@ -199,17 +229,8 @@ async function main() {
   // --resume <task-id>: explicit resume
   const resumeIndex = args.indexOf("--resume");
   let taskID: string | undefined;
+  let taskQueue = "default";
   let isResume = false;
-
-  if (resumeIndex >= 0) {
-    taskID = args[resumeIndex + 1];
-    if (!taskID) {
-      console.error("Error: --resume requires a task ID.");
-      process.exit(1);
-    }
-    isResume = true;
-    console.log(`\nResuming task: ${taskID}\n`);
-  }
 
   // Parse flags with values
   const flagsWithValues = new Set(["--depth", "--max-sources", "--resume", "--model"]);
@@ -264,8 +285,6 @@ async function main() {
     process.exit(1);
   }
 
-  const app = createResearchApp(appOptions);
-
   // If no explicit resume, check for existing tasks with same/similar topic
   let existingResult: {
     topic: string;
@@ -274,6 +293,27 @@ async function main() {
     sources: { title: string; url: string }[];
     messages: AgentMessage[];
   } | undefined;
+  let app = createResearchApp({ ...appOptions, queueName: taskQueue });
+
+  if (resumeIndex >= 0) {
+    taskID = args[resumeIndex + 1];
+    if (!taskID) {
+      console.error("Error: --resume requires a task ID.");
+      process.exit(1);
+    }
+
+    const existingTask = await findTaskById(taskID);
+    if (!existingTask) {
+      console.error(`Error: Task "${taskID}" not found.`);
+      process.exit(1);
+    }
+
+    taskQueue = existingTask.queueName;
+    isResume = true;
+    await app.close();
+    app = createResearchApp({ ...appOptions, queueName: taskQueue });
+    console.log(`\nResuming task: ${taskID}\n`);
+  }
 
   if (!taskID && topic && !forceNew && !forceExtend) {
     const recentTasks = await findRecentTasks();
@@ -284,7 +324,9 @@ async function main() {
 
     if (completedMatch) {
       // Fetch the completed result
-      const snapshot = await app.fetchTaskResult(completedMatch.taskId);
+      const snapshot = await app.fetchTaskResult(completedMatch.taskId, {
+        queue: completedMatch.queueName,
+      });
       if (snapshot?.state === "completed" && snapshot.result) {
         existingResult = snapshot.result as unknown as typeof existingResult;
 
@@ -323,6 +365,11 @@ async function main() {
           await app.close();
           process.exit(0);
         } else if (action === "extend") {
+          taskQueue = createIsolatedQueueName();
+          await app.close();
+          app = createResearchApp({ ...appOptions, queueName: taskQueue });
+          await app.createQueue();
+
           // Spawn new task seeded with prior findings
           const params: ResearchParams = {
             topic,
@@ -355,7 +402,10 @@ async function main() {
           console.log(formatTask(exact));
           console.log(`Resuming...\n`);
           taskID = exact.taskId;
+          taskQueue = exact.queueName;
           isResume = true;
+          await app.close();
+          app = createResearchApp({ ...appOptions, queueName: taskQueue });
         } else {
           try {
             const similar = await findSimilarTask(resumable, topic);
@@ -364,7 +414,10 @@ async function main() {
               console.log(formatTask(similar));
               console.log(`Resuming (use --new to force a fresh start)...\n`);
               taskID = similar.taskId;
+              taskQueue = similar.queueName;
               isResume = true;
+              await app.close();
+              app = createResearchApp({ ...appOptions, queueName: taskQueue });
             }
           } catch {
             // LLM similarity check failed — proceed with new task
@@ -380,8 +433,15 @@ async function main() {
     const completed = recentTasks.filter((t) => t.status === "completed");
     const match = findExactMatch(completed, topic);
     if (match) {
-      const snapshot = await app.fetchTaskResult(match.taskId);
+      const snapshot = await app.fetchTaskResult(match.taskId, {
+        queue: match.queueName,
+      });
       if (snapshot?.state === "completed" && snapshot.result) {
+        taskQueue = createIsolatedQueueName();
+        await app.close();
+        app = createResearchApp({ ...appOptions, queueName: taskQueue });
+        await app.createQueue();
+
         const prior = snapshot.result as unknown as {
           notes: ResearchNote[];
           sources: { title: string; url: string }[];
@@ -408,6 +468,11 @@ async function main() {
 
   // Spawn new task if we still don't have one
   if (!taskID && topic) {
+    taskQueue = createIsolatedQueueName();
+    await app.close();
+    app = createResearchApp({ ...appOptions, queueName: taskQueue });
+    await app.createQueue();
+
     const params: ResearchParams = { topic, depth, maxSources };
 
     // Run clarification if requested and interactive
@@ -446,6 +511,7 @@ async function main() {
   });
 
   const result = await app.awaitTaskResult(taskID, {
+    queue: taskQueue,
     timeout: getMaxDurationSeconds() + 30, // extra buffer beyond task max duration
   });
 
