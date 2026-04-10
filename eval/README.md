@@ -141,8 +141,8 @@ Agent: durable-researcher with `zai:glm-5.1` (high reasoning), `depth=quick`, `m
 | Benchmark | Tasks | Judge Model | Mean Score | Pass Rate | Verdicts |
 |-----------|-------|-------------|------------|-----------|----------|
 | ResearchRubrics | 101 | gemini-2.5-pro | 0.598 | — | 2,593 criteria |
-| DRACO | 100 | claude-haiku-4-5-20251001 | 0.471 | — | ~3,934 criteria |
-| DRACO | 100 | gemini-3.1-pro-preview | 0.694 | — | ~3,934 criteria |
+| DRACO | 100 | claude-haiku-4-5-20251001 | 0.694 | — | ~3,934 criteria |
+| DRACO | 10 | gemini-3.1-pro-preview | 0.471 | — | ~393 criteria |
 
 Results stored in `results/{benchmark}/{model}/` as per-task JSONL verdict files.
 
