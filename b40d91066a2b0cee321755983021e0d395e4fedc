@@ -1,0 +1,1 @@
+Tracked generated eval inputs and results so the current evaluation snapshot is preserved in-repo. Removed the eval/data ignore rule to allow those artifacts to be versioned alongside the results.
