@@ -21,6 +21,7 @@ This section is the key to interpreting the rest of the report.
 | Benchmark | Judge | Tasks Completed | Comparable to Paper? | Status |
 |---|---|---:|---|---|
 | ResearchRubrics | Gemini 2.5 Pro Preview | 10 / 101 | Yes, same default judge | Partial |
+| ResearchRubrics | GLM-5.1 (Z.ai) | 68 / 101 | No | Diagnostic |
 | DRACO | Gemini 3.1 Pro Preview | 10 / 100 | Yes, closest available successor to paper judge | Partial |
 | DRACO | Claude Haiku 4.5 | 100 / 100 | No | Complete but exploratory |
 
@@ -54,6 +55,7 @@ The DRACO paper reports that rankings are relatively stable across judges, but a
 | Benchmark | Our Judge | Paper’s Judge | Temperature | Thinking | Method |
 |---|---|---|---|---|---|
 | ResearchRubrics | Gemini 2.5 Pro Preview | Gemini 2.5 Pro Preview | default | none | Real-time |
+| ResearchRubrics (diagnostic) | GLM-5.1 (Z.ai) | — | default | none | Real-time |
 | DRACO (paper-aligned) | Gemini 3.1 Pro Preview | Gemini 3 Pro (deprecated → 3.1) | 0.2 | low | Batch API |
 | DRACO (exploratory) | Claude Haiku 4.5 | — | — | — | Real-time |
 
@@ -120,7 +122,75 @@ ResearchRubrics uses the paper’s default judge configuration, which makes this
 
 ---
 
+## Judge Comparison Analysis
+
+We judged the same agent outputs with multiple LLM judges, which lets us quantify how much judge choice affects scores. This analysis is based on overlapping tasks scored by two or more judges.
+
+### ResearchRubrics: Gemini 2.5 Pro vs GLM-5.1 (10 overlapping tasks)
+
+| Metric | Gemini 2.5 Pro | GLM-5.1 | Delta |
+|---|---:|---:|---:|
+| Mean normalized score | 0.598 | 0.462 | +0.136 |
+| Mean pass rate | 0.541 | 0.401 | +0.140 |
+| Median score | 0.556 | 0.463 | +0.094 |
+
+**Agreement statistics** (285 common criteria):
+
+| Metric | Value |
+|---|---|
+| Overall agreement | 82.1% (234/285) |
+| Both MET | 104 |
+| Both UNMET | 130 |
+| Gemini=MET, GLM=UNMET | 47 |
+| GLM=MET, Gemini=UNMET | 4 |
+| Cohen's Kappa | 0.647 (substantial) |
+| Spearman rank correlation | 0.782 (strong) |
+
+> **Interpretation**: GLM-5.1 is **significantly stricter** than Gemini 2.5 Pro. In 47 of 51 disagreements, GLM rejected a criterion that Gemini accepted (vs only 4 the other way). However, the two judges produce **strongly correlated task rankings** (Spearman 0.782) — they agree on which tasks are good and bad, they just disagree on where the MET/UNMET threshold falls. GLM-5.1 scores should be treated as a lower bound, not directly compared against paper baselines.
+
+### DRACO: Haiku vs Gemini 3.1 Pro (10 overlapping tasks)
+
+**Agreement statistics** (383 common criteria):
+
+| Metric | Value |
+|---|---|
+| Overall agreement | 71.0% (272/383) |
+| Both MET | 141 |
+| Both UNMET | 131 |
+| Haiku=MET, Gemini=UNMET | 96 |
+| Gemini=MET, Haiku=UNMET | 15 |
+| Cohen's Kappa | 0.445 (moderate) |
+
+> **Interpretation**: Haiku is much more lenient than Gemini 3.1 Pro, inflating MET verdicts by 96 criteria. The Kappa of 0.445 indicates only moderate agreement — weaker than the Gemini vs GLM-5.1 pair. This confirms that Haiku-judged DRACO scores (69.4%) should not be compared against paper baselines.
+
+### Strictness Gradient
+
+Across all our runs, judges fall on a clear strictness spectrum:
+
+```
+Lenient                                              Strict
+  ├─ Haiku 4.5 (DRACO: 71% agreement w/ Gemini)
+  ├─ Gemini 2.5 Pro (RR: 82% agreement, Kappa 0.65)
+  ├─ Gemini 3.1 Pro + thinking=low
+  └─ GLM-5.1 (RR: scores 14pp lower than Gemini)
+```
+
+This gradient is consistent with the DRACO paper's own cross-judge analysis, which found that Sonnet-4.5 produced higher absolute scores than Gemini, while GPT-5.2 produced lower ones. Judge choice affects absolute scores by up to **20+ points** but preserves relative rankings.
+
+---
+
 ## Exploratory Results
+
+### ResearchRubrics — GLM-5.1-Judged, 68/101 Tasks
+
+GLM-5.1 judged 68 of 101 ResearchRubrics tasks before hitting the Z.ai API rate limit. This is the largest single-judge sample we have for ResearchRubrics, but the scores are **not paper-comparable** (the paper uses Gemini 2.5 Pro).
+
+| Metric | Score | Judge | Tasks | Criteria |
+|---|---:|---|---:|---:|
+| Mean normalized score | 0.427 | GLM-5.1 | 68 | 1,721 |
+| Mean pass rate | 0.395 | GLM-5.1 | 68 | 1,721 |
+
+> **Interpretation**: The GLM-5.1 score of 0.427 is a **strict lower bound**. On the same 10 tasks, Gemini 2.5 Pro scored 0.598 (paper-comparable). Applying the observed mean delta (+0.14) as a rough correction suggests the true paper-comparable score is likely in the **0.55–0.60 range**. The remaining 33 tasks need to be judged by Gemini 2.5 Pro to confirm.
 
 This section contains useful evidence, but it should not be used for paper-baseline ranking claims.
 
@@ -217,12 +287,13 @@ We can compare latency today. Token usage for Durable Researcher is not yet avai
 | Item | Cost | Method |
 |---|---:|---|
 | Agent model (Z.ai GLM-5.1, 201 tasks) | ~$0 (beta) | — |
-| ResearchRubrics judging (10 tasks) | ~$1.50 | Gemini 2.5 Pro, real-time |
+| ResearchRubrics judging — Gemini (10 tasks) | ~$1.50 | Gemini 2.5 Pro, real-time |
+| ResearchRubrics judging — GLM-5.1 (68 tasks) | ~$13 | GLM-5.1, real-time |
 | DRACO judging — Haiku (100 tasks) | ~$2.00 | Claude Haiku 4.5, real-time |
 | DRACO judging — Gemini 3.1 Pro (10 tasks) | ~$3.32 | Gemini Batch API (50% off) |
 | DRACO judging — Gemini 3.1 Pro (100 tasks, est.) | ~$33 | Gemini Batch API (50% off) |
-| Full ResearchRubrics judging (101 tasks, est.) | ~$15 | Gemini 2.5 Pro, real-time |
-| **Total estimated for complete evaluation** | **~$50** | |
+| Full ResearchRubrics judging — Gemini (101 tasks, est.) | ~$15 | Gemini 2.5 Pro, real-time |
+| **Total estimated for complete evaluation** | **~$55** | |
 
 Agent runtime: ~18 hours for DRACO (100 tasks), ~12 hours for ResearchRubrics (101 tasks).
 
@@ -235,13 +306,15 @@ These are the conclusions that seem strong enough to act on now.
 1. **ResearchRubrics is genuinely promising**. Even on a small sample, Durable Researcher is already near the top published systems.
 2. **DRACO is the harder benchmark for this agent**. The paper-aligned score is meaningfully below the frontier systems.
 3. **The main weaknesses are not presentation or citations**. They are breadth/depth and factual accuracy under a strict judge.
-4. **Judge sensitivity is large enough to distort intuition**. Any future external claim should clearly separate Gemini-judged and non-Gemini-judged DRACO results.
+4. **Judge sensitivity is large enough to distort intuition**. Any future external claim should clearly separate Gemini-judged and non-Gemini-judged results. The strictness gradient runs Haiku > Gemini 2.5 Pro > Gemini 3.1 Pro > GLM-5.1.
+5. **GLM-5.1 is a useful strict diagnostic** but over-penalizes vs the paper's judge. On overlapping tasks it scores 14pp lower than Gemini 2.5 Pro, with strong ranking correlation (Spearman 0.782).
 
 ## What Is Still Uncertain
 
-1. Whether the current ResearchRubrics result holds over all 101 tasks.
+1. Whether the current ResearchRubrics result holds over all 101 tasks (68 tasks judged by GLM-5.1 suggest it may be slightly lower, but the paper-comparable Gemini score remains the best signal).
 2. Where Durable Researcher really lands on DRACO once the full Gemini run is completed.
 3. Which DRACO domains are driving the Gemini weakness most strongly.
+4. Whether the remaining 33 ResearchRubrics tasks can be judged by GLM-5.1 once the API rate limit resets, or whether Gemini 2.5 Pro should be used instead.
 
 ---
 
