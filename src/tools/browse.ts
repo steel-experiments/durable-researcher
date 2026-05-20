@@ -10,6 +10,7 @@ import { scrapeUrl } from "../steel-client.js";
 import { isContentMeaningful, truncateContent } from "../content.js";
 import { loadTemplate } from "../prompts.js";
 import { getCachedBrowse, setCachedBrowse } from "../browse-cache.js";
+import { isPdfUrl, fetchAndExtractPdf } from "../pdf.js";
 import type { RefinedContent } from "../types.js";
 
 const BrowseParams = Type.Object({
@@ -51,6 +52,26 @@ export function createBrowseTool(
         content = cached.content;
         title = cached.title;
         rawLength = cached.rawLength;
+      } else if (isPdfUrl(params.url)) {
+        // PDFs return junk markdown from a normal scrape — fetch the bytes and
+        // run a real PDF parser instead. Falls through to Steel scrape on failure.
+        const pdf = await fetchAndExtractPdf(params.url);
+        if (pdf && pdf.text.length > 0) {
+          content = pdf.text;
+          rawLength = pdf.byteLength;
+          title = params.url.split("/").pop() ?? params.url;
+          if (taskId) {
+            await setCachedBrowse(taskId, params.url, { title, content, rawLength }).catch(() => {});
+          }
+        } else {
+          const scraped = await scrapeUrl(client, params.url);
+          content = scraped.content;
+          title = scraped.title;
+          rawLength = scraped.rawLength;
+          if (taskId) {
+            await setCachedBrowse(taskId, params.url, { title, content, rawLength }).catch(() => {});
+          }
+        }
       } else {
         const scraped = await scrapeUrl(client, params.url);
         content = scraped.content;
