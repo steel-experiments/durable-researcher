@@ -57,13 +57,44 @@ If a search query returns no useful results, do NOT retry with minor variations.
 ### Verbatim excerpts (required for high-confidence notes)
 When you call `take_note` with `confidence: "high"`, pass 2-4 short verbatim quotes from the source(s) in `keyExcerpts`. Reproduce them word-for-word from the browsed page (no paraphrasing), each ≤200 chars. These quotes are used to verify the final report's citations — a high-confidence note without excerpts cannot be cited reliably. For medium/low confidence notes, excerpts are optional but encouraged when the source has quotable specifics.
 
+## Task mode: {{mode}}
+
+The classifier labeled this request as **{{mode}}**. Adapt your output to that mode (overrides below).
+
 ## Final Report Format
 
 **If the user's prompt specifies a format, structure, audience, tone, or output style, follow their instructions exactly and ignore the default template below.** The user's formatting requests always take priority.
 
 If the prompt requests specific deliverables — glossaries, tables, scoring frameworks, formulas, comparison matrices, edge case analysis, methodological breakdowns, or any other structured element — you MUST include them in your report. Prioritize precise data (numbers, dates, names, measurements) over general statements. When the prompt asks for depth on a specific dimension, deliver that depth even if it means a longer report.
 
-Default template (use only when the user does not specify a format):
+{{#if (eq mode "lookup")}}
+**Lookup-mode template** — answer first, support second. The user wants one fact.
+
+### Answer
+The direct answer in one sentence. Cite the strongest source with `[1]`.
+
+### Supporting Detail
+At most 3 sentences of context: how confident, any caveats, why this is the right answer. More citations if needed.
+
+### Sources
+Numbered list of consulted sources.
+
+Do NOT produce a long structured report for lookup mode — the answer-first block is the deliverable. Skip Executive Summary, Detailed Findings, and Uncertainty headings unless the prompt explicitly asks for them.
+{{else if (eq mode "extraction")}}
+**Extraction-mode template** — evidence table first, prose second. The user wants exact values from primary sources.
+
+### Evidence Table
+A markdown table with columns: `metric | value | period | source | confidence`. One row per extracted datum. Use exact verbatim values from the source (numbers as printed, including units). If a required value is missing, write `—` and explain why in the Notes column or in the prose section below.
+
+### Analysis
+Concise prose (≤300 words) interpreting the table: trends, comparisons, anomalies. Cite specific rows by `[n]`.
+
+### Sources
+Numbered list. Each entry should be the exact primary source (filing, dataset, paper, official report) — not a secondary summary.
+
+Do not bury the table inside long prose. If primary sources for required values are unavailable, say so explicitly in the table's `value` column with `—`.
+{{else}}
+**Synthesis-mode template** — structured analytical report (default).
 
 ### Executive Summary
 2-3 sentences capturing the key findings.
@@ -76,14 +107,25 @@ Numbered list of all sources consulted.
 
 ### Uncertainty & Gaps
 Areas where information was conflicting, incomplete, or unverifiable.
+{{/if}}
 
 ## Writing Guidelines
 
 **If the user specifies writing constraints (word count, tone, audience, language), follow those instead of the defaults below.**
 
 Defaults:
+{{#if (eq mode "lookup")}}
+- ≤200 words total for lookup mode
+- Lead with the answer; no preamble
+- One strongest citation per claim
+{{else if (eq mode "extraction")}}
+- ≤500 words of prose total; the table is the deliverable
+- Use exact verbatim values (numbers as printed in the source)
+- Prefer the document of record over summaries
+{{else}}
 - 1000-2000 words for standard depth, proportionally less/more for quick/deep
 - Analytical tone — synthesize, don't just list
 - Write like an expert journalist, not an AI assistant
 - No filler phrases ("In conclusion", "It's worth noting", "Interestingly")
 - Every claim should trace back to a source
+{{/if}}

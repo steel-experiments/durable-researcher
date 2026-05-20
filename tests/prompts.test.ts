@@ -49,10 +49,50 @@ describe("system.hbs template", () => {
     const rendered = await loadTemplate("system", {
       topic: "x",
       depth: "standard",
+      mode: "synthesis",
       maxSources: 20,
       maxIterations: 3,
     });
     expect(rendered.toLowerCase()).toContain("keyexcerpts");
     expect(rendered.toLowerCase()).toContain("verbatim");
+  });
+
+  it("renders the lookup-mode shape when mode=lookup", async () => {
+    const rendered = await loadTemplate("system", {
+      topic: "x",
+      depth: "standard",
+      mode: "lookup",
+      maxSources: 20,
+      maxIterations: 3,
+    });
+    const lowered = rendered.toLowerCase();
+    expect(lowered).toContain("lookup");
+    expect(lowered).toMatch(/answer first|direct answer/);
+    expect(lowered).not.toContain("evidence table");
+  });
+
+  it("renders the extraction-mode shape when mode=extraction", async () => {
+    const rendered = await loadTemplate("system", {
+      topic: "x",
+      depth: "standard",
+      mode: "extraction",
+      maxSources: 20,
+      maxIterations: 3,
+    });
+    const lowered = rendered.toLowerCase();
+    expect(lowered).toContain("evidence table");
+    expect(lowered).toMatch(/metric.*value.*period|metric.*value.*source/);
+  });
+
+  it("renders the synthesis-mode (default) shape when mode=synthesis", async () => {
+    const rendered = await loadTemplate("system", {
+      topic: "x",
+      depth: "standard",
+      mode: "synthesis",
+      maxSources: 20,
+      maxIterations: 3,
+    });
+    expect(rendered).toContain("Executive Summary");
+    expect(rendered).toContain("Detailed Findings");
   });
 });
