@@ -1,9 +1,10 @@
 // ABOUTME: Finds existing research tasks for resume or deduplication.
 // ABOUTME: Queries Postgres for recent tasks and uses LLM for fuzzy topic matching.
 
-import pg from "pg";
+import type pg from "pg";
 import { completeSimple, getEnvApiKey } from "@mariozechner/pi-ai";
 import { getUtilityModel, getUtilityReasoning } from "./config.js";
+import { getDbPool } from "./db-pool.js";
 
 export type ExistingTask = {
   taskId: string;
@@ -14,8 +15,6 @@ export type ExistingTask = {
   attempt: number;
   maxAttempts: number;
 };
-
-const DEFAULT_DB_URL = "postgresql://postgres:postgres@localhost:5432/absurd";
 
 function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, "\"\"")}"`;
@@ -69,83 +68,67 @@ async function queryQueueTasks(
 
 /** Query Postgres for recent research tasks with their params. */
 export async function findRecentTasks(
-  databaseUrl?: string,
   limit = 20,
 ): Promise<ExistingTask[]> {
-  const pool = new pg.Pool({
-    connectionString: databaseUrl ?? process.env.DATABASE_URL ?? DEFAULT_DB_URL,
-  });
+  const pool = getDbPool();
+  const queues = await listQueues(pool);
+  const taskGroups = await Promise.all(
+    queues.map((queueName) => queryQueueTasks(pool, queueName, limit)),
+  );
 
-  try {
-    const queues = await listQueues(pool);
-    const taskGroups = await Promise.all(
-      queues.map((queueName) => queryQueueTasks(pool, queueName, limit)),
-    );
-
-    return taskGroups
-      .flat()
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-      .slice(0, limit);
-  } finally {
-    await pool.end();
-  }
+  return taskGroups
+    .flat()
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+    .slice(0, limit);
 }
 
 /** Find a specific task ID across all queues. */
 export async function findTaskById(
   taskId: string,
-  databaseUrl?: string,
 ): Promise<ExistingTask | undefined> {
-  const pool = new pg.Pool({
-    connectionString: databaseUrl ?? process.env.DATABASE_URL ?? DEFAULT_DB_URL,
-  });
+  const pool = getDbPool();
+  const queues = await listQueues(pool);
 
-  try {
-    const queues = await listQueues(pool);
+  for (const queueName of queues) {
+    const tableName = quoteIdent(`t_${queueName}`);
+    try {
+      const result = await pool.query(
+        `SELECT task_id, params, state, enqueue_at, attempts, max_attempts
+         FROM absurd.${tableName}
+         WHERE task_id = $1
+         LIMIT 1`,
+        [taskId],
+      );
 
-    for (const queueName of queues) {
-      const tableName = quoteIdent(`t_${queueName}`);
-      try {
-        const result = await pool.query(
-          `SELECT task_id, params, state, enqueue_at, attempts, max_attempts
-           FROM absurd.${tableName}
-           WHERE task_id = $1
-           LIMIT 1`,
-          [taskId],
-        );
+      const row = result.rows[0] as {
+        task_id: string;
+        params: { topic?: string };
+        state: string;
+        enqueue_at: Date;
+        attempts: number;
+        max_attempts: number | null;
+      } | undefined;
 
-        const row = result.rows[0] as {
-          task_id: string;
-          params: { topic?: string };
-          state: string;
-          enqueue_at: Date;
-          attempts: number;
-          max_attempts: number | null;
-        } | undefined;
-
-        if (row) {
-          return {
-            taskId: row.task_id,
-            queueName,
-            topic: row.params?.topic ?? "unknown",
-            status: row.state,
-            createdAt: row.enqueue_at,
-            attempt: row.attempts,
-            maxAttempts: row.max_attempts ?? 3,
-          };
-        }
-      } catch (error) {
-        if ((error as { code?: string }).code === "42P01") {
-          continue;
-        }
-        throw error;
+      if (row) {
+        return {
+          taskId: row.task_id,
+          queueName,
+          topic: row.params?.topic ?? "unknown",
+          status: row.state,
+          createdAt: row.enqueue_at,
+          attempt: row.attempts,
+          maxAttempts: row.max_attempts ?? 3,
+        };
       }
+    } catch (error) {
+      if ((error as { code?: string }).code === "42P01") {
+        continue;
+      }
+      throw error;
     }
-
-    return undefined;
-  } finally {
-    await pool.end();
   }
+
+  return undefined;
 }
 
 /** Find an exact topic match among recent tasks. */

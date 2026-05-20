@@ -1,7 +1,7 @@
 // ABOUTME: Postgres-backed cache for scraped page content keyed by (task_id, url).
 // ABOUTME: Prevents re-scraping on crash/resume and benefits extend mode across tasks.
 
-import pg from "pg";
+import { getDbPool } from "./db-pool.js";
 
 export type CachedBrowse = {
   url: string;
@@ -11,25 +11,12 @@ export type CachedBrowse = {
   scrapedAt: Date;
 };
 
-const DEFAULT_DB_URL = "postgresql://postgres:postgres@localhost:5432/absurd";
-
-let pool: pg.Pool | null = null;
 let tableInitialized = false;
-
-function getPool(): pg.Pool {
-  if (!pool) {
-    pool = new pg.Pool({
-      connectionString: process.env.DATABASE_URL ?? DEFAULT_DB_URL,
-      max: 5,
-    });
-  }
-  return pool;
-}
 
 /** Create the browse_cache table if it doesn't exist. */
 async function ensureTable(): Promise<void> {
   if (tableInitialized) return;
-  const p = getPool();
+  const p = getDbPool();
   await p.query(`
     CREATE TABLE IF NOT EXISTS browse_cache (
       task_id TEXT NOT NULL,
@@ -50,7 +37,7 @@ export async function getCachedBrowse(
   url: string,
 ): Promise<CachedBrowse | null> {
   await ensureTable();
-  const p = getPool();
+  const p = getDbPool();
   const result = await p.query(
     `SELECT url, title, content, raw_length, scraped_at FROM browse_cache WHERE task_id = $1 AND url = $2`,
     [taskId, url],
@@ -73,7 +60,7 @@ export async function setCachedBrowse(
   data: { title: string; content: string; rawLength: number },
 ): Promise<void> {
   await ensureTable();
-  const p = getPool();
+  const p = getDbPool();
   await p.query(
     `INSERT INTO browse_cache (task_id, url, title, content, raw_length)
      VALUES ($1, $2, $3, $4, $5)
@@ -95,7 +82,7 @@ const CACHE_EXPIRY_DAYS = 7;
  */
 export async function expireBrowseCache(expiryDays = CACHE_EXPIRY_DAYS): Promise<number> {
   await ensureTable();
-  const p = getPool();
+  const p = getDbPool();
   const result = await p.query(
     `DELETE FROM browse_cache WHERE scraped_at < NOW() - INTERVAL '1 day' * $1`,
     [expiryDays],
@@ -110,7 +97,7 @@ export async function expireBrowseCache(expiryDays = CACHE_EXPIRY_DAYS): Promise
  */
 export async function cleanupBrowseCache(): Promise<number> {
   await ensureTable();
-  const p = getPool();
+  const p = getDbPool();
   // Delete cache for tasks that no longer exist in the task table
   const result = await p.query(`
     DELETE FROM browse_cache
@@ -119,11 +106,7 @@ export async function cleanupBrowseCache(): Promise<number> {
   return result.rowCount ?? 0;
 }
 
-/** Close the connection pool. */
-export async function closeBrowseCache(): Promise<void> {
-  if (pool) {
-    await pool.end();
-    pool = null;
-    tableInitialized = false;
-  }
+/** Reset the table-initialized flag. The shared pool itself is owned by db-pool.ts. */
+export function resetBrowseCacheState(): void {
+  tableInitialized = false;
 }

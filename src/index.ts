@@ -26,7 +26,7 @@ import { runClarification } from "./clarify.js";
 import { rebuildStateFromMessages } from "./durable-turns.js";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { ResearchNote } from "./types.js";
-import pg from "pg";
+import { getDbPool } from "./db-pool.js";
 
 function printHelp() {
   console.log(`
@@ -123,74 +123,67 @@ function printUsage(usage: UsageStats) {
   }
 }
 
-const DEFAULT_DB_URL = "postgresql://postgres:postgres@localhost:5432/absurd";
-
 function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, "\"\"")}"`;
 }
 
 async function cleanupTasks() {
-  const connectionString = process.env.DATABASE_URL ?? DEFAULT_DB_URL;
-  const pool = new pg.Pool({ connectionString });
-  try {
-    const queuesResult = await pool.query(`SELECT queue_name FROM absurd.list_queues()`);
-    let deletedTasks = 0;
+  const pool = getDbPool();
+  const queuesResult = await pool.query(`SELECT queue_name FROM absurd.list_queues()`);
+  let deletedTasks = 0;
 
-    for (const row of queuesResult.rows as Array<{ queue_name: string }>) {
-      const queue = row.queue_name;
-      const tasksTable = `absurd.${quoteIdent(`t_${queue}`)}`;
-      const checkpointsTable = `absurd.${quoteIdent(`c_${queue}`)}`;
-      const waitersTable = `absurd.${quoteIdent(`w_${queue}`)}`;
-      const runsTable = `absurd.${quoteIdent(`r_${queue}`)}`;
+  for (const row of queuesResult.rows as Array<{ queue_name: string }>) {
+    const queue = row.queue_name;
+    const tasksTable = `absurd.${quoteIdent(`t_${queue}`)}`;
+    const checkpointsTable = `absurd.${quoteIdent(`c_${queue}`)}`;
+    const waitersTable = `absurd.${quoteIdent(`w_${queue}`)}`;
+    const runsTable = `absurd.${quoteIdent(`r_${queue}`)}`;
 
-      // Delete checkpoints, waiters, runs, and events for terminal tasks, then the tasks themselves
-      await pool.query(`
-        DELETE FROM ${checkpointsTable}
-        WHERE task_id IN (
-          SELECT task_id FROM ${tasksTable}
-          WHERE state IN ('completed', 'failed', 'cancelled')
-        )
-      `);
-      await pool.query(`
-        DELETE FROM ${waitersTable}
-        WHERE task_id IN (
-          SELECT task_id FROM ${tasksTable}
-          WHERE state IN ('completed', 'failed', 'cancelled')
-        )
-      `);
-      await pool.query(`
-        DELETE FROM ${runsTable}
-        WHERE task_id IN (
-          SELECT task_id FROM ${tasksTable}
-          WHERE state IN ('completed', 'failed', 'cancelled')
-        )
-      `);
-      const deleted = await pool.query(`
-        DELETE FROM ${tasksTable}
+    // Delete checkpoints, waiters, runs, and events for terminal tasks, then the tasks themselves
+    await pool.query(`
+      DELETE FROM ${checkpointsTable}
+      WHERE task_id IN (
+        SELECT task_id FROM ${tasksTable}
         WHERE state IN ('completed', 'failed', 'cancelled')
-        RETURNING task_id
-      `);
-      deletedTasks += deleted.rowCount ?? 0;
+      )
+    `);
+    await pool.query(`
+      DELETE FROM ${waitersTable}
+      WHERE task_id IN (
+        SELECT task_id FROM ${tasksTable}
+        WHERE state IN ('completed', 'failed', 'cancelled')
+      )
+    `);
+    await pool.query(`
+      DELETE FROM ${runsTable}
+      WHERE task_id IN (
+        SELECT task_id FROM ${tasksTable}
+        WHERE state IN ('completed', 'failed', 'cancelled')
+      )
+    `);
+    const deleted = await pool.query(`
+      DELETE FROM ${tasksTable}
+      WHERE state IN ('completed', 'failed', 'cancelled')
+      RETURNING task_id
+    `);
+    deletedTasks += deleted.rowCount ?? 0;
 
-      // Per-run CLI queues are ephemeral; remove them once empty.
-      if (queue.startsWith("cli_")) {
-        const remaining = await pool.query<{ count: string }>(`SELECT COUNT(*) AS count FROM ${tasksTable}`);
-        if (remaining.rows[0]?.count === "0") {
-          await pool.query(`SELECT absurd.drop_queue($1)`, [queue]);
-        }
+    // Per-run CLI queues are ephemeral; remove them once empty.
+    if (queue.startsWith("cli_")) {
+      const remaining = await pool.query<{ count: string }>(`SELECT COUNT(*) AS count FROM ${tasksTable}`);
+      if (remaining.rows[0]?.count === "0") {
+        await pool.query(`SELECT absurd.drop_queue($1)`, [queue]);
       }
     }
+  }
 
-    console.log(`Cleaned up ${deletedTasks} tasks.`);
+  console.log(`Cleaned up ${deletedTasks} tasks.`);
 
-    // Clean up browse cache: remove entries for deleted tasks + expire old entries
-    const cacheOrphans = await cleanupBrowseCache();
-    const cacheExpired = await expireBrowseCache();
-    if (cacheOrphans > 0 || cacheExpired > 0) {
-      console.log(`Browse cache: ${cacheOrphans} orphaned + ${cacheExpired} expired entries removed.`);
-    }
-  } finally {
-    await pool.end();
+  // Clean up browse cache: remove entries for deleted tasks + expire old entries
+  const cacheOrphans = await cleanupBrowseCache();
+  const cacheExpired = await expireBrowseCache();
+  if (cacheOrphans > 0 || cacheExpired > 0) {
+    console.log(`Browse cache: ${cacheOrphans} orphaned + ${cacheExpired} expired entries removed.`);
   }
 }
 
