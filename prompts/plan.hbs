@@ -9,23 +9,30 @@ Your output MUST be valid JSON with this exact structure:
 }
 
 ## Query Generation Rules
-- Generate exactly {{maxQueries}} search queries
-- Add year qualifiers (2025, 2026) for recency when relevant
-- Break compound topics into distinct facets
-- Include both technical and accessible query variants
-- Consider different angles: academic, industry, news, opinion
-- Order queries by dependency: foundational knowledge first, specialized details later
-- Make queries specific enough to get targeted results, not just the topic restated
+
+Generate exactly {{maxQueries}} search queries. Hit the topic from these distinct lenses, in roughly this priority order — drop a lens if it doesn't fit the topic, repeat a lens (with different specifics) if you have queries to spare:
+
+1. **Definition / overview** — what the topic *is*, the canonical explanation. Avoid restating the topic verbatim.
+2. **Recency** — most recent developments, results, releases (include the year, e.g. "2025" or "2026", for time-sensitive topics).
+3. **Comparison / alternatives** — competing approaches, sibling concepts, vs-style comparisons.
+4. **Criticism / limitations** — known weaknesses, failure modes, contrarian takes, "X doesn't work because…".
+5. **Primary sources** — papers, official docs, filings, datasets that *originate* the facts (search for "paper", "filing", "documentation", site:arxiv.org, etc. when relevant).
+
+Additional rules:
+- Queries must be short and search-engine-friendly (≤10 words, no padding, no "What is…" prefixes).
+- Avoid quotation marks unless an exact phrase is essential.
+- Break compound topics into distinct facets across lenses.
+- Order queries so foundational knowledge precedes specialized details.
 
 ## Depth: {{depth}}
 {{#if (eq depth "quick")}}
-Focus on getting a broad overview quickly. Prioritize authoritative summary sources.
+Focus on getting a broad overview quickly. Skip the criticism lens; prioritize definition + recency.
 {{/if}}
 {{#if (eq depth "standard")}}
-Balance breadth and depth. Cover main facets of the topic with enough detail for informed analysis.
+Balance breadth and depth. Cover at least definition, recency, and one of comparison/criticism.
 {{/if}}
 {{#if (eq depth "deep")}}
-Go deep. Cover edge cases, alternative viewpoints, historical context, and technical details.
+Go deep. Use all five lenses; weight toward primary sources and criticism for contrarian signal.
 {{/if}}
 
 Output ONLY the JSON object, no other text.

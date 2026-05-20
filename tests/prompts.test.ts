@@ -1,0 +1,58 @@
+// ABOUTME: Snapshot-light tests for prompt templates — verifies key instructions are present.
+// ABOUTME: Templates render without LLM calls so these tests are deterministic.
+
+import { describe, it, expect } from "vitest";
+import { loadTemplate } from "../src/prompts.js";
+
+describe("plan.hbs template", () => {
+  it("instructs the planner to cover lensed angles (definition / recency / criticism / comparison / primary)", async () => {
+    const rendered = await loadTemplate("plan", { maxQueries: "5", depth: "standard" });
+    const lowered = rendered.toLowerCase();
+    expect(lowered).toContain("definition");
+    expect(lowered).toContain("recency");
+    expect(lowered).toContain("criticism");
+    expect(lowered).toContain("comparison");
+    expect(lowered).toContain("primary source");
+  });
+
+  it("requests the configured number of queries", async () => {
+    const rendered = await loadTemplate("plan", { maxQueries: "7", depth: "standard" });
+    expect(rendered).toContain("7");
+  });
+
+  it("renders the depth-specific guidance for 'deep'", async () => {
+    const rendered = await loadTemplate("plan", { maxQueries: "3", depth: "deep" });
+    expect(rendered.toLowerCase()).toContain("deep");
+  });
+});
+
+describe("summarize.hbs template", () => {
+  it("asks for verbatim key excerpts alongside the summary", async () => {
+    const rendered = await loadTemplate("summarize", { topic: "quantum error correction" });
+    const lowered = rendered.toLowerCase();
+    expect(lowered).toContain("key excerpts");
+    expect(lowered).toContain("verbatim");
+  });
+
+  it("preserves the existing focus and topic interpolation", async () => {
+    const rendered = await loadTemplate("summarize", {
+      topic: "quantum error correction",
+      focus: "error rates",
+    });
+    expect(rendered).toContain("error rates");
+    expect(rendered).toContain("quantum error correction");
+  });
+});
+
+describe("system.hbs template", () => {
+  it("requires keyExcerpts on high-confidence notes", async () => {
+    const rendered = await loadTemplate("system", {
+      topic: "x",
+      depth: "standard",
+      maxSources: 20,
+      maxIterations: 3,
+    });
+    expect(rendered.toLowerCase()).toContain("keyexcerpts");
+    expect(rendered.toLowerCase()).toContain("verbatim");
+  });
+});
