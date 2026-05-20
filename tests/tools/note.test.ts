@@ -84,6 +84,60 @@ describe("createNoteTool", () => {
     expect(result.details).toEqual({ noteIndex: 1, mergedCount: 0 });
   });
 
+  it("stores keyExcerpts when provided", async () => {
+    const notes: ResearchNote[] = [];
+    const tool = createNoteTool(notes);
+
+    await tool.execute("call-1", {
+      title: "Quote-bearing finding",
+      content: "Surface codes used in qubit error correction",
+      sourceUrls: ["https://example.com"],
+      confidence: "high" as const,
+      keyExcerpts: [
+        "Surface codes are the leading approach",
+        "Logical error rate dropped to 0.143%",
+      ],
+    });
+
+    expect(notes[0].keyExcerpts).toEqual([
+      "Surface codes are the leading approach",
+      "Logical error rate dropped to 0.143%",
+    ]);
+  });
+
+  it("caps keyExcerpts at 4 and trims each to 240 chars", async () => {
+    const notes: ResearchNote[] = [];
+    const tool = createNoteTool(notes);
+    const longQuote = "x".repeat(300);
+
+    await tool.execute("call-1", {
+      title: "Too many excerpts",
+      content: "Content",
+      sourceUrls: [],
+      confidence: "medium" as const,
+      keyExcerpts: ["e1", "e2", "e3", "e4", "e5", longQuote],
+    });
+
+    expect(notes[0].keyExcerpts).toHaveLength(4);
+    for (const ex of notes[0].keyExcerpts!) {
+      expect(ex.length).toBeLessThanOrEqual(240);
+    }
+  });
+
+  it("works without keyExcerpts (backwards compat)", async () => {
+    const notes: ResearchNote[] = [];
+    const tool = createNoteTool(notes);
+
+    await tool.execute("call-1", {
+      title: "Legacy note",
+      content: "No excerpts",
+      sourceUrls: [],
+      confidence: "low" as const,
+    });
+
+    expect(notes[0].keyExcerpts).toBeUndefined();
+  });
+
   it("triggers dedup when notes reach threshold", async () => {
     const notes: ResearchNote[] = [];
     const tool = createNoteTool(notes);

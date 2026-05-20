@@ -108,7 +108,7 @@ export function createTimeoutSteeringCheck(
 
 /** Build the final research result from accumulated notes and messages. */
 export function buildResult(
-  notes: { title: string; content: string; sourceUrls: string[]; confidence?: "high" | "medium" | "low" }[],
+  notes: { title: string; content: string; sourceUrls: string[]; confidence?: "high" | "medium" | "low"; keyExcerpts?: string[] }[],
   topic: string,
   messages: AgentMessage[],
 ): ResearchResult {
@@ -144,6 +144,7 @@ export function buildResult(
       content: n.content,
       sourceUrls: n.sourceUrls,
       confidence: n.confidence ?? ("high" as const),
+      ...(n.keyExcerpts?.length ? { keyExcerpts: n.keyExcerpts } : {}),
     })),
     sources: Array.from(uniqueUrls).map((url) => ({ title: url, url })),
     messages,

@@ -2,6 +2,25 @@
 // ABOUTME: Detects near-duplicate notes, merges them, and ranks by confidence/source diversity.
 
 import type { ResearchNote } from "./types.js";
+import { MAX_EXCERPTS_PER_NOTE } from "./types.js";
+
+/** Merge two excerpt lists, dedup by trimmed lowercase, preserve order, cap at MAX_EXCERPTS_PER_NOTE. */
+function mergeExcerpts(
+  a: string[] | undefined,
+  b: string[] | undefined,
+): string[] | undefined {
+  if (!a?.length && !b?.length) return undefined;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const ex of [...(a ?? []), ...(b ?? [])]) {
+    const key = ex.trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(ex);
+    if (out.length >= MAX_EXCERPTS_PER_NOTE) break;
+  }
+  return out.length > 0 ? out : undefined;
+}
 
 /** Extract word trigrams from a string for similarity comparison. */
 function wordTrigrams(text: string): Set<string> {
@@ -74,11 +93,14 @@ export function mergeNotes(a: ResearchNote, b: ResearchNote): ResearchNote {
     ? a.confidence
     : b.confidence;
 
+  const keyExcerpts = mergeExcerpts(primary.keyExcerpts, secondary.keyExcerpts);
+
   return {
     title: primary.title,
     content: primary.content,
     sourceUrls: Array.from(urlSet),
     confidence,
+    ...(keyExcerpts ? { keyExcerpts } : {}),
   };
 }
 
