@@ -6,186 +6,30 @@ import dotenv from "dotenv";
 // Load .env without overriding existing env vars — shell env takes precedence
 dotenv.config({ override: false });
 
-import { writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
 import { createResearchApp, type ResearchAppOptions } from "./agent.js";
 import type { ResearchParams } from "./types.js";
-import type { UsageStats } from "./durable-turns.js";
 import { getMaxDurationSeconds } from "./config.js";
-import { cleanupBrowseCache, expireBrowseCache } from "./browse-cache.js";
 import { getModel } from "@mariozechner/pi-ai";
 import {
   findRecentTasks,
   findExactMatch,
   findSimilarTask,
   findTaskById,
-  type ExistingTask,
 } from "./task-finder.js";
 import { runFollowUp } from "./follow-up.js";
 import { runClarification } from "./clarify.js";
 import { rebuildStateFromMessages } from "./durable-turns.js";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { ResearchNote } from "./types.js";
-import { getDbPool } from "./db-pool.js";
+import {
+  printHelp,
+  askAction,
+  formatTask,
+  createIsolatedQueueName,
+} from "./cli-help.js";
+import { saveReport, printUsage } from "./report-io.js";
+import { cleanupTasks } from "./task-cleanup.js";
 
-function printHelp() {
-  console.log(`
-Usage: bun run src/index.ts <topic> [options]
-
-Options:
-  --depth <quick|standard|deep>   Research depth (default: standard)
-  --max-sources <number>          Maximum sources to consult (default: 20)
-  --model <provider:model>        LLM model (default: zai:glm-5.1)
-  --resume <task-id>              Resume a specific task by ID
-  --clarify                       Ask clarifying questions before researching
-  --new                           Start fresh, ignore existing research
-  --extend                        Extend prior research with more sources
-  --view                          View existing report without re-running
-  --list                          List recent research tasks
-  --cleanup                       Remove completed/failed/cancelled tasks
-
-Examples:
-  bun run src/index.ts "quantum error correction advances"
-  bun run src/index.ts "impact of AI on journalism" --depth deep
-  bun run src/index.ts "quantum error correction" --extend
-  bun run src/index.ts "quantum error correction" --view
-  bun run src/index.ts --resume 019d6485-29ae-7484-a08e-659bb5a82b8c
-  bun run src/index.ts --list
-  bun run src/index.ts --cleanup
-`);
-}
-
-/** Prompt the user to choose an action for an existing completed task. */
-async function askAction(): Promise<"view" | "extend" | "new"> {
-  const rl = (await import("node:readline")).createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  return new Promise((resolve) => {
-    console.log("\nWhat would you like to do?");
-    console.log("  [v] View existing report");
-    console.log("  [e] Extend research with more sources");
-    console.log("  [n] Start fresh research\n");
-    rl.question("Choice (v/e/n): ", (answer) => {
-      rl.close();
-      const choice = answer.trim().toLowerCase();
-      if (choice === "e" || choice === "extend") resolve("extend");
-      else if (choice === "n" || choice === "new") resolve("new");
-      else resolve("view");
-    });
-  });
-}
-
-function formatTask(task: ExistingTask): string {
-  const age = Math.round((Date.now() - task.createdAt.getTime()) / 60000);
-  const ageStr = age < 60 ? `${age}m ago` : `${Math.round(age / 60)}h ago`;
-  return `  ${task.taskId}  "${task.topic}" [${task.status}] (${ageStr}, attempt ${task.attempt}/${task.maxAttempts})`;
-}
-
-function createIsolatedQueueName(): string {
-  const random = Math.random().toString(36).slice(2, 8);
-  return `cli_${Date.now().toString(36)}_${random}`;
-}
-
-function slugify(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 60);
-}
-
-function saveReport(topic: string, report: string): string {
-  const outputDir = resolve(process.cwd(), "output");
-  if (!existsSync(outputDir)) {
-    mkdirSync(outputDir, { recursive: true });
-  }
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const filename = `${slugify(topic)}-${timestamp}.md`;
-  const filepath = resolve(outputDir, filename);
-  writeFileSync(filepath, `# ${topic}\n\n${report}\n`);
-  return filepath;
-}
-
-function printUsage(usage: UsageStats) {
-  console.log("\n--- Token Usage ---");
-  console.log(
-    `Total: ${usage.inputTokens.toLocaleString()} input, ${usage.outputTokens.toLocaleString()} output`,
-  );
-  if (usage.cacheReadTokens > 0) {
-    console.log(`Cache reads: ${usage.cacheReadTokens.toLocaleString()}`);
-  }
-  for (const [model, counts] of Object.entries(usage.models)) {
-    console.log(
-      `  ${model}: ${counts.input.toLocaleString()} in / ${counts.output.toLocaleString()} out`,
-    );
-  }
-}
-
-function quoteIdent(name: string): string {
-  return `"${name.replace(/"/g, "\"\"")}"`;
-}
-
-async function cleanupTasks() {
-  const pool = getDbPool();
-  const queuesResult = await pool.query(`SELECT queue_name FROM absurd.list_queues()`);
-  let deletedTasks = 0;
-
-  for (const row of queuesResult.rows as Array<{ queue_name: string }>) {
-    const queue = row.queue_name;
-    const tasksTable = `absurd.${quoteIdent(`t_${queue}`)}`;
-    const checkpointsTable = `absurd.${quoteIdent(`c_${queue}`)}`;
-    const waitersTable = `absurd.${quoteIdent(`w_${queue}`)}`;
-    const runsTable = `absurd.${quoteIdent(`r_${queue}`)}`;
-
-    // Delete checkpoints, waiters, runs, and events for terminal tasks, then the tasks themselves
-    await pool.query(`
-      DELETE FROM ${checkpointsTable}
-      WHERE task_id IN (
-        SELECT task_id FROM ${tasksTable}
-        WHERE state IN ('completed', 'failed', 'cancelled')
-      )
-    `);
-    await pool.query(`
-      DELETE FROM ${waitersTable}
-      WHERE task_id IN (
-        SELECT task_id FROM ${tasksTable}
-        WHERE state IN ('completed', 'failed', 'cancelled')
-      )
-    `);
-    await pool.query(`
-      DELETE FROM ${runsTable}
-      WHERE task_id IN (
-        SELECT task_id FROM ${tasksTable}
-        WHERE state IN ('completed', 'failed', 'cancelled')
-      )
-    `);
-    const deleted = await pool.query(`
-      DELETE FROM ${tasksTable}
-      WHERE state IN ('completed', 'failed', 'cancelled')
-      RETURNING task_id
-    `);
-    deletedTasks += deleted.rowCount ?? 0;
-
-    // Per-run CLI queues are ephemeral; remove them once empty.
-    if (queue.startsWith("cli_")) {
-      const remaining = await pool.query<{ count: string }>(`SELECT COUNT(*) AS count FROM ${tasksTable}`);
-      if (remaining.rows[0]?.count === "0") {
-        await pool.query(`SELECT absurd.drop_queue($1)`, [queue]);
-      }
-    }
-  }
-
-  console.log(`Cleaned up ${deletedTasks} tasks.`);
-
-  // Clean up browse cache: remove entries for deleted tasks + expire old entries
-  const cacheOrphans = await cleanupBrowseCache();
-  const cacheExpired = await expireBrowseCache();
-  if (cacheOrphans > 0 || cacheExpired > 0) {
-    console.log(`Browse cache: ${cacheOrphans} orphaned + ${cacheExpired} expired entries removed.`);
-  }
-}
 
 async function main() {
   const args = process.argv.slice(2);
