@@ -15,8 +15,9 @@ import {
   getMaxDurationMs,
   getMaxDurationSeconds,
 } from "./config.js";
-import type { ResearchParams, ResearchResult, MessageLogEntry } from "./types.js";
+import type { ResearchParams, ResearchResult, MessageLogEntry, TaskMode } from "./types.js";
 import { DEPTH_CONFIG } from "./types.js";
+import { classifyTask } from "./classify.js";
 import { createSteelClient } from "./steel-client.js";
 import { createSearchTool } from "./tools/search.js";
 import { createBrowseTool } from "./tools/browse.js";
@@ -107,6 +108,7 @@ export function buildResult(
   topic: string,
   messages: AgentMessage[],
   verification?: { result: VerificationResult; attempts: number; rewriteTriggered: boolean },
+  mode: TaskMode = "synthesis",
 ): ResearchResult {
   // Extract the final assistant message as the report
   let report = "";
@@ -144,6 +146,7 @@ export function buildResult(
     })),
     sources: Array.from(uniqueUrls).map((url) => ({ title: url, url })),
     messages,
+    mode,
     ...(verification
       ? {
           verification: {
@@ -228,6 +231,13 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
       const depth = params.depth ?? "standard";
       const depthConfig = DEPTH_CONFIG[depth];
 
+      // 0. Resolve task mode — caller can pin it via params.mode; otherwise classify
+      // once (durably checkpointed so resume is free).
+      const mode: TaskMode = params.mode ?? await ctx.step("classify-mode", () =>
+        classifyTask({ topic: params.topic }),
+      );
+      console.log(`[MODE] Task classified as ${mode}.`);
+
       // 1. Replay checkpointed messages
       let { messages, nextHandle } = await loadMessageLog(ctx);
 
@@ -280,6 +290,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
       const systemPrompt = await loadTemplate("system", {
         topic: params.topic,
         depth,
+        mode,
         maxSources: params.maxSources ?? 20,
         maxIterations: depthConfig.maxIterations,
       });
@@ -540,7 +551,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         verificationState = { result: cached, attempts: 1, rewriteTriggered: true };
       }
 
-      return buildResult(notes, params.topic, messages, verificationState);
+      return buildResult(notes, params.topic, messages, verificationState, mode);
     },
   );
 
