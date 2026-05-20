@@ -283,7 +283,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         createBrowseTool(steelClient, scrapedUrls, params.topic, taskId),
         createScreenshotTool(steelClient),
         createNoteTool(notes),
-        createEvaluateTool(notes, scrapedUrls),
+        createEvaluateTool(notes, scrapedUrls, mode),
       ];
 
       // 4. Build system prompt from template
