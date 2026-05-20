@@ -4,6 +4,7 @@
 import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import type { ResearchNote } from "../types.js";
+import { MAX_EXCERPTS_PER_NOTE, MAX_EXCERPT_LENGTH } from "../types.js";
 import { deduplicateNotes } from "../notes-ranker.js";
 
 const NoteParams = Type.Object({
@@ -22,7 +23,26 @@ const NoteParams = Type.Object({
     ],
     { description: "How confident you are in this finding" },
   ),
+  keyExcerpts: Type.Optional(
+    Type.Array(Type.String(), {
+      description:
+        "Up to 4 verbatim quotes from the source(s) supporting this finding (≤240 chars each). Required for high-confidence notes that will be cited in the final report.",
+    }),
+  ),
 });
+
+/** Sanitize excerpts: trim, drop empties, cap length, cap count. */
+function sanitizeExcerpts(raw: string[] | undefined): string[] | undefined {
+  if (!raw?.length) return undefined;
+  const out: string[] = [];
+  for (const ex of raw) {
+    const trimmed = ex.trim();
+    if (!trimmed) continue;
+    out.push(trimmed.slice(0, MAX_EXCERPT_LENGTH));
+    if (out.length >= MAX_EXCERPTS_PER_NOTE) break;
+  }
+  return out.length > 0 ? out : undefined;
+}
 
 /** Create a take_note tool that appends to the provided notes array. */
 export function createNoteTool(notes: ResearchNote[]): AgentTool<typeof NoteParams> {
@@ -35,11 +55,13 @@ export function createNoteTool(notes: ResearchNote[]): AgentTool<typeof NotePara
       "Record a structured research finding with source attribution and confidence level. Use after browsing a source to distill key information.",
     parameters: NoteParams,
     execute: async (_toolCallId, params) => {
+      const excerpts = sanitizeExcerpts(params.keyExcerpts);
       const note: ResearchNote = {
         title: params.title,
         content: params.content,
         sourceUrls: params.sourceUrls,
         confidence: params.confidence,
+        ...(excerpts ? { keyExcerpts: excerpts } : {}),
       };
       notes.push(note);
 

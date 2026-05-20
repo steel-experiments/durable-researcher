@@ -117,6 +117,105 @@ describe("findDuplicatePairs", () => {
   });
 });
 
+describe("mergeNotes keyExcerpts", () => {
+  it("unions excerpts from both notes", () => {
+    const a: ResearchNote = {
+      title: "A",
+      content: "Some content about quantum surface codes here.",
+      sourceUrls: [],
+      confidence: "high",
+      keyExcerpts: ["Quote A1", "Quote A2"],
+    };
+    const b: ResearchNote = {
+      title: "B",
+      content: "More content about surface codes here too.",
+      sourceUrls: [],
+      confidence: "high",
+      keyExcerpts: ["Quote B1"],
+    };
+    const merged = mergeNotes(a, b);
+    expect(merged.keyExcerpts).toContain("Quote A1");
+    expect(merged.keyExcerpts).toContain("Quote A2");
+    expect(merged.keyExcerpts).toContain("Quote B1");
+  });
+
+  it("deduplicates excerpts when merging (case-insensitive trim)", () => {
+    const a: ResearchNote = {
+      title: "A",
+      content: "x".repeat(50),
+      sourceUrls: [],
+      confidence: "high",
+      keyExcerpts: ["Shared quote", "Unique A"],
+    };
+    const b: ResearchNote = {
+      title: "B",
+      content: "y".repeat(50),
+      sourceUrls: [],
+      confidence: "high",
+      keyExcerpts: ["  shared quote  ", "Unique B"],
+    };
+    const merged = mergeNotes(a, b);
+    const lowered = merged.keyExcerpts!.map((e) => e.trim().toLowerCase());
+    expect(lowered.filter((e) => e === "shared quote")).toHaveLength(1);
+    expect(merged.keyExcerpts).toContain("Unique A");
+    expect(merged.keyExcerpts).toContain("Unique B");
+  });
+
+  it("caps merged excerpts at 4", () => {
+    const a: ResearchNote = {
+      title: "A",
+      content: "x".repeat(50),
+      sourceUrls: [],
+      confidence: "high",
+      keyExcerpts: ["A1", "A2", "A3"],
+    };
+    const b: ResearchNote = {
+      title: "B",
+      content: "y".repeat(50),
+      sourceUrls: [],
+      confidence: "high",
+      keyExcerpts: ["B1", "B2", "B3"],
+    };
+    const merged = mergeNotes(a, b);
+    expect(merged.keyExcerpts!.length).toBeLessThanOrEqual(4);
+  });
+
+  it("handles missing excerpts on one side", () => {
+    const a: ResearchNote = {
+      title: "A",
+      content: "x".repeat(50),
+      sourceUrls: [],
+      confidence: "high",
+      keyExcerpts: ["Only A"],
+    };
+    const b: ResearchNote = {
+      title: "B",
+      content: "y".repeat(50),
+      sourceUrls: [],
+      confidence: "high",
+    };
+    const merged = mergeNotes(a, b);
+    expect(merged.keyExcerpts).toEqual(["Only A"]);
+  });
+
+  it("returns undefined excerpts when both sides are empty/missing", () => {
+    const a: ResearchNote = {
+      title: "A",
+      content: "x".repeat(50),
+      sourceUrls: [],
+      confidence: "high",
+    };
+    const b: ResearchNote = {
+      title: "B",
+      content: "y".repeat(50),
+      sourceUrls: [],
+      confidence: "high",
+    };
+    const merged = mergeNotes(a, b);
+    expect(merged.keyExcerpts).toBeUndefined();
+  });
+});
+
 describe("mergeNotes", () => {
   it("unions source URLs", () => {
     const a: ResearchNote = {

@@ -54,6 +54,9 @@ If a search query returns no useful results, do NOT retry with minor variations.
 - Track which sources support which claims via `sourceUrls` in your notes
 - Aim for source diversity: different domains, different perspectives
 
+### Verbatim excerpts (required for high-confidence notes)
+When you call `take_note` with `confidence: "high"`, pass 2-4 short verbatim quotes from the source(s) in `keyExcerpts`. Reproduce them word-for-word from the browsed page (no paraphrasing), each ≤200 chars. These quotes are used to verify the final report's citations — a high-confidence note without excerpts cannot be cited reliably. For medium/low confidence notes, excerpts are optional but encouraged when the source has quotable specifics.
+
 ## Final Report Format
 
 **If the user's prompt specifies a format, structure, audience, tone, or output style, follow their instructions exactly and ignore the default template below.** The user's formatting requests always take priority.

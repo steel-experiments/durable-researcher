@@ -69,6 +69,55 @@ describe("rebuildStateFromMessages", () => {
     expect(notes[0].sourceUrls).toEqual(["https://research.google/qec"]);
   });
 
+  it("preserves keyExcerpts when rebuilding from take_note tool calls", () => {
+    const messages: AgentMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "tc-1",
+            name: "take_note",
+            arguments: {
+              title: "Quote-bearing",
+              content: "Some QEC content",
+              sourceUrls: ["https://research.google/qec"],
+              confidence: "high",
+              keyExcerpts: ["Surface codes are the leading approach", "Error rate 0.143%"],
+            },
+          },
+        ],
+        api: "anthropic-messages",
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        usage: {
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+        },
+        stopReason: "toolUse",
+        timestamp: Date.now(),
+      } satisfies AssistantMessage,
+      {
+        role: "toolResult",
+        toolCallId: "tc-1",
+        toolName: "take_note",
+        content: [{ type: "text", text: "Note recorded" }],
+        details: { noteIndex: 0, mergedCount: 0 },
+        isError: false,
+        timestamp: Date.now(),
+      } satisfies ToolResultMessage,
+    ];
+
+    const { notes } = rebuildStateFromMessages(messages);
+    expect(notes).toHaveLength(1);
+    expect(notes[0].keyExcerpts).toEqual([
+      "Surface codes are the leading approach",
+      "Error rate 0.143%",
+    ]);
+  });
+
   it("does not mark browse_url tool calls as scraped before a tool result exists", () => {
     const messages: AgentMessage[] = [
       {

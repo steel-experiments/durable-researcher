@@ -264,12 +264,14 @@ export function rebuildStateFromMessages(messages: AgentMessage[]): {
             content: string;
             sourceUrls: string[];
             confidence: "high" | "medium" | "low";
+            keyExcerpts?: string[];
           };
           noteCalls.set(content.id, {
             title: args.title,
             content: args.content,
             sourceUrls: args.sourceUrls,
             confidence: args.confidence,
+            ...(args.keyExcerpts?.length ? { keyExcerpts: args.keyExcerpts } : {}),
           });
         } else if (content.name === "browse_url") {
           const args = content.arguments as { url: string };
