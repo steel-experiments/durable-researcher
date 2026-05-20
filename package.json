@@ -15,9 +15,11 @@
   "dependencies": {
     "@mariozechner/pi-agent-core": "*",
     "@mariozechner/pi-ai": "*",
+    "@types/pdf-parse": "^1.1.5",
     "absurd-sdk": "^0.3.0",
     "dotenv": "^16.4.7",
     "handlebars": "^4.7.9",
+    "pdf-parse": "^2.4.5",
     "steel-sdk": "^0.18.0"
   },
   "devDependencies": {
