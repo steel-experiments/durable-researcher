@@ -8,7 +8,7 @@ import {
   type AgentLoopConfig,
   type AgentMessage,
 } from "@mariozechner/pi-agent-core";
-import { getEnvApiKey, type Message, type Model, type Api } from "@mariozechner/pi-ai";
+import { getEnvApiKey, type Model, type Api } from "@mariozechner/pi-ai";
 import {
   getAgentModel,
   getAgentReasoning,
@@ -40,6 +40,7 @@ import {
 } from "./durable-turns.js";
 import { deduplicateNotes } from "./notes-ranker.js";
 import { loadTemplate } from "./prompts.js";
+import { convertToLlm } from "./agent-messages.js";
 
 /** Options for creating the research app. */
 export type ResearchAppOptions = {
@@ -47,18 +48,6 @@ export type ResearchAppOptions = {
   model?: Model<Api>;
   queueName?: string;
 };
-
-/**
- * Convert AgentMessages to LLM-compatible Messages.
- * Standard messages pass through; anything without a recognized role is filtered.
- */
-function convertToLlm(messages: AgentMessage[]): Message[] {
-  return messages.filter(
-    (m): m is Message =>
-      "role" in m &&
-      (m.role === "user" || m.role === "assistant" || m.role === "toolResult"),
-  );
-}
 
 /**
  * Generate a partial report from accumulated notes when the agent didn't
