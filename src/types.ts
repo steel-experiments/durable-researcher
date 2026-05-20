@@ -6,6 +6,9 @@ import type { AgentMessage } from "@mariozechner/pi-agent-core";
 /** A single entry in the durable message log, persisted as an Absurd step. */
 export type MessageLogEntry = { message: AgentMessage };
 
+/** Three task modes the research loop adapts to. */
+export type TaskMode = "lookup" | "extraction" | "synthesis";
+
 /** Parameters for spawning a research task. */
 export type ResearchParams = {
   topic: string;
@@ -17,6 +20,8 @@ export type ResearchParams = {
   priorNotes?: ResearchNote[];
   /** Prior source URLs to avoid re-browsing. */
   priorUrls?: string[];
+  /** Override the auto-classified task mode. */
+  mode?: TaskMode;
 };
 
 /** Depth config maps depth labels to iteration limits and query counts. */
@@ -72,6 +77,8 @@ export type ResearchResult = {
   notes: ResearchNote[];
   sources: { title: string; url: string }[];
   messages: AgentMessage[];
+  /** Resolved task mode (auto-classified unless overridden via params.mode). */
+  mode: TaskMode;
   /** Claim-level citation verification result, if it ran. */
   verification?: VerificationSnapshot;
 };
