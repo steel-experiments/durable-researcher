@@ -72,4 +72,18 @@ export type ResearchResult = {
   notes: ResearchNote[];
   sources: { title: string; url: string }[];
   messages: AgentMessage[];
+  /** Claim-level citation verification result, if it ran. */
+  verification?: VerificationSnapshot;
+};
+
+/** Per-result snapshot of the claim-verification pass(es). */
+export type VerificationSnapshot = {
+  attempts: number;
+  /** Summary of the most recent verification attempt. */
+  passRate: number;
+  total: number;
+  supported: number;
+  unsupported: number;
+  /** Whether a rewrite was triggered. */
+  rewriteTriggered: boolean;
 };
