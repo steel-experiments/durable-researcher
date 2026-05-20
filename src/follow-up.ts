@@ -9,7 +9,7 @@ import {
   type AgentMessage,
   type AgentEvent,
 } from "@mariozechner/pi-agent-core";
-import { getEnvApiKey, type Message, type Model, type Api } from "@mariozechner/pi-ai";
+import { getEnvApiKey, type Model, type Api } from "@mariozechner/pi-ai";
 import { getAgentModel, getAgentReasoning } from "./config.js";
 import type { ResearchNote } from "./types.js";
 import { createSteelClient } from "./steel-client.js";
@@ -19,14 +19,7 @@ import { createScoutTool } from "./tools/scout.js";
 import { createScreenshotTool } from "./tools/screenshot.js";
 import { createNoteTool } from "./tools/note.js";
 import { createEvaluateTool } from "./tools/evaluate.js";
-
-function convertToLlm(messages: AgentMessage[]): Message[] {
-  return messages.filter(
-    (m): m is Message =>
-      "role" in m &&
-      (m.role === "user" || m.role === "assistant" || m.role === "toolResult"),
-  );
-}
+import { convertToLlm } from "./agent-messages.js";
 
 /** Stream agent text to stdout, log tool calls. */
 function createStreamingEmitter(): (event: AgentEvent) => void {
