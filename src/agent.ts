@@ -27,6 +27,12 @@ import { createPlanTool } from "./tools/plan.js";
 import { createPrefetchTool } from "./tools/prefetch.js";
 import { createScoutTool } from "./tools/scout.js";
 import {
+  verifyClaims,
+  shouldTriggerRewrite,
+  buildRewriteSteering,
+  type VerificationResult,
+} from "./tools/verify-claims.js";
+import {
   loadMessageLog,
   createLoggingPersister,
   rebuildStateFromMessages,
@@ -111,6 +117,7 @@ export function buildResult(
   notes: { title: string; content: string; sourceUrls: string[]; confidence?: "high" | "medium" | "low"; keyExcerpts?: string[] }[],
   topic: string,
   messages: AgentMessage[],
+  verification?: { result: VerificationResult; attempts: number; rewriteTriggered: boolean },
 ): ResearchResult {
   // Extract the final assistant message as the report
   let report = "";
@@ -148,7 +155,50 @@ export function buildResult(
     })),
     sources: Array.from(uniqueUrls).map((url) => ({ title: url, url })),
     messages,
+    ...(verification
+      ? {
+          verification: {
+            attempts: verification.attempts,
+            passRate: verification.result.summary.passRate,
+            total: verification.result.summary.total,
+            supported: verification.result.summary.supported,
+            unsupported: verification.result.summary.unsupported,
+            rewriteTriggered: verification.rewriteTriggered,
+          },
+        }
+      : {}),
   };
+}
+
+/** Extract the most recent assistant text-only message (the final report). */
+function extractFinalReport(messages: AgentMessage[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (!("role" in msg) || msg.role !== "assistant") continue;
+    const hasToolCalls = msg.content.some((c) => c.type === "toolCall");
+    if (hasToolCalls) continue;
+    const text = msg.content
+      .filter((c): c is { type: "text"; text: string } => c.type === "text")
+      .map((c) => c.text)
+      .join("\n");
+    if (text.length > 0) return text;
+  }
+  return null;
+}
+
+const REWRITE_STEERING_PREFIX = "[SYSTEM] Citation verification:";
+
+/** Count how many rewrite-steering messages have been injected into the log. */
+function countRewriteAttempts(messages: AgentMessage[]): number {
+  let n = 0;
+  for (const msg of messages) {
+    if (!("role" in msg) || msg.role !== "user") continue;
+    const content = msg.content;
+    if (typeof content === "string" && content.startsWith(REWRITE_STEERING_PREFIX)) {
+      n++;
+    }
+  }
+  return n;
 }
 
 /** Throw if the last agent message is an error (e.g. auth failure, rate limit). */
@@ -394,6 +444,9 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         }
       }
 
+      // Track verification state across the run (re-derived from message log on resume).
+      let verificationState: { result: VerificationResult; attempts: number; rewriteTriggered: boolean } | undefined;
+
       // 7. Handle first run vs resume
       const last = context.messages.at(-1);
       if (!last) {
@@ -435,7 +488,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         last.content.every((c) => c.type !== "toolCall") &&
         !("errorMessage" in last && last.errorMessage)
       ) {
-        return buildResult(notes, params.topic, messages);
+        // Already-completed report on resume — fall through to verification below.
       } else if (
         "role" in last &&
         last.role === "assistant" &&
@@ -461,7 +514,44 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         checkForAgentError(context.messages);
       }
 
-      return buildResult(notes, params.topic, messages);
+      // 8. Claim verification (durable step) + at most one rewrite.
+      const priorAttempts = countRewriteAttempts(context.messages);
+      const finalReport = extractFinalReport(context.messages);
+      const notesHaveExcerpts = notes.some((n) => n.keyExcerpts && n.keyExcerpts.length > 0);
+
+      if (finalReport && notesHaveExcerpts && priorAttempts === 0) {
+        console.log("[VERIFY] Checking citations against source excerpts...");
+        const result = await ctx.step("verify-claims-attempt-1", () =>
+          verifyClaims({ report: finalReport, notes }),
+        );
+        const triggered = shouldTriggerRewrite(result);
+        console.log(
+          `[VERIFY] ${result.summary.supported}/${result.summary.total} claims supported (${Math.round(result.summary.passRate * 100)}%).${triggered ? " Rewriting." : ""}`,
+        );
+        verificationState = { result, attempts: 1, rewriteTriggered: triggered };
+
+        if (triggered) {
+          const steeringMessage: AgentMessage = {
+            role: "user" as const,
+            content: buildRewriteSteering(result),
+            timestamp: Date.now(),
+          };
+          await ctx.completeStep(nextHandle, { message: steeringMessage } satisfies MessageLogEntry);
+          context.messages.push(steeringMessage);
+          nextHandle = await ctx.beginStep<MessageLogEntry>("message");
+          const rewritePersister = createLoggingPersister(ctx, nextHandle, persisterOpts);
+          await runWithTimeout(rewritePersister);
+          checkForAgentError(context.messages);
+        }
+      } else if (finalReport && notesHaveExcerpts && priorAttempts > 0) {
+        // Resuming after a rewrite has already happened — load the cached verdict.
+        const cached = await ctx.step("verify-claims-attempt-1", () =>
+          verifyClaims({ report: finalReport, notes }),
+        );
+        verificationState = { result: cached, attempts: 1, rewriteTriggered: true };
+      }
+
+      return buildResult(notes, params.topic, messages, verificationState);
     },
   );
 
