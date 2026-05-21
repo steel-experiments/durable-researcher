@@ -68,3 +68,54 @@ describe("classifyTask (with stubbed classifier)", () => {
     expect(seen).toEqual(["What is the height of Mount Everest?"]);
   });
 });
+
+describe("extraction-signal heuristic override", () => {
+  it("upgrades synthesis to extraction when the prompt has strong extraction signals", async () => {
+    // Classifier returns synthesis but the prompt is obviously a financial filing extraction
+    const classifier: ModeClassifier = async () => "synthesis";
+    const mode = await classifyTask({
+      topic:
+        "Analyze CME Group's operating cash flow growth from Q1 2024 to Q1 2025. " +
+        "Calculate the operating cash flow conversion rate using their 10-Q. " +
+        "Determine total outstanding debt from fixed-rate notes.",
+      classifier,
+    });
+    expect(mode).toBe("extraction");
+  });
+
+  it("upgrades synthesis to extraction when the prompt names SEC filings", async () => {
+    const classifier: ModeClassifier = async () => "synthesis";
+    const mode = await classifyTask({
+      topic: "Extract revenue, operating income, and free cash flow from Apple's 10-K fiscal 2024.",
+      classifier,
+    });
+    expect(mode).toBe("extraction");
+  });
+
+  it("does NOT upgrade pure synthesis topics that happen to mention a year", async () => {
+    const classifier: ModeClassifier = async () => "synthesis";
+    const mode = await classifyTask({
+      topic: "Compare the cultural impact of Bach's fugues with Mozart's symphonies in 2024.",
+      classifier,
+    });
+    expect(mode).toBe("synthesis");
+  });
+
+  it("does not override an explicit lookup classification", async () => {
+    const classifier: ModeClassifier = async () => "lookup";
+    const mode = await classifyTask({
+      topic: "What was Apple's revenue in fiscal Q3 2024?",
+      classifier,
+    });
+    expect(mode).toBe("lookup");
+  });
+
+  it("keeps extraction when classifier already says extraction", async () => {
+    const classifier: ModeClassifier = async () => "extraction";
+    const mode = await classifyTask({
+      topic: "Pull every cash-flow line from CME's 10-Q.",
+      classifier,
+    });
+    expect(mode).toBe("extraction");
+  });
+});
