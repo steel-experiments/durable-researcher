@@ -247,6 +247,94 @@ function getMinKeywordMatches(keywordCount: number): number {
   return Math.min(2, keywordCount);
 }
 
+/**
+ * Compute a multiplicative authority bonus/penalty for a URL.
+ *
+ * - >1.0 (default 1.3) for primary sources: peer-reviewed journals, preprint
+ *   archives, government/SEC filings, university domains, central banks, major
+ *   international orgs. These are where canonical facts live.
+ * - <1.0 (default 0.6) for explainer hosts and financial-aggregator content
+ *   farms: blog platforms, tutoring/lecture sites, generic stock-news outlets.
+ *   They cite primary sources but rarely *are* one.
+ * - 1.0 for everything else (no signal, treat as neutral).
+ *
+ * Authority is applied at ranking time only — scoreRelevance is unchanged so
+ * threshold gating still reflects topical match.
+ */
+export function sourceAuthority(url: string): number {
+  let host: string;
+  let pathname: string;
+  try {
+    const parsed = new URL(url);
+    host = parsed.hostname.toLowerCase();
+    pathname = parsed.pathname.toLowerCase();
+  } catch {
+    return 1.0;
+  }
+  if (!host) return 1.0;
+
+  // Primary sources — domain or suffix match.
+  if (
+    host === "sec.gov" || host.endsWith(".sec.gov") ||
+    host === "arxiv.org" || host.endsWith(".arxiv.org") ||
+    host === "nber.org" || host.endsWith(".nber.org") ||
+    host.endsWith(".edu") ||
+    host.endsWith(".ac.uk") || host.endsWith(".ac.jp") ||
+    host.endsWith(".gov") ||
+    host.endsWith(".gov.uk") || host.endsWith(".gov.eu") ||
+    host.endsWith("europa.eu") ||
+    host === "who.int" || host.endsWith(".who.int") ||
+    host === "imf.org" || host.endsWith(".imf.org") ||
+    host === "worldbank.org" || host.endsWith(".worldbank.org") ||
+    host === "oecd.org" || host.endsWith(".oecd.org") ||
+    host === "bis.org" || host.endsWith(".bis.org") ||
+    // Major journal publishers
+    host === "nature.com" || host.endsWith(".nature.com") ||
+    host === "science.org" || host.endsWith(".science.org") ||
+    host === "cell.com" || host.endsWith(".cell.com") ||
+    host === "pnas.org" || host.endsWith(".pnas.org") ||
+    host === "acm.org" || host.endsWith(".acm.org") ||
+    host === "ieee.org" || host.endsWith(".ieee.org") ||
+    host === "springer.com" || host.endsWith(".springer.com") ||
+    host === "wiley.com" || host.endsWith(".wiley.com") ||
+    host === "tandfonline.com" || host.endsWith(".tandfonline.com") ||
+    host === "sciencedirect.com" || host.endsWith(".sciencedirect.com") ||
+    host === "jstor.org" || host.endsWith(".jstor.org") ||
+    host === "aeaweb.org" || host.endsWith(".aeaweb.org")
+  ) {
+    return 1.3;
+  }
+
+  // Explainers / aggregators — demote.
+  if (
+    host === "medium.com" || host.endsWith(".medium.com") ||
+    host === "dev.to" || host.endsWith(".dev.to") ||
+    host === "hashnode.com" || host.endsWith(".hashnode.com") ||
+    host === "substack.com" || host.endsWith(".substack.com") ||
+    host === "scribd.com" || host.endsWith(".scribd.com") ||
+    host === "stockinvest.us" || host.endsWith(".stockinvest.us") ||
+    host === "panabee.com" || host.endsWith(".panabee.com") ||
+    host === "marketscreener.com" || host.endsWith(".marketscreener.com") ||
+    host === "rebusinessonline.com" || host.endsWith(".rebusinessonline.com") ||
+    host === "geeksforgeeks.org" || host.endsWith(".geeksforgeeks.org") ||
+    host === "tutorialspoint.com" || host.endsWith(".tutorialspoint.com") ||
+    host === "w3schools.com" || host.endsWith(".w3schools.com") ||
+    host === "metricgate.com" || host.endsWith(".metricgate.com")
+  ) {
+    return 0.6;
+  }
+
+  // GitHub Pages — overwhelmingly personal lecture notes / tutorials, not primary research.
+  // Acknowledge the rare org page is also demoted; that's the right default for a research agent.
+  if (host.endsWith(".github.io")) {
+    return 0.6;
+  }
+  // Quiet the linter — pathname isn't used in the default rule, but kept for future per-path heuristics.
+  void pathname;
+
+  return 1.0;
+}
+
 export function scoreRelevance(result: SearchResult, topic: string): number {
   const topicWords = new Set(
     topic.toLowerCase().split(/\s+/).filter((w) => w.length > 2 && !STOPWORDS.has(w)),
@@ -303,11 +391,18 @@ export function filterByRelevance(
   const scored = results.map((r) => {
     const topicScore = scoreRelevance(r, topic);
     const queryScore = query ? scoreRelevance(r, query) : 0;
-    return { result: r, score: Math.max(topicScore, queryScore) };
+    const keywordScore = Math.max(topicScore, queryScore);
+    // Authority is a ranking modifier, not a relevance gate — the threshold
+    // is applied on the raw keyword score so legitimate matches don't get
+    // dropped just because the publisher isn't on the boost list.
+    const authority = sourceAuthority(r.url);
+    return { result: r, keywordScore, rankScore: keywordScore * authority };
   });
-  scored.sort((a, b) => b.score - a.score);
-
-  return scored.filter((s) => s.score >= threshold).map((s) => s.result);
+  // Filter on keyword score (relevance gate), sort on rank score (authority-adjusted).
+  return scored
+    .filter((s) => s.keywordScore >= threshold)
+    .sort((a, b) => b.rankScore - a.rankScore)
+    .map((s) => s.result);
 }
 
 /** Try multiple search engines in order, returning results from the first success. */
