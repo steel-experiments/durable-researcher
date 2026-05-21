@@ -45,6 +45,20 @@ describe("summarize.hbs template", () => {
 });
 
 describe("system.hbs template", () => {
+  it("instructs the agent to use the EDGAR source for SEC filings", async () => {
+    const rendered = await loadTemplate("system", {
+      topic: "Apple 10-K cash flow",
+      depth: "standard",
+      mode: "extraction",
+      maxSources: 20,
+      maxIterations: 3,
+    });
+    const lowered = rendered.toLowerCase();
+    expect(lowered).toContain("edgar");
+    expect(lowered).toMatch(/source:\s*["']?edgar["']?/);
+    expect(lowered).toMatch(/10-?k|10-?q|sec filing/);
+  });
+
   it("requires keyExcerpts on high-confidence notes", async () => {
     const rendered = await loadTemplate("system", {
       topic: "x",
