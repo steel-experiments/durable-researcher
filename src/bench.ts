@@ -7,7 +7,7 @@ import { dirname } from "path";
 import { createResearchApp } from "./agent.js";
 import { getMaxDurationSeconds } from "./config.js";
 import type { UsageStats } from "./durable-turns.js";
-import type { ResearchParams } from "./types.js";
+import type { ResearchParams, ResearchResult } from "./types.js";
 
 function parseArgs(argv: string[]): {
   topic: string;
@@ -71,11 +71,24 @@ async function main() {
   });
 
   if (result.state === "completed" && result.result) {
-    const research = result.result as unknown as { report: string };
+    const research = result.result as unknown as ResearchResult;
     if (research.report) {
       mkdirSync(dirname(output), { recursive: true });
       writeFileSync(output, research.report, "utf-8");
       console.error(`Report written to: ${output}`);
+
+      // Write a .meta.json sidecar with the resolved mode + verification stats.
+      // Lets us audit post-hoc whether the classifier and verification pipeline
+      // fired as expected on each benchmark task.
+      const metaPath = output.replace(/\.md$/, ".meta.json");
+      const meta = {
+        mode: research.mode,
+        verification: research.verification,
+        notes: research.notes?.length ?? 0,
+        sources: research.sources?.length ?? 0,
+      };
+      writeFileSync(metaPath, `${JSON.stringify(meta, null, 2)}\n`, "utf-8");
+      console.error(`Meta written to: ${metaPath} (mode=${research.mode})`);
     } else {
       console.error("Task completed but no report generated.");
       process.exit(1);
