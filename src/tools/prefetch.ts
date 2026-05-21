@@ -4,10 +4,11 @@
 import Steel from "steel-sdk";
 import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { multiEngineSearch, scrapeUrl, filterByRelevance } from "../steel-client.js";
+import { multiEngineSearch, filterByRelevance } from "../steel-client.js";
 import { isContentMeaningful, truncateContent } from "../content.js";
-import { summarizeContent } from "./browse.js";
+import { fetchBrowseContent, summarizeContent } from "./browse.js";
 import { getCachedBrowse, setCachedBrowse } from "../browse-cache.js";
+import type { ToolProgress } from "../event-bus.js";
 
 const PrefetchParams = Type.Object({
   queries: Type.Array(Type.String(), {
@@ -66,7 +67,9 @@ export function createPrefetchTool(
   topic: string,
   maxBudget: number,
   taskId?: string,
+  progress?: ToolProgress,
 ): AgentTool<typeof PrefetchParams> {
+  const report = progress ?? ((text: string) => console.log(text));
   return {
     name: "prefetch_sources",
     label: "Prefetch Sources",
@@ -99,7 +102,7 @@ export function createPrefetchTool(
               if (cached) {
                 scraped = { content: cached.content, title: cached.title, rawLength: cached.rawLength };
               } else {
-                scraped = await scrapeUrl(client, url);
+                scraped = await fetchBrowseContent(client, url);
                 if (taskId) {
                   await setCachedBrowse(taskId, url, scraped).catch(() => {});
                 }
@@ -107,7 +110,7 @@ export function createPrefetchTool(
               scrapedUrls.add(url);
               totalBrowsed++;
               allBrowsedUrls.push(url);
-              console.log(`    [${totalBrowsed}/${totalQueued}] ${cached ? "Cached" : "Browsed"}: ${scraped.title.slice(0, 60)}`);
+              report(`    [${totalBrowsed}/${totalQueued}] ${cached ? "Cached" : "Browsed"}: ${scraped.title.slice(0, 60)}`);
 
               if (!isContentMeaningful(scraped.content)) {
                 qr.browseResults.push({ query, url, title: scraped.title, summary: "[Insufficient content]", rawLength: scraped.rawLength });
@@ -136,7 +139,7 @@ export function createPrefetchTool(
       }
 
       // Pipelined: each search immediately queues browses on completion
-      console.log(`    Searching ${queries.length} queries in parallel (pipelined browse)...`);
+      report(`    Searching ${queries.length} queries in parallel (pipelined browse)...`);
       await Promise.allSettled(
         queries.map(async (query) => {
           const qr: QueryResult = { query, searchResultCount: 0, browseResults: [], errors: [] };
@@ -146,7 +149,7 @@ export function createPrefetchTool(
             const rawResults = await multiEngineSearch(client, query);
             const results = filterByRelevance(rawResults, topic, 0.3, query);
             qr.searchResultCount = results.length;
-            console.log(`    ✓ "${query.slice(0, 50)}" → ${results.length}/${rawResults.length} relevant`);
+            report(`    ✓ "${query.slice(0, 50)}" → ${results.length}/${rawResults.length} relevant`);
 
             let queuedForQuery = 0;
             for (const result of results) {
@@ -167,7 +170,7 @@ export function createPrefetchTool(
 
       // Wait for all browse operations (some started during search phase)
       await Promise.allSettled(browsePromises);
-      console.log(`    Prefetch complete: ${totalBrowsed} pages browsed across ${queries.length} queries`);
+      report(`    Prefetch complete: ${totalBrowsed} pages browsed across ${queries.length} queries`);
 
       // Format results as structured markdown
       const sections: string[] = [

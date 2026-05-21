@@ -18,6 +18,7 @@ Options:
   --view                          View existing report without re-running
   --list                          List recent research tasks
   --cleanup                       Remove completed/failed/cancelled tasks
+  --no-tui                        Disable the live TUI; stream logs instead
 
 Examples:
   bun run src/index.ts "quantum error correction advances"

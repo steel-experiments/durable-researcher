@@ -42,13 +42,29 @@ import {
 import { deduplicateNotes } from "./notes-ranker.js";
 import { loadTemplate } from "./prompts.js";
 import { convertToLlm } from "./agent-messages.js";
+import type { ResearchEventBus } from "./event-bus.js";
+import { createToolProgress } from "./event-bus.js";
+import type { SteeringQueue } from "./steering-queue.js";
 
 /** Options for creating the research app. */
 export type ResearchAppOptions = {
   databaseUrl?: string;
   model?: Model<Api>;
   queueName?: string;
+  eventBus?: ResearchEventBus;
+  steeringQueue?: SteeringQueue;
+  quiet?: boolean;
 };
+
+/** Drain user-supplied steering text into user messages for the next agent turn. */
+export function drainUserSteering(queue?: SteeringQueue): AgentMessage[] {
+  if (!queue) return [];
+  return queue.drain().map((message) => ({
+    role: "user" as const,
+    content: `[USER STEERING]\n${message}`,
+    timestamp: Date.now(),
+  }));
+}
 
 /**
  * Generate a partial report from accumulated notes when the agent didn't
@@ -219,6 +235,9 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
 
   // Store usage stats outside the task handler so the CLI can access them
   let lastUsage: UsageStats | undefined;
+  const taskLog = (...args: Parameters<typeof console.log>) => {
+    if (!options.quiet) console.log(...args);
+  };
 
   app.registerTask<ResearchParams, ResearchResult>(
     {
@@ -227,18 +246,26 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
       defaultCancellation: { maxDuration: getMaxDurationSeconds() },
     },
     async (params, ctx) => {
+      const bus = options.eventBus;
+      bus?.emit({ type: "agent-status", text: "Initializing research task..." });
+
       const steelClient = createSteelClient();
       const depth = params.depth ?? "standard";
       const depthConfig = DEPTH_CONFIG[depth];
 
       // 0. Resolve task mode — caller can pin it via params.mode; otherwise classify
       // once (durably checkpointed so resume is free).
+      if (!params.mode) {
+        bus?.emit({ type: "agent-status", text: "Classifying task mode..." });
+      }
       const mode: TaskMode = params.mode ?? await ctx.step("classify-mode", () =>
         classifyTask({ topic: params.topic }),
       );
-      console.log(`[MODE] Task classified as ${mode}.`);
+      taskLog(`[MODE] Task classified as ${mode}.`);
+      bus?.emit({ type: "agent-status", text: `Mode: ${mode}` });
 
       // 1. Replay checkpointed messages
+      bus?.emit({ type: "agent-status", text: "Loading checkpoint..." });
       let { messages, nextHandle } = await loadMessageLog(ctx);
 
       // 2. Rebuild in-memory state from replayed messages
@@ -258,6 +285,21 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         for (const url of params.priorUrls) scrapedUrls.add(url);
       }
 
+      // Snapshot rebuilt state to the TUI so a resumed run shows prior findings
+      // even when the agent loop has nothing new to do (e.g. fully-completed
+      // task being re-claimed only for finalization). Turn count = number of
+      // assistant messages already in the log.
+      const priorTurn = messages.filter(
+        (m): m is Extract<typeof m, { role: "assistant" }> =>
+          "role" in m && m.role === "assistant",
+      ).length;
+      bus?.emit({
+        type: "snapshot",
+        turn: priorTurn,
+        sources: scrapedUrls.size,
+        notes: notes.slice(),
+      });
+
       // Log resume info only when we'll actually continue the loop (not on completed re-runs)
       const lastMsg = messages.at(-1);
       const isAlreadyComplete = lastMsg &&
@@ -267,18 +309,33 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         !("errorMessage" in lastMsg && lastMsg.errorMessage);
 
       if (messages.length > 0 && !isAlreadyComplete) {
-        console.log(
+        taskLog(
           `Resumed from checkpoint: ${messages.length} messages, ${notes.length} notes, ${scrapedUrls.size} URLs`,
         );
+        bus?.emit({
+          type: "agent-status",
+          text: `Resumed: ${notes.length} notes, ${scrapedUrls.size} sources — continuing...`,
+        });
+      } else if (isAlreadyComplete) {
+        bus?.emit({
+          type: "agent-status",
+          text: `Resumed completed task — verifying and finalizing...`,
+        });
+      } else {
+        bus?.emit({ type: "agent-status", text: "Starting fresh research..." });
       }
 
       // 3. Create tools with closures over mutable state
       const prefetchBudget = Math.floor((params.maxSources ?? 20) / 2);
       const taskId = ctx.taskID;
+      // Route per-tool progress (plan/prefetch/scout) through the bus when the
+      // TUI is active so those lines don't write straight to stdout and corrupt
+      // ink's render. Falls back to plain console.log when no bus is wired.
+      const toolProgress = bus ? createToolProgress(bus) : undefined;
       const tools = [
-        createPlanTool(params),
-        createPrefetchTool(steelClient, scrapedUrls, params.topic, prefetchBudget, taskId),
-        createScoutTool(steelClient, scrapedUrls, params.topic, taskId),
+        createPlanTool(params, toolProgress),
+        createPrefetchTool(steelClient, scrapedUrls, params.topic, prefetchBudget, taskId, toolProgress),
+        createScoutTool(steelClient, scrapedUrls, params.topic, taskId, toolProgress),
         createSearchTool(steelClient, scrapedUrls, params.topic),
         createBrowseTool(steelClient, scrapedUrls, params.topic, taskId),
         createScreenshotTool(steelClient),
@@ -345,6 +402,9 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
           return undefined;
         },
         getSteeringMessages: async () => {
+          const userSteering = drainUserSteering(options.steeringQueue);
+          if (userSteering.length > 0) return userSteering;
+
           // Only inject the stop message once
           if (steeringSent) return [];
 
@@ -407,7 +467,14 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
       };
 
       // 6. Set up durable message persistence with logging
-      const persisterOpts = { maxSources: maxBrowses, maxTurns, scrapedUrls, usage };
+      const persisterOpts = {
+        maxSources: maxBrowses,
+        maxTurns,
+        scrapedUrls,
+        usage,
+        eventBus: options.eventBus,
+        quiet: options.quiet,
+      };
       const persistEvent = createLoggingPersister(ctx, nextHandle, persisterOpts);
 
       // Helper: run agent loop with a hard timeout safety net
@@ -418,7 +485,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         const remainingMs = maxDuration - elapsed - 10_000; // 10s safety margin
 
         if (remainingMs <= 0) {
-          console.log("[TIMEOUT] No time remaining — building partial result.");
+          taskLog("[TIMEOUT] No time remaining — building partial result.");
           return;
         }
 
@@ -437,7 +504,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
           if (result === "timeout") {
             // Abort the agent loop so it stops producing output
             abortController.abort();
-            console.log("[TIMEOUT] Hard deadline approaching — building partial result from accumulated notes.");
+            taskLog("[TIMEOUT] Hard deadline approaching — building partial result from accumulated notes.");
           }
         } finally {
           clearTimeout(timerId!);
@@ -520,14 +587,19 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
       const notesHaveExcerpts = notes.some((n) => n.keyExcerpts && n.keyExcerpts.length > 0);
 
       if (finalReport && notesHaveExcerpts && priorAttempts === 0) {
-        console.log("[VERIFY] Checking citations against source excerpts...");
+        taskLog("[VERIFY] Checking citations against source excerpts...");
+        bus?.emit({ type: "agent-status", text: "Verifying citations..." });
         const result = await ctx.step("verify-claims-attempt-1", () =>
           verifyClaims({ report: finalReport, notes }),
         );
         const triggered = shouldTriggerRewrite(result);
-        console.log(
+        taskLog(
           `[VERIFY] ${result.summary.supported}/${result.summary.total} claims supported (${Math.round(result.summary.passRate * 100)}%).${triggered ? " Rewriting." : ""}`,
         );
+        bus?.emit({
+          type: "agent-status",
+          text: `Citations: ${result.summary.supported}/${result.summary.total} supported (${Math.round(result.summary.passRate * 100)}%)${triggered ? " — rewriting" : ""}`,
+        });
         verificationState = { result, attempts: 1, rewriteTriggered: triggered };
 
         if (triggered) {

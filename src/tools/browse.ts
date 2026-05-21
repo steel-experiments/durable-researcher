@@ -28,6 +28,33 @@ const SUMMARY_MAX_TOKENS = 500;
 /** Content shorter than this is returned raw — preserves specific data. */
 const SMART_SUMMARIZE_THRESHOLD = 4000;
 
+export type BrowseContent = {
+  content: string;
+  title: string;
+  rawLength: number;
+};
+
+/** Fetch content for a URL, using the PDF parser when the URL is clearly a PDF. */
+export async function fetchBrowseContent(
+  client: Steel,
+  url: string,
+): Promise<BrowseContent> {
+  if (isPdfUrl(url)) {
+    // PDFs return junk markdown from a normal scrape — fetch the bytes and
+    // run a real PDF parser instead. Falls through to Steel scrape on failure.
+    const pdf = await fetchAndExtractPdf(url);
+    if (pdf && pdf.text.length > 0) {
+      return {
+        content: pdf.text,
+        rawLength: pdf.byteLength,
+        title: url.split("/").pop() ?? url,
+      };
+    }
+  }
+
+  return scrapeUrl(client, url);
+}
+
 /** Create a browse_url tool that scrapes and summarizes page content. */
 export function createBrowseTool(
   client: Steel,
@@ -52,28 +79,8 @@ export function createBrowseTool(
         content = cached.content;
         title = cached.title;
         rawLength = cached.rawLength;
-      } else if (isPdfUrl(params.url)) {
-        // PDFs return junk markdown from a normal scrape — fetch the bytes and
-        // run a real PDF parser instead. Falls through to Steel scrape on failure.
-        const pdf = await fetchAndExtractPdf(params.url);
-        if (pdf && pdf.text.length > 0) {
-          content = pdf.text;
-          rawLength = pdf.byteLength;
-          title = params.url.split("/").pop() ?? params.url;
-          if (taskId) {
-            await setCachedBrowse(taskId, params.url, { title, content, rawLength }).catch(() => {});
-          }
-        } else {
-          const scraped = await scrapeUrl(client, params.url);
-          content = scraped.content;
-          title = scraped.title;
-          rawLength = scraped.rawLength;
-          if (taskId) {
-            await setCachedBrowse(taskId, params.url, { title, content, rawLength }).catch(() => {});
-          }
-        }
       } else {
-        const scraped = await scrapeUrl(client, params.url);
+        const scraped = await fetchBrowseContent(client, params.url);
         content = scraped.content;
         title = scraped.title;
         rawLength = scraped.rawLength;

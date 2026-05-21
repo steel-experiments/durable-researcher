@@ -13,6 +13,10 @@ export type CachedBrowse = {
 
 let tableInitialized = false;
 
+function quoteIdent(name: string): string {
+  return `"${name.replace(/"/g, "\"\"")}"`;
+}
+
 /** Create the browse_cache table if it doesn't exist. */
 async function ensureTable(): Promise<void> {
   if (tableInitialized) return;
@@ -98,10 +102,25 @@ export async function expireBrowseCache(expiryDays = CACHE_EXPIRY_DAYS): Promise
 export async function cleanupBrowseCache(): Promise<number> {
   await ensureTable();
   const p = getDbPool();
-  // Delete cache for tasks that no longer exist in the task table
+  const queuesResult = await p.query<{ queue_name: string }>(
+    `SELECT queue_name FROM absurd.list_queues()`,
+  );
+  const queueNames = queuesResult.rows.map((row) => row.queue_name);
+
+  if (queueNames.length === 0) {
+    const result = await p.query(`DELETE FROM browse_cache`);
+    return result.rowCount ?? 0;
+  }
+
+  const liveTaskSelects = queueNames.map((queueName) => {
+    const tableName = `absurd.${quoteIdent(`t_${queueName}`)}`;
+    return `SELECT task_id::text AS task_id FROM ${tableName}`;
+  });
+
+  // Delete cache for tasks that no longer exist in any Absurd queue.
   const result = await p.query(`
     DELETE FROM browse_cache
-    WHERE task_id NOT IN (SELECT task_id::text FROM absurd.t_default)
+    WHERE task_id NOT IN (${liveTaskSelects.join(" UNION ALL ")})
   `);
   return result.rowCount ?? 0;
 }

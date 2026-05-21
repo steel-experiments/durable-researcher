@@ -8,11 +8,19 @@ import { getUtilityModel, getUtilityReasoning } from "../config.js";
 import type { ResearchParams, ResearchPlan } from "../types.js";
 import { DEPTH_CONFIG } from "../types.js";
 import { loadTemplate } from "../prompts.js";
+import type { ToolProgress } from "../event-bus.js";
 
 const PlanParams = Type.Object({});
 
 /** Create a plan_research tool that generates sub-queries for the research topic. */
-export function createPlanTool(researchParams: ResearchParams): AgentTool<typeof PlanParams> {
+export function createPlanTool(
+  researchParams: ResearchParams,
+  progress?: ToolProgress,
+): AgentTool<typeof PlanParams> {
+  const report = progress ?? ((text: string) => console.log(text));
+  // Whether to use the carriage-return ticker. Only safe when we have stdout —
+  // in TUI mode `progress` is provided and writes go to the bus, never \r.
+  const useStdoutTicker = !progress;
   return {
     name: "plan_research",
     label: "Plan Research",
@@ -23,11 +31,15 @@ export function createPlanTool(researchParams: ResearchParams): AgentTool<typeof
       const depth = researchParams.depth ?? "standard";
       const config = DEPTH_CONFIG[depth];
 
-      console.log(`    Generating ${depth} research plan (up to ${config.initialQueries} queries)...`);
+      report(`    Generating ${depth} research plan (up to ${config.initialQueries} queries)...`);
       const startTime = Date.now();
       const ticker = setInterval(() => {
         const elapsed = Math.round((Date.now() - startTime) / 1000);
-        process.stdout.write(`\r    Waiting for LLM... ${elapsed}s`);
+        if (useStdoutTicker) {
+          process.stdout.write(`\r    Waiting for LLM... ${elapsed}s`);
+        } else {
+          report(`Planning... ${elapsed}s elapsed`);
+        }
       }, 5_000);
       let plan: Awaited<ReturnType<typeof generateResearchPlan>>;
       try {
@@ -35,12 +47,13 @@ export function createPlanTool(researchParams: ResearchParams): AgentTool<typeof
           researchParams.topic,
           depth,
           config.initialQueries,
+          report,
         );
       } finally {
         clearInterval(ticker);
       }
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      console.log(`    Plan ready (${elapsed}s): ${plan.subQueries.length} queries, strategy: ${plan.searchStrategy}`);
+      report(`    Plan ready (${elapsed}s): ${plan.subQueries.length} queries, strategy: ${plan.searchStrategy}`);
 
       const formatted = [
         `## Research Plan`,
@@ -73,6 +86,7 @@ async function generateResearchPlan(
   topic: string,
   depth: string,
   maxQueries: number,
+  report: (text: string) => void = (t) => console.log(t),
 ): Promise<ResearchPlan> {
   const model = getUtilityModel();
   const systemPrompt = await loadTemplate("plan", {
@@ -109,7 +123,7 @@ async function generateResearchPlan(
 
     return parsePlanResponse(text, topic, maxQueries);
   } catch (err) {
-    console.log(`    Plan LLM call failed (${(err as Error).message}), using fallback queries`);
+    report(`    Plan LLM call failed (${(err as Error).message}), using fallback queries`);
     return {
       strategicPlan: `Research "${topic}" across multiple dimensions`,
       subQueries: extractQueriesFromText("", topic, maxQueries),

@@ -16,10 +16,14 @@
     "@mariozechner/pi-agent-core": "*",
     "@mariozechner/pi-ai": "*",
     "@types/pdf-parse": "^1.1.5",
+    "@types/react": "^19.2.15",
     "absurd-sdk": "^0.3.0",
     "dotenv": "^16.4.7",
     "handlebars": "^4.7.9",
+    "ink": "^7.0.3",
+    "ink-text-input": "^6.0.0",
     "pdf-parse": "^2.4.5",
+    "react": "^19.2.6",
     "steel-sdk": "^0.18.0"
   },
   "devDependencies": {

@@ -4,10 +4,11 @@
 import Steel from "steel-sdk";
 import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { multiEngineSearch, scrapeUrl, filterByRelevance } from "../steel-client.js";
+import { multiEngineSearch, filterByRelevance } from "../steel-client.js";
 import { isContentMeaningful, truncateContent } from "../content.js";
-import { summarizeContent } from "./browse.js";
+import { fetchBrowseContent, summarizeContent } from "./browse.js";
 import { getCachedBrowse, setCachedBrowse } from "../browse-cache.js";
+import type { ToolProgress } from "../event-bus.js";
 
 const ScoutParams = Type.Object({
   query: Type.String({ description: "The search query to execute" }),
@@ -42,7 +43,9 @@ export function createScoutTool(
   scrapedUrls: Set<string>,
   topic: string,
   taskId?: string,
+  progress?: ToolProgress,
 ): AgentTool<typeof ScoutParams> {
+  const report = progress ?? ((text: string) => console.log(text));
   return {
     name: "scout",
     label: "Scout",
@@ -69,7 +72,7 @@ export function createScoutTool(
 
       // Browse top results in parallel
       const toBrowse = fresh.slice(0, maxBrowse);
-      console.log(`    [SCOUT] "${params.query.slice(0, 50)}" → ${relevant.length}/${rawResults.length} relevant, browsing ${toBrowse.length}...`);
+      report(`    [SCOUT] "${params.query.slice(0, 50)}" → ${relevant.length}/${rawResults.length} relevant, browsing ${toBrowse.length}...`);
 
       const browseResults: ScoutResult[] = [];
       const browsedUrls: string[] = [];
@@ -85,7 +88,7 @@ export function createScoutTool(
             if (cached) {
               scraped = { content: cached.content, title: cached.title, rawLength: cached.rawLength };
             } else {
-              scraped = await scrapeUrl(client, result.url);
+              scraped = await fetchBrowseContent(client, result.url);
               if (taskId) {
                 await setCachedBrowse(taskId, result.url, scraped).catch(() => {});
               }
@@ -123,7 +126,7 @@ export function createScoutTool(
               rawLength: scraped.rawLength,
             });
 
-            console.log(`    [SCOUT] ${cached ? "Cached" : "Browsed"}: ${scraped.title.slice(0, 60)}`);
+            report(`    [SCOUT] ${cached ? "Cached" : "Browsed"}: ${scraped.title.slice(0, 60)}`);
           } catch (err) {
             errors.push(`Failed: ${result.url} — ${(err as Error).message}`);
           }

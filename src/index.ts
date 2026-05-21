@@ -18,7 +18,10 @@ import {
 } from "./task-finder.js";
 import { runFollowUp } from "./follow-up.js";
 import { runClarification } from "./clarify.js";
-import { rebuildStateFromMessages } from "./durable-turns.js";
+import { rebuildStateFromMessages, type UsageStats } from "./durable-turns.js";
+import { createResearchEventBus } from "./event-bus.js";
+import { createSteeringQueue } from "./steering-queue.js";
+import { runTui } from "./tui/run-tui.js";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { ResearchNote } from "./types.js";
 import {
@@ -79,7 +82,7 @@ async function main() {
     (a, i) => !a.startsWith("--") && !skipNext.has(i),
   );
 
-  if (!taskID && !topic) {
+  if (resumeIndex < 0 && !topic) {
     console.error("Error: No research topic provided.");
     process.exit(1);
   }
@@ -96,9 +99,19 @@ async function main() {
     ? parseInt(args[maxSourcesIndex + 1], 10)
     : 20;
 
+  // TUI is the default for interactive sessions; --no-tui falls back to streamed logs.
+  const useTui = !!process.stdin.isTTY && !!process.stdout.isTTY && !args.includes("--no-tui");
+  const eventBus = useTui ? createResearchEventBus() : undefined;
+  const steeringQueue = useTui ? createSteeringQueue() : undefined;
+
   // Parse --model (format: provider:modelId, e.g. zai:glm-5.1)
   const modelIndex = args.indexOf("--model");
-  let appOptions: ResearchAppOptions = {};
+  let appOptions: ResearchAppOptions = {
+    eventBus,
+    steeringQueue,
+    quiet: useTui,
+  };
+  let modelLabel = "default";
   if (modelIndex >= 0) {
     const modelStr = args[modelIndex + 1];
     if (!modelStr || !modelStr.includes(":")) {
@@ -108,7 +121,8 @@ async function main() {
     const [provider, modelId] = modelStr.split(":");
     try {
       appOptions.model = getModel(provider as any, modelId as any);
-      console.log(`Using model: ${provider}/${modelId}`);
+      modelLabel = `${provider}:${modelId}`;
+      if (!useTui) console.log(`Using model: ${provider}/${modelId}`);
     } catch {
       console.error(`Error: Unknown model "${modelStr}".`);
       process.exit(1);
@@ -130,6 +144,7 @@ async function main() {
     sources: { title: string; url: string }[];
     messages: AgentMessage[];
   } | undefined;
+  let liveTopic = topic ?? "resumed research";
   let app = createResearchApp({ ...appOptions, queueName: taskQueue });
 
   if (resumeIndex >= 0) {
@@ -146,6 +161,7 @@ async function main() {
     }
 
     taskQueue = existingTask.queueName;
+    liveTopic = existingTask.topic;
     isResume = true;
     await app.close();
     app = createResearchApp({ ...appOptions, queueName: taskQueue });
@@ -240,6 +256,7 @@ async function main() {
           console.log(`Resuming...\n`);
           taskID = exact.taskId;
           taskQueue = exact.queueName;
+          liveTopic = exact.topic;
           isResume = true;
           await app.close();
           app = createResearchApp({ ...appOptions, queueName: taskQueue });
@@ -252,6 +269,7 @@ async function main() {
               console.log(`Resuming (use --new to force a fresh start)...\n`);
               taskID = similar.taskId;
               taskQueue = similar.queueName;
+              liveTopic = similar.topic;
               isResume = true;
               await app.close();
               app = createResearchApp({ ...appOptions, queueName: taskQueue });
@@ -339,18 +357,76 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`Starting worker...\n`);
+  let tuiHandle: ReturnType<typeof runTui> | undefined;
+  if (useTui && eventBus && steeringQueue) {
+    tuiHandle = runTui({
+      topic: liveTopic,
+      maxSources,
+      modelLabel,
+      bus: eventBus,
+      steeringQueue,
+    });
+    // Surface what the CLI is doing *before* the worker claims — otherwise the
+    // TUI sits idle while Absurd polls and waits for any stale lease to expire.
+    eventBus.emit({
+      type: "agent-status",
+      text: isResume ? `Starting worker — claiming task ${taskID?.slice(0, 8)}...` : "Starting worker...",
+    });
+  } else {
+    console.log(`Starting worker...\n`);
+  }
 
   const worker = await app.startWorker({
     concurrency: 1,
     claimTimeout: 600,
-    onError: (err) => console.error("Worker error:", err.message),
+    onError: (err) => {
+      eventBus?.emit({ type: "task-error", message: err.message });
+      if (!useTui) console.error("Worker error:", err.message);
+    },
   });
 
-  const result = await app.awaitTaskResult(taskID, {
-    queue: taskQueue,
-    timeout: getMaxDurationSeconds() + 30, // extra buffer beyond task max duration
-  });
+  // In TUI mode: render the TUI and race the task result against the user quitting.
+  let result;
+  if (tuiHandle && eventBus) {
+    const taskPromise = app.awaitTaskResult(taskID, {
+      queue: taskQueue,
+      timeout: getMaxDurationSeconds() + 30,
+    });
+
+    const winner = await Promise.race([
+      taskPromise.then((r) => ({ kind: "task" as const, result: r })),
+      tuiHandle.waitForExit.then(() => ({ kind: "tui-exit" as const })),
+    ]);
+
+    if (winner.kind === "tui-exit") {
+      // Don't kill the task — Absurd checkpoints survive process exit.
+      console.log(
+        `\nQuit requested. Task ${taskID} can be resumed:\n  bun run src/index.ts --resume ${taskID}`,
+      );
+      await worker.close();
+      await app.close();
+      process.exit(0);
+    }
+
+    result = winner.result;
+    if (result.state === "completed") {
+      eventBus.emit({ type: "task-complete" });
+    } else if (result.state === "failed") {
+      const failureText =
+        typeof result.failure === "string"
+          ? result.failure
+          : result.failure
+          ? JSON.stringify(result.failure)
+          : "task failed";
+      eventBus.emit({ type: "task-error", message: failureText });
+    }
+    await tuiHandle.waitForExit;
+  } else {
+    result = await app.awaitTaskResult(taskID, {
+      queue: taskQueue,
+      timeout: getMaxDurationSeconds() + 30, // extra buffer beyond task max duration
+    });
+  }
 
   if (result.state === "completed" && result.result) {
     const research = result.result as unknown as {
@@ -364,10 +440,11 @@ async function main() {
     // Print report if it wasn't already streamed by the logging persister.
     // On timeout, the report is built from notes and was never streamed.
     // On resume, the agent produced the report in a previous run.
-    // On a normal fresh run, the persister already printed it.
+    // In TUI mode, the persister is quiet so the report needs to be printed here.
+    // On a normal fresh run with logs, the persister already printed it.
     if (research.report) {
       const isPartialReport = research.report.startsWith("[Partial results");
-      if (isResume || isPartialReport) {
+      if (useTui || isResume || isPartialReport) {
         console.log("\n" + "=".repeat(80));
         console.log("RESEARCH REPORT");
         console.log("=".repeat(80) + "\n");

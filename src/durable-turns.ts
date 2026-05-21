@@ -4,6 +4,7 @@
 import type { TaskContext, StepHandle } from "absurd-sdk";
 import type { AgentMessage, AgentEvent } from "@mariozechner/pi-agent-core";
 import type { MessageLogEntry, ResearchNote } from "./types.js";
+import type { ResearchEventBus } from "./event-bus.js";
 
 /**
  * Load the message log from checkpointed Absurd steps.
@@ -86,6 +87,8 @@ export type LoggingPersisterOptions = {
   maxTurns: number;
   scrapedUrls: Set<string>;
   usage: UsageStats;
+  eventBus?: ResearchEventBus;
+  quiet?: boolean;
 };
 
 /**
@@ -98,15 +101,28 @@ export function createLoggingPersister(
   options: LoggingPersisterOptions,
 ): (event: AgentEvent) => Promise<void> {
   const persister = createMessagePersister(ctx, initialHandle);
-  const { maxSources, maxTurns, scrapedUrls, usage } = options;
+  const { maxSources, maxTurns, scrapedUrls, usage, eventBus, quiet = false } = options;
   let turnCount = 0;
   let isStreamingReport = false;
+  const noteCalls = new Map<string, ResearchNote>();
+  const browseCalls = new Map<string, string>();
+
+  const log = (...args: Parameters<typeof console.log>) => {
+    if (!quiet) console.log(...args);
+  };
 
   return async (event: AgentEvent) => {
     switch (event.type) {
       case "turn_start":
         turnCount++;
-        console.log(
+        eventBus?.emit({
+          type: "turn-start",
+          turn: turnCount,
+          sources: scrapedUrls.size,
+          maxSources,
+          maxTurns,
+        });
+        log(
           `\n--- Turn ${turnCount} [${scrapedUrls.size}/${maxSources} sources] [${turnCount}/${maxTurns} turns] ---`,
         );
         break;
@@ -114,7 +130,8 @@ export function createLoggingPersister(
       case "tool_execution_start": {
         const icon = TOOL_ICONS[event.toolName] ?? "[TOOL]";
         const argSummary = formatToolArgs(event.toolName, event.args);
-        console.log(`  ${icon} ${event.toolName}(${argSummary})`);
+        eventBus?.emit({ type: "tool-start", toolName: event.toolName, argSummary });
+        log(`  ${icon} ${event.toolName}(${argSummary})`);
         // Extend lease at start of tool execution — long-running tools like
         // plan_research and prefetch_sources may take minutes without any
         // intermediate events, causing the claim timeout to expire.
@@ -127,9 +144,14 @@ export function createLoggingPersister(
       }
 
       case "tool_execution_end": {
+        eventBus?.emit({
+          type: "tool-end",
+          toolName: event.toolName,
+          isError: event.isError,
+        });
         if (event.isError) {
           const icon = TOOL_ICONS[event.toolName] ?? "[TOOL]";
-          console.log(`  ${icon} FAILED`);
+          log(`  ${icon} FAILED`);
         }
         // Extend lease after each tool execution to prevent timeout
         try {
@@ -144,6 +166,14 @@ export function createLoggingPersister(
         // Stream assistant text deltas — but only accumulate, don't print yet.
         // We'll print on message_end if it turns out to be the final report.
         // For now, just track deltas for the current message.
+        // Forward text_delta chunks to the event bus so the TUI can show
+        // "thinking…" content between tool calls. Thinking/toolcall deltas
+        // are intentionally skipped — the TUI only wants user-visible text.
+        const inner = (event as { assistantMessageEvent?: { type?: string; delta?: string } })
+          .assistantMessageEvent;
+        if (inner && inner.type === "text_delta" && typeof inner.delta === "string") {
+          eventBus?.emit({ type: "agent-text", delta: inner.delta });
+        }
         break;
       }
 
@@ -170,11 +200,36 @@ export function createLoggingPersister(
             }
             usage.models[model].input += input;
             usage.models[model].output += output;
+            eventBus?.emit({ type: "usage-update", usage: { ...usage, models: { ...usage.models } } });
           }
 
           const hasToolCalls = msg.content.some(
             (c: { type: string }) => c.type === "toolCall",
           );
+          if (hasToolCalls) {
+            for (const content of msg.content) {
+              if (content.type !== "toolCall") continue;
+              if (content.name === "take_note") {
+                const args = content.arguments as {
+                  title: string;
+                  content: string;
+                  sourceUrls: string[];
+                  confidence: "high" | "medium" | "low";
+                  keyExcerpts?: string[];
+                };
+                noteCalls.set(content.id, {
+                  title: args.title,
+                  content: args.content,
+                  sourceUrls: args.sourceUrls,
+                  confidence: args.confidence,
+                  ...(args.keyExcerpts?.length ? { keyExcerpts: args.keyExcerpts } : {}),
+                });
+              } else if (content.name === "browse_url") {
+                const args = content.arguments as { url: string };
+                browseCalls.set(content.id, args.url);
+              }
+            }
+          }
           const textParts = msg.content.filter(
             (c): c is { type: "text"; text: string } => c.type === "text" && c.text.length > 0,
           );
@@ -182,22 +237,31 @@ export function createLoggingPersister(
 
           if (!hasToolCalls && fullText.length > 500) {
             // This is the final report — print it in full
-            console.log("\n" + "=".repeat(80));
-            console.log("RESEARCH REPORT");
-            console.log("=".repeat(80) + "\n");
-            console.log(fullText);
+            eventBus?.emit({ type: "report-text", text: fullText });
+            log("\n" + "=".repeat(80));
+            log("RESEARCH REPORT");
+            log("=".repeat(80) + "\n");
+            log(fullText);
           } else if (hasToolCalls) {
             // Agent thinking + tool calls — show short text and tool summary
             if (fullText.length > 0 && fullText.length <= 300) {
-              console.log(`\n  [AGENT] ${fullText}`);
+              log(`\n  [AGENT] ${fullText}`);
             }
             const toolCalls = msg.content.filter(
               (c: { type: string }) => c.type === "toolCall",
             );
-            console.log(`  Calling ${toolCalls.length} tool(s)...`);
+            log(`  Calling ${toolCalls.length} tool(s)...`);
           } else if (fullText.length > 0) {
             // Short non-tool text (status updates, etc.)
-            console.log(`\n  [AGENT] ${fullText}`);
+            log(`\n  [AGENT] ${fullText}`);
+          }
+        } else if ("role" in msg && msg.role === "toolResult" && !msg.isError) {
+          if (msg.toolName === "take_note") {
+            const note = noteCalls.get(msg.toolCallId);
+            if (note) eventBus?.emit({ type: "note-added", note, index: noteCalls.size - 1 });
+          } else if (msg.toolName === "browse_url") {
+            const url = browseCalls.get(msg.toolCallId);
+            if (url) eventBus?.emit({ type: "browse-added", url });
           }
         }
         break;
