@@ -67,3 +67,16 @@ export function getMaxDurationSeconds(): number {
 export function getMaxDurationMs(): number {
   return getMaxDurationSeconds() * 1000;
 }
+
+const TRUTHY_VERIFY_REWRITE = new Set(["1", "true", "yes"]);
+
+/**
+ * Whether the verify-then-rewrite loop is enabled.
+ * Defaults to false: verification still runs for measurement, but the rewrite
+ * path is skipped unless VERIFY_REWRITE is explicitly set to a truthy value.
+ */
+export function getVerifyRewriteEnabled(): boolean {
+  const raw = process.env.VERIFY_REWRITE;
+  if (!raw) return false;
+  return TRUTHY_VERIFY_REWRITE.has(raw.trim().toLowerCase());
+}

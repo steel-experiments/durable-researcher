@@ -14,6 +14,7 @@ import {
   getAgentReasoning,
   getMaxDurationMs,
   getMaxDurationSeconds,
+  getVerifyRewriteEnabled,
 } from "./config.js";
 import type { ResearchParams, ResearchResult, MessageLogEntry, TaskMode } from "./types.js";
 import { DEPTH_CONFIG } from "./types.js";
@@ -192,6 +193,19 @@ function extractFinalReport(messages: AgentMessage[]): string | null {
     if (text.length > 0) return text;
   }
   return null;
+}
+
+/**
+ * Decide whether to actually rewrite the report given the verification verdict
+ * and the env-driven gate. When the gate is off we still measure verification
+ * but never trigger the rewrite, regardless of the pass rate.
+ */
+export function shouldRewriteReport(
+  result: VerificationResult,
+  verifyRewriteEnabled: boolean,
+): boolean {
+  if (!verifyRewriteEnabled) return false;
+  return shouldTriggerRewrite(result);
 }
 
 const REWRITE_STEERING_PREFIX = "[SYSTEM] Citation verification:";
@@ -592,13 +606,18 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         const result = await ctx.step("verify-claims-attempt-1", () =>
           verifyClaims({ report: finalReport, notes }),
         );
-        const triggered = shouldTriggerRewrite(result);
+        const verifyRewriteEnabled = getVerifyRewriteEnabled();
+        const triggered = shouldRewriteReport(result, verifyRewriteEnabled);
+        const wouldTrigger = shouldTriggerRewrite(result);
+        const gateNote = !verifyRewriteEnabled && wouldTrigger
+          ? " (rewrite gated off via VERIFY_REWRITE)"
+          : "";
         taskLog(
-          `[VERIFY] ${result.summary.supported}/${result.summary.total} claims supported (${Math.round(result.summary.passRate * 100)}%).${triggered ? " Rewriting." : ""}`,
+          `[VERIFY] ${result.summary.supported}/${result.summary.total} claims supported (${Math.round(result.summary.passRate * 100)}%).${triggered ? " Rewriting." : gateNote}`,
         );
         bus?.emit({
           type: "agent-status",
-          text: `Citations: ${result.summary.supported}/${result.summary.total} supported (${Math.round(result.summary.passRate * 100)}%)${triggered ? " — rewriting" : ""}`,
+          text: `Citations: ${result.summary.supported}/${result.summary.total} supported (${Math.round(result.summary.passRate * 100)}%)${triggered ? " — rewriting" : gateNote}`,
         });
         verificationState = { result, attempts: 1, rewriteTriggered: triggered };
 
