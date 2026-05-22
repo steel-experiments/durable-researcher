@@ -32,6 +32,7 @@ import {
 } from "./cli-help.js";
 import { saveReport, printUsage } from "./report-io.js";
 import { cleanupTasks } from "./task-cleanup.js";
+import { clearStaleLease, defaultWorkerId } from "./lease.js";
 
 
 async function main() {
@@ -376,9 +377,67 @@ async function main() {
     console.log(`Starting worker...\n`);
   }
 
+  // On resume: if the prior process exited without releasing its lease, the next
+  // worker would otherwise block for up to claimTimeout. Detect a lease held by
+  // a dead PID on this host and clear it before startWorker polls.
+  const workerId = defaultWorkerId();
+  if (isResume) {
+    try {
+      const clear = await clearStaleLease(taskID!, taskQueue);
+      if (clear.cleared) {
+        const msg = `Cleared stale lease (holder: ${clear.lease?.claimedBy ?? "?"}, reason: ${clear.reason}).`;
+        if (eventBus) eventBus.emit({ type: "agent-status", text: msg });
+        else console.log(msg);
+      } else if (clear.reason === "holder-alive" && clear.lease?.secondsRemaining) {
+        const msg = `Another worker still holds the lease (${clear.lease.claimedBy}); waiting up to ${clear.lease.secondsRemaining}s for it to expire.`;
+        if (eventBus) eventBus.emit({ type: "agent-status", text: msg });
+        else console.log(msg);
+      } else if (clear.reason === "different-host" && clear.lease?.secondsRemaining) {
+        const msg = `Lease held by another host (${clear.lease.claimedBy}); waiting up to ${clear.lease.secondsRemaining}s for it to expire.`;
+        if (eventBus) eventBus.emit({ type: "agent-status", text: msg });
+        else console.log(msg);
+      }
+    } catch (err) {
+      // Non-fatal — fall through to normal worker claim polling.
+      const msg = `Could not check stale lease: ${(err as Error).message}`;
+      if (eventBus) eventBus.emit({ type: "agent-status", text: msg });
+      else console.warn(msg);
+    }
+  }
+
+  // Release our own lease on graceful exit so the next resume is immediate.
+  // Idempotent: only fires once even if multiple signals arrive.
+  let releasing = false;
+  const releaseOwnLease = async (): Promise<void> => {
+    if (releasing) return;
+    releasing = true;
+    try {
+      await clearStaleLease(taskID!, taskQueue, {
+        force: true,
+        currentWorkerId: workerId,
+      });
+    } catch {
+      // Best-effort — if release fails, the lease will expire on its own.
+    }
+  };
+
+  // SIGINT/SIGTERM: release the lease and exit without waiting on the in-flight
+  // task. The task is durable; the next resume rebuilds from checkpoints.
+  const onSignal = (signal: NodeJS.Signals) => {
+    // Async release, then exit. Don't await worker.close() — it would block on
+    // the running task.
+    void releaseOwnLease().finally(() => {
+      if (!useTui) console.log(`\nReceived ${signal}. Task ${taskID} can be resumed.`);
+      process.exit(0);
+    });
+  };
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
+
   const worker = await app.startWorker({
     concurrency: 1,
     claimTimeout: 600,
+    workerId,
     onError: (err) => {
       eventBus?.emit({ type: "task-error", message: err.message });
       if (!useTui) console.error("Worker error:", err.message);
@@ -400,11 +459,14 @@ async function main() {
 
     if (winner.kind === "tui-exit") {
       // Don't kill the task — Absurd checkpoints survive process exit.
+      // Release our own lease first so the next resume claims immediately
+      // instead of waiting up to claimTimeout for the lease to expire.
+      await releaseOwnLease();
       console.log(
         `\nQuit requested. Task ${taskID} can be resumed:\n  bun run src/index.ts --resume ${taskID}`,
       );
-      await worker.close();
-      await app.close();
+      // Don't await worker.close() — it would block on the in-flight task.
+      // The lease is already released; let process.exit tear down the worker.
       process.exit(0);
     }
 
