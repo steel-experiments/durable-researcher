@@ -148,6 +148,7 @@ export function createLoggingPersister(
           type: "tool-end",
           toolName: event.toolName,
           isError: event.isError,
+          summary: summarizeToolResult(event.toolName, event.result, event.isError),
         });
         if (event.isError) {
           const icon = TOOL_ICONS[event.toolName] ?? "[TOOL]";
@@ -271,6 +272,78 @@ export function createLoggingPersister(
     // Always delegate to the checkpoint persister
     await persister(event);
   };
+}
+
+/**
+ * Build a short, human-readable result digest for a tool execution.
+ * Used in the live activity stream so the user can see at a glance what
+ * each tool actually returned ("5 new", "ok 3.2KB", "saved", "error: ...").
+ */
+export function summarizeToolResult(
+  toolName: string,
+  result: unknown,
+  isError: boolean,
+): string {
+  if (isError) {
+    // Try to surface the first line of text content if present.
+    const r = result as { content?: { type: string; text?: string }[] } | undefined;
+    const text = r?.content?.find((c) => c.type === "text")?.text;
+    if (text) return `error: ${text.split("\n")[0].slice(0, 80)}`;
+    return "error";
+  }
+
+  const details = (result as { details?: Record<string, unknown> } | undefined)?.details;
+  if (!details) return "ok";
+
+  switch (toolName) {
+    case "web_search": {
+      const fresh = details.freshResults as number | undefined;
+      const total = details.totalResults as number | undefined;
+      if (fresh === 0) return `0 new (of ${total ?? 0})`;
+      if (fresh != null && total != null) return `${fresh} new (of ${total})`;
+      return "ok";
+    }
+    case "browse_url": {
+      const meaningful = details.meaningful as boolean | undefined;
+      const len = details.rawLength as number | undefined;
+      if (meaningful === false) return `thin content${len ? ` (${len}b)` : ""}`;
+      if (len) return `${formatBytes(len)}`;
+      return "ok";
+    }
+    case "prefetch_sources": {
+      const queries = details.searchedQueries as number | undefined;
+      const browsed = details.browsedCount as number | undefined;
+      return `${queries ?? 0} queries → ${browsed ?? 0} pages`;
+    }
+    case "scout": {
+      const browsed = details.browsedCount as number | undefined;
+      const total = details.totalResults as number | undefined;
+      return `${browsed ?? 0} browsed (of ${total ?? 0})`;
+    }
+    case "take_note": {
+      const merged = details.mergedCount as number | undefined;
+      if (merged && merged > 0) return `merged into existing (+${merged})`;
+      return "saved";
+    }
+    case "evaluate_progress":
+      return "ok";
+    case "screenshot":
+      return "ok";
+    case "plan_research":
+      return "plan ready";
+    case "submit_report": {
+      const len = details.reportLength as number | undefined;
+      return len ? `report ${formatBytes(len)}` : "report submitted";
+    }
+    default:
+      return "ok";
+  }
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n}b`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)}MB`;
 }
 
 /** Format tool arguments for display. */

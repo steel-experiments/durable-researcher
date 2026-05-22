@@ -78,7 +78,7 @@ describe("createResearchEventBus", () => {
 
     bus.emit({ type: "turn-start", turn: 1, sources: 0, maxSources: 20, maxTurns: 45 });
     bus.emit({ type: "tool-start", toolName: "browse_url", argSummary: '"https://x.com"' });
-    bus.emit({ type: "tool-end", toolName: "browse_url", isError: false });
+    bus.emit({ type: "tool-end", toolName: "browse_url", isError: false, summary: "3.2KB" });
     bus.emit({ type: "browse-added", url: "https://x.com" });
     bus.emit({ type: "note-added", note, index: 0 });
     bus.emit({ type: "agent-text", delta: "hello " });

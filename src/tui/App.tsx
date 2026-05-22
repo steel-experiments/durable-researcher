@@ -1,12 +1,13 @@
 // ABOUTME: Main TUI component — live findings stream + steering input + agent status.
 // ABOUTME: Subscribes to the research event bus and pushes user steering into the queue.
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import TextInput from "ink-text-input";
 import type { ResearchEvent, ResearchEventBus } from "../event-bus.js";
 import type { SteeringQueue } from "../steering-queue.js";
 import type { ResearchNote } from "../types.js";
+import type { UsageStats } from "../durable-turns.js";
 
 export type TuiAppProps = {
   topic: string;
@@ -23,6 +24,20 @@ type Activity =
   | { kind: "tool"; toolName: string; argSummary: string }
   | { kind: "thinking"; turn: number }
   | { kind: "finalizing" };
+
+/** One row in the live activity stream — a finished tool call (success or error). */
+type ActivityLogEntry = {
+  toolName: string;
+  argSummary: string;
+  summary: string;
+  isError: boolean;
+  /** ms timestamp; rendered as relative elapsed since run start. */
+  ts: number;
+};
+
+const MAX_ACTIVITY_LOG = 50;
+const ACTIVITY_VISIBLE = 6;
+const NOTE_PREVIEW_CHARS = 110;
 
 const CONFIDENCE_ICON: Record<ResearchNote["confidence"], string> = {
   high: "●",
@@ -51,6 +66,31 @@ function formatElapsed(ms: number): string {
   return `${m}:${ss}`;
 }
 
+function formatTokens(n: number): string {
+  if (n < 1000) return `${n}`;
+  if (n < 10_000) return `${(n / 1000).toFixed(1)}k`;
+  if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
+/** Short label for the tool stream — keeps lines uniform and scannable. */
+const TOOL_LABEL: Record<string, string> = {
+  plan_research: "plan",
+  prefetch_sources: "prefetch",
+  scout: "scout",
+  web_search: "search",
+  browse_url: "browse",
+  screenshot: "screenshot",
+  take_note: "note",
+  evaluate_progress: "evaluate",
+  submit_report: "submit",
+  verify_claims: "verify",
+};
+
+function toolLabel(name: string): string {
+  return TOOL_LABEL[name] ?? name;
+}
+
 export function TuiApp({
   topic,
   maxSources,
@@ -77,6 +117,12 @@ export function TuiApp({
   // Rolling tail of the assistant's streamed text — last ~200 chars, reset between
   // turns/tool calls so we don't fossilize old output.
   const [thinkingText, setThinkingText] = useState<string>("");
+  // Tail of finished tool calls, newest last. Bounded to MAX_ACTIVITY_LOG.
+  const [activityLog, setActivityLog] = useState<ActivityLogEntry[]>([]);
+  const [usage, setUsage] = useState<UsageStats | null>(null);
+  // Pending tool calls keyed by toolName so tool-end can recover the argSummary
+  // recorded at tool-start (closure-captured state would be stale across events).
+  const pendingToolRef = useRef<Map<string, string>>(new Map());
 
   // Ticker for elapsed time
   useEffect(() => {
@@ -100,10 +146,31 @@ export function TuiApp({
             toolName: event.toolName,
             argSummary: event.argSummary,
           });
+          // Stash the args so the matching tool-end can render the full row.
+          pendingToolRef.current.set(event.toolName, event.argSummary);
           setThinkingText("");
           break;
-        case "tool-end":
+        case "tool-end": {
           setActivity({ kind: "thinking", turn });
+          const argSummary = pendingToolRef.current.get(event.toolName) ?? "";
+          pendingToolRef.current.delete(event.toolName);
+          const entry: ActivityLogEntry = {
+            toolName: event.toolName,
+            argSummary,
+            summary: event.summary,
+            isError: event.isError,
+            ts: Date.now() - startedAt,
+          };
+          setActivityLog((prev) => {
+            const next = [...prev, entry];
+            return next.length > MAX_ACTIVITY_LOG
+              ? next.slice(next.length - MAX_ACTIVITY_LOG)
+              : next;
+          });
+          break;
+        }
+        case "usage-update":
+          setUsage(event.usage);
           break;
         case "browse-added":
           setSources((n) => n + 1);
@@ -205,24 +272,55 @@ export function TuiApp({
         {findings.length === 0 ? (
           <Text color="gray">  (no findings yet — {statusText.toLowerCase()})</Text>
         ) : (
-          findings.slice(-15).map((note, i) => {
+          findings.slice(-8).map((note, i) => {
             const sourceHost = note.sourceUrls[0] ? hostOf(note.sourceUrls[0]) : "—";
+            const preview = note.content.replace(/\s+/g, " ").trim().slice(0, NOTE_PREVIEW_CHARS);
+            const truncated = note.content.length > NOTE_PREVIEW_CHARS;
             return (
-              <Box key={`${note.title}-${i}`} flexDirection="row" justifyContent="space-between">
-                <Text>
-                  <Text color={CONFIDENCE_COLOR[note.confidence]}>
-                    {CONFIDENCE_ICON[note.confidence]}{" "}
+              <Box key={`${note.title}-${i}`} flexDirection="column">
+                <Box flexDirection="row" justifyContent="space-between">
+                  <Text>
+                    <Text color={CONFIDENCE_COLOR[note.confidence]}>
+                      {CONFIDENCE_ICON[note.confidence]}{" "}
+                    </Text>
+                    <Text color="gray">[{note.confidence.padEnd(4, " ")}]</Text>{" "}
+                    <Text>{note.title}</Text>
                   </Text>
-                  <Text color="gray">[{note.confidence.padEnd(4, " ")}]</Text>{" "}
-                  <Text>{note.title}</Text>
-                </Text>
-                <Text color="gray">{sourceHost}</Text>
+                  <Text color="gray">{sourceHost}</Text>
+                </Box>
+                {preview.length > 0 && (
+                  <Text color="gray">     {preview}{truncated ? "…" : ""}</Text>
+                )}
               </Box>
             );
           })
         )}
-        {findings.length > 15 && (
-          <Text color="gray">  …and {findings.length - 15} earlier</Text>
+        {findings.length > 8 && (
+          <Text color="gray">  …and {findings.length - 8} earlier</Text>
+        )}
+      </Box>
+
+      {/* Activity stream — last N finished tool calls so the user can see what
+          the agent is actually doing instead of only counters. */}
+      <Box borderStyle="round" borderColor="gray" paddingX={1} flexDirection="column">
+        <Box justifyContent="space-between">
+          <Text bold>ACTIVITY</Text>
+          <Text color="gray">{activityLog.length} call{activityLog.length === 1 ? "" : "s"}</Text>
+        </Box>
+        {activityLog.length === 0 ? (
+          <Text color="gray">  (no tool calls yet)</Text>
+        ) : (
+          activityLog.slice(-ACTIVITY_VISIBLE).map((entry, i) => (
+            <Box key={`${entry.ts}-${i}`} flexDirection="row">
+              <Text color="gray">{formatElapsed(entry.ts).padStart(5, " ")} </Text>
+              <Text color={entry.isError ? "red" : "cyan"}>{toolLabel(entry.toolName)}</Text>
+              {entry.argSummary.length > 0 && (
+                <Text color="gray">{" "}{entry.argSummary}</Text>
+              )}
+              <Text color="gray">{" → "}</Text>
+              <Text color={entry.isError ? "red" : "gray"}>{entry.summary}</Text>
+            </Box>
+          ))
         )}
       </Box>
 
@@ -249,6 +347,22 @@ export function TuiApp({
         </Text>
         <Text color="gray">
           {sources}/{maxSources} sources · turn {turn} · {modelLabel}
+          {usage && (usage.inputTokens > 0 || usage.outputTokens > 0) ? (
+            <Text color="gray">
+              {" · "}
+              <Text color="white">{formatTokens(usage.inputTokens)}</Text>
+              {" in / "}
+              <Text color="white">{formatTokens(usage.outputTokens)}</Text>
+              {" out"}
+              {usage.cacheReadTokens > 0 && (
+                <Text color="gray">
+                  {" · "}
+                  <Text color="green">{formatTokens(usage.cacheReadTokens)}</Text>
+                  {" cached"}
+                </Text>
+              )}
+            </Text>
+          ) : null}
         </Text>
         {/* Stream the assistant's text-in-flight when present so the user sees
             *something* during the gap between turn start and the next tool call. */}

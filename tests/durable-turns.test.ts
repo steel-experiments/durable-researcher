@@ -2,7 +2,10 @@
 // ABOUTME: Tests message log loading, state rebuilding from replayed messages.
 
 import { describe, it, expect } from "vitest";
-import { rebuildStateFromMessages } from "../src/durable-turns.js";
+import {
+  rebuildStateFromMessages,
+  summarizeToolResult,
+} from "../src/durable-turns.js";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type {
   AssistantMessage,
@@ -336,5 +339,55 @@ describe("rebuildStateFromMessages", () => {
     expect(scrapedUrls.size).toBe(1);
     expect(notes[0].title).toBe("Key Finding");
     expect(scrapedUrls.has("https://source.com/article")).toBe(true);
+  });
+});
+
+describe("summarizeToolResult", () => {
+  it("returns `error` plus first text line on tool error", () => {
+    const result = { content: [{ type: "text", text: "Connection refused\nstack..." }] };
+    expect(summarizeToolResult("browse_url", result, true)).toBe("error: Connection refused");
+  });
+
+  it("returns bare `error` when error has no text content", () => {
+    expect(summarizeToolResult("browse_url", undefined, true)).toBe("error");
+  });
+
+  it("returns `ok` when there are no details", () => {
+    expect(summarizeToolResult("browse_url", { content: [] }, false)).toBe("ok");
+  });
+
+  it("summarizes web_search with fresh/total counts", () => {
+    const result = { details: { totalResults: 12, relevantResults: 8, freshResults: 5 } };
+    expect(summarizeToolResult("web_search", result, false)).toBe("5 new (of 12)");
+  });
+
+  it("summarizes web_search when all results were already visited", () => {
+    const result = { details: { totalResults: 8, relevantResults: 4, freshResults: 0 } };
+    expect(summarizeToolResult("web_search", result, false)).toBe("0 new (of 8)");
+  });
+
+  it("summarizes browse_url with a formatted byte size", () => {
+    const result = { details: { url: "u", title: "t", rawLength: 4200, meaningful: true } };
+    expect(summarizeToolResult("browse_url", result, false)).toBe("4.1KB");
+  });
+
+  it("summarizes browse_url thin-content case", () => {
+    const result = { details: { url: "u", title: "t", rawLength: 120, meaningful: false } };
+    expect(summarizeToolResult("browse_url", result, false)).toBe("thin content (120b)");
+  });
+
+  it("summarizes prefetch_sources by queries and browsed pages", () => {
+    const result = { details: { searchedQueries: 4, browsedCount: 7 } };
+    expect(summarizeToolResult("prefetch_sources", result, false)).toBe("4 queries → 7 pages");
+  });
+
+  it("summarizes take_note as `saved` when nothing was merged", () => {
+    const result = { details: { noteIndex: 0, mergedCount: 0 } };
+    expect(summarizeToolResult("take_note", result, false)).toBe("saved");
+  });
+
+  it("summarizes take_note when content merged into an existing note", () => {
+    const result = { details: { noteIndex: 0, mergedCount: 2 } };
+    expect(summarizeToolResult("take_note", result, false)).toBe("merged into existing (+2)");
   });
 });

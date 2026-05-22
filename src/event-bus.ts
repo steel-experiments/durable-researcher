@@ -8,7 +8,8 @@ import type { UsageStats } from "./durable-turns.js";
 export type ResearchEvent =
   | { type: "turn-start"; turn: number; sources: number; maxSources: number; maxTurns: number }
   | { type: "tool-start"; toolName: string; argSummary: string }
-  | { type: "tool-end"; toolName: string; isError: boolean }
+  /** `summary` is a short, human-readable result digest (e.g. "5 new", "3.2KB"). */
+  | { type: "tool-end"; toolName: string; isError: boolean; summary: string }
   | { type: "browse-added"; url: string }
   | { type: "note-added"; note: ResearchNote; index: number }
   | { type: "agent-text"; delta: string }
