@@ -59,6 +59,8 @@ async function main() {
   // same Absurd queue (mirrors createIsolatedQueueName in index.ts).
   const queueName = `bench-${randomUUID()}`;
   const app = createResearchApp({ queueName });
+  // spawn writes into absurd."t_{queue}" which doesn't exist until createQueue runs.
+  await app.createQueue();
 
   const params: ResearchParams = { topic, depth, maxSources };
   const { taskID } = await app.spawn("research", params);
