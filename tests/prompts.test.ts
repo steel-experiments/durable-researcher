@@ -71,6 +71,19 @@ describe("system.hbs template", () => {
     expect(rendered.toLowerCase()).toContain("verbatim");
   });
 
+  it("requires numeric inline citations instead of markdown author links", async () => {
+    const rendered = await loadTemplate("system", {
+      topic: "x",
+      depth: "standard",
+      mode: "synthesis",
+      maxSources: 20,
+      maxIterations: 3,
+    });
+    expect(rendered).toContain("numeric inline citations");
+    expect(rendered).toContain("[1]");
+    expect(rendered).toContain("Do NOT use markdown author links");
+  });
+
   it("renders the lookup-mode shape when mode=lookup", async () => {
     const rendered = await loadTemplate("system", {
       topic: "x",

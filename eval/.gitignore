@@ -1,3 +1,7 @@
 __pycache__/
 *.pyc
 .venv/
+runs/scoreboard.sqlite
+runs/scoreboard.sqlite-journal
+runs/scoreboard.sqlite-wal
+runs/scoreboard.sqlite-shm

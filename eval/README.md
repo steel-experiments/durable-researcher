@@ -103,6 +103,20 @@ uv run bench report draco --output results/draco-report.md
 
 Produces a markdown summary with aggregate stats, per-section breakdowns (DRACO), resource usage averages when `.usage.json` sidecars exist, and the lowest-scoring tasks for debugging.
 
+### Campaign eval dimensions
+
+Long-running campaign runs add dimensions beyond single-report score:
+
+- **Quality vs runtime** — score checkpoints at different elapsed budgets.
+- **Quality vs cost** — final score per estimated dollar.
+- **Plateau detection** — whether later checkpoints stopped improving meaningfully.
+- **Resume correctness** — no resume failures, duplicated sources, or lost sources.
+- **Auditability** — fraction of claims supported by persisted source excerpts.
+- **Freshness** — fraction of dated sources newer than a chosen cutoff.
+
+The pure scoring helpers live in `src/bench/campaign_eval.py` so campaign
+snapshots can be compared without re-running the browser or judge.
+
 ## Project Structure
 
 ```
@@ -110,6 +124,7 @@ eval/
 ├── pyproject.toml             # uv project config
 ├── src/bench/
 │   ├── cli.py                 # Typer CLI entry point
+│   ├── campaign_eval.py       # Long-running campaign eval dimensions
 │   ├── data.py                # Download + parse benchmark datasets
 │   ├── judge.py               # LLM-as-judge (Claude, Gemini, Z.ai)
 │   ├── runner.py              # Agent subprocess execution

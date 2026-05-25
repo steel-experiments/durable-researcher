@@ -6,6 +6,7 @@ import type { ExistingTask } from "./task-finder.js";
 export function printHelp(): void {
   console.log(`
 Usage: bun run src/index.ts <topic> [options]
+       bun run src/index.ts campaign <topic> [campaign options]
 
 Options:
   --depth <quick|standard|deep>   Research depth (default: standard)
@@ -23,6 +24,7 @@ Options:
 
 Examples:
   bun run src/index.ts "quantum error correction advances"
+  bun run src/index.ts campaign "future of browser agents" --max-duration 5d --max-tokens 1b
   bun run src/index.ts "impact of AI on journalism" --depth deep
   bun run src/index.ts "quantum error correction" --extend
   bun run src/index.ts "quantum error correction" --view

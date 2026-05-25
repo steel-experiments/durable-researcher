@@ -199,6 +199,27 @@ describe("createPrefetchTool", () => {
     expect(result.details).toHaveProperty("browsedUrls");
   });
 
+  it("advises direct known-source retrieval when no pages are browsed", async () => {
+    mockSearch.mockResolvedValue([]);
+    const progress: string[] = [];
+    const tool = createPrefetchTool(
+      client,
+      scrapedUrls,
+      "test topic",
+      10,
+      undefined,
+      (line) => progress.push(line),
+    );
+
+    const result = await tool.execute("call-1", {
+      queries: ["query A"],
+    });
+
+    expect(result.details.browsedCount).toBe(0);
+    expect(result.content[0].text).toContain("direct known-source retrieval");
+    expect(progress.join("\n")).toContain("direct known-source retrieval");
+  });
+
   it("deduplicates URLs across queries", async () => {
     // Both queries return the same URL
     const sharedResults: SearchResult[] = [

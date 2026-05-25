@@ -33,8 +33,15 @@ export type VerificationSummary = {
   total: number;
   supported: number;
   unsupported: number;
-  /** Fraction of claims that were supported. 1 when total is 0. */
+  /** Fraction of claims that were supported. 0 when total is 0. */
   passRate: number;
+  /**
+   * Machine-readable status for downstream policy. `no_claims` means the report
+   * did not contain parseable numeric inline citations, so no claim was actually
+   * verified.
+   */
+  status: "passed" | "failed" | "no_claims";
+  reason?: string;
 };
 
 export type VerificationResult = {
@@ -55,6 +62,8 @@ const CITATION_RE = /\[(\d+(?:\s*,\s*\d+)*)\]/g;
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/;
 const BARE_URL_RE = /(https?:\/\/[^\s)]+)/;
 const NUMBERED_LINE_RE = /^\s*(\d+)\.\s+(.+)$/;
+const SECTION_HEADING_RE = /^#{2,3}\s+(.+)$/gm;
+const MIN_UNCITED_SECTION_WORDS = 20;
 
 /** Parse the "## Sources" or "### Sources" section into a map of N → URL. */
 export function parseSourcesSection(report: string): Map<number, string> {
@@ -102,6 +111,50 @@ export function parseCitations(report: string): ParsedClaim[] {
     for (const n of numbers) claims.push({ text: sentence, sourceN: n });
   }
   return claims;
+}
+
+function reportBody(report: string): string {
+  const sourcesMatch = report.match(SOURCES_HEADING_RE);
+  return sourcesMatch?.index !== undefined
+    ? report.slice(0, sourcesMatch.index)
+    : report;
+}
+
+function hasNumericCitation(text: string): boolean {
+  CITATION_RE.lastIndex = 0;
+  return CITATION_RE.test(text);
+}
+
+function wordCount(text: string): number {
+  return text.trim().split(/\s+/).filter(Boolean).length;
+}
+
+/**
+ * Identify substantial report sections that contain no numeric inline citations.
+ * This is a structural validation step, not LLM claim verification: a report can
+ * cite some facts while still leaving whole sections unauditable.
+ */
+export function findUncitedSubstantiveSections(report: string): string[] {
+  const body = reportBody(report);
+  const headings = [...body.matchAll(SECTION_HEADING_RE)];
+  if (headings.length === 0) {
+    return wordCount(body) >= MIN_UNCITED_SECTION_WORDS && !hasNumericCitation(body)
+      ? ["Report body"]
+      : [];
+  }
+
+  const out: string[] = [];
+  for (let i = 0; i < headings.length; i++) {
+    const heading = headings[i];
+    const title = heading[1].trim();
+    const start = (heading.index ?? 0) + heading[0].length;
+    const end = headings[i + 1]?.index ?? body.length;
+    const section = body.slice(start, end);
+    if (wordCount(section) < MIN_UNCITED_SECTION_WORDS) continue;
+    if (hasNumericCitation(section)) continue;
+    out.push(title);
+  }
+  return out;
 }
 
 function extractSentenceAround(
@@ -186,11 +239,23 @@ export function computeVerificationSummary(
 ): VerificationSummary {
   const total = claims.length;
   const supported = claims.filter((c) => c.supported).length;
+  if (total === 0) {
+    return {
+      total: 0,
+      supported: 0,
+      unsupported: 0,
+      passRate: 0,
+      status: "no_claims",
+      reason: "No parseable numeric inline citations were found in the report body",
+    };
+  }
+  const passRate = supported / total;
   return {
     total,
     supported,
     unsupported: total - supported,
-    passRate: total === 0 ? 1 : supported / total,
+    passRate,
+    status: passRate >= VERIFY_PASS_THRESHOLD ? "passed" : "failed",
   };
 }
 
@@ -277,6 +342,17 @@ export async function verifyClaims(opts: {
       } satisfies ClaimVerification;
     }
   });
+  if (parsed.length > 0) {
+    for (const section of findUncitedSubstantiveSections(opts.report)) {
+      claims.push({
+        claim: `Section "${section}" contains substantive text without numeric inline citations.`,
+        sourceN: 0,
+        sourceUrl: null,
+        supported: false,
+        reason: "Substantive report section has no numeric inline citations",
+      });
+    }
+  }
 
   return { claims, summary: computeVerificationSummary(claims) };
 }
@@ -356,13 +432,27 @@ function parseJsonVerdict(
 
 /** Decide whether a verification result warrants triggering a rewrite. */
 export function shouldTriggerRewrite(result: VerificationResult): boolean {
-  if (result.summary.total === 0) return false;
+  if (result.summary.total === 0) return true;
   return result.summary.passRate < VERIFY_PASS_THRESHOLD;
 }
 
 /** Build a steering message that asks the agent to rewrite the report. */
 export function buildRewriteSteering(result: VerificationResult): string {
   const failed = result.claims.filter((c) => !c.supported);
+  if (result.summary.total === 0) {
+    return [
+      `[SYSTEM] Citation verification: 0/0 claims supported (0%, threshold ${(VERIFY_PASS_THRESHOLD * 100).toFixed(0)}%).`,
+      ``,
+      `No parseable numeric inline citations were found in the report body.`,
+      ``,
+      `Rewrite the report so every factual claim that depends on evidence uses numeric inline citations such as [1] or [2].`,
+      `Do NOT replace numeric citations with markdown author links like [(Author, 2024)](https://example.com).`,
+      `Keep a numbered Sources section where each cited number resolves to a source URL.`,
+      `If a claim cannot be grounded to a numbered source with excerpts, soften it or remove it.`,
+      ``,
+      `Keep everything else intact. Do NOT call any tools. Just write the corrected report.`,
+    ].join("\n");
+  }
   const lines = [
     `[SYSTEM] Citation verification: ${result.summary.supported}/${result.summary.total} claims supported (${(result.summary.passRate * 100).toFixed(0)}%, threshold ${(VERIFY_PASS_THRESHOLD * 100).toFixed(0)}%).`,
     ``,
@@ -376,6 +466,9 @@ export function buildRewriteSteering(result: VerificationResult): string {
     `  - Re-cite a source whose excerpts actually support it`,
     `  - Soften the claim to what the source actually says`,
     `  - Remove the claim if no source supports it`,
+    ``,
+    `Use numeric inline citations only, such as [1] or [2]. Do NOT use markdown author links as citations.`,
+    `Keep a numbered Sources section where every cited number resolves to a source URL.`,
     ``,
     `Keep everything else intact. Do NOT call any tools. Just write the corrected report.`,
   ];

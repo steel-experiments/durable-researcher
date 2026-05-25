@@ -69,6 +69,39 @@ bun run dev "AI safety" --model anthropic:claude-sonnet-4-6
 bun run dev "quantum computing" --max-sources 10
 ```
 
+### Long-running campaigns
+
+Campaign mode runs a durable research campaign as a sequence of bounded pulses.
+The CLI remains the primary interface, but the implementation is API-shaped so a
+future background service or dashboard can reuse the same campaign operations.
+
+```bash
+# Run autonomously until the budget is exhausted, the judge says the goal is met,
+# or source discovery plateaus.
+bun run dev campaign "future of browser agents" --max-duration 5d --max-tokens 1b --max-cost 500
+
+# Resume, inspect, pause, or force finalization.
+bun run dev campaign --resume <campaign-id>
+bun run dev campaign --status <campaign-id>
+bun run dev campaign --pause <campaign-id>
+bun run dev campaign --finalize <campaign-id>
+bun run dev campaign --list
+```
+
+Campaigns persist their own state in Postgres in addition to the existing
+turn-level Absurd checkpoints:
+
+- campaign budgets, status, deadline, stop reason, and final report
+- pulse history with task IDs, objectives, reports, judge decisions, and usage
+- source inventory and structured notes with excerpts
+- judge score snapshots and generated artifacts
+
+Each pulse uses the existing `research` task, seeded with prior notes and URLs.
+This avoids one giant week-long conversation while preserving the user-visible
+behavior of a continuous autonomous run. Finalization compiles a large report
+from the persisted campaign database: pulse syntheses, evidence ledger,
+annotated bibliography, judge history, and usage summary.
+
 ### Working with existing research
 
 When you run a topic that already has completed research, you're prompted to choose:
@@ -129,6 +162,10 @@ Copy `.env.example` to `.env` or export directly — shell env vars take precede
 | `UTILITY_MODEL` | No | Utility model (default: `zai:glm-5.1`) |
 | `UTILITY_REASONING` | No | Utility reasoning effort (default: off) |
 | `MAX_DURATION` | No | Task timeout in seconds (default: `1200` = 20 min) |
+| `AGENT_INPUT_PRICE_PER_1M` | Campaign only | Optional input-token price for cost budgets |
+| `AGENT_OUTPUT_PRICE_PER_1M` | Campaign only | Optional output-token price for cost budgets |
+| `AGENT_CACHE_READ_PRICE_PER_1M` | Campaign only | Optional cache-read token price for cost budgets |
+| `STEEL_SOURCE_PRICE` | Campaign only | Optional per-source browser/search estimate for cost budgets |
 | `JUDGE_MODEL` | Eval only | Judge model: `gemini-2.5-pro` or `claude-haiku-4-5-20251001` |
 | `GEMINI_API_KEY` | Eval only | Google API key (required if using Gemini judge) |
 | `ANTHROPIC_API_KEY` | Eval only | Anthropic API key (required if using Claude judge) |
@@ -140,6 +177,8 @@ src/
 ├── agent.ts           # Absurd task registration + durable agent loop
 ├── bench.ts           # Headless CLI bridge for benchmarking
 ├── browse-cache.ts    # Postgres-backed cache for scraped pages (survives crashes)
+├── campaign.ts        # Long-running campaign API + pulse orchestration
+├── campaign-cli.ts    # CLI adapter for campaign start/resume/status/finalize
 ├── config.ts          # Centralized config from .env (models, reasoning, timeout)
 ├── durable-turns.ts   # Checkpoint bridge: Absurd steps ↔ Pi Agent messages
 ├── steel-client.ts    # Steel SDK wrapper, multi-engine search, relevance filtering

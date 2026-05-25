@@ -182,6 +182,9 @@ export function createPrefetchTool(
       // Wait for all browse operations (some started during search phase)
       await Promise.allSettled(browsePromises);
       report(`    Prefetch complete: ${totalBrowsed} pages browsed across ${queries.length} queries`);
+      if (totalBrowsed === 0) {
+        report("    No high-confidence search hits were browsed; switch to direct known-source retrieval or a different search angle.");
+      }
 
       // Format results as structured markdown
       const sections: string[] = [
@@ -190,6 +193,12 @@ export function createPrefetchTool(
         `Searched ${queries.length} queries, browsed ${totalBrowsed} pages.`,
         ``,
       ];
+      if (totalBrowsed === 0) {
+        sections.push(
+          `No high-confidence search hits were browsed. Use direct known-source retrieval (official pages, papers, filings, docs) or a substantially different search angle instead of retrying minor query variations.`,
+          ``,
+        );
+      }
 
       for (const qr of queryResults) {
         sections.push(`## Query: "${qr.query}"`);

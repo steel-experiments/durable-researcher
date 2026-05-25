@@ -5,6 +5,7 @@ import { describe, it, expect } from "vitest";
 import {
   parseSourcesSection,
   parseCitations,
+  findUncitedSubstantiveSections,
   excerptsForSource,
   verifyClaims,
   computeVerificationSummary,
@@ -102,6 +103,38 @@ describe("parseCitations", () => {
   });
 });
 
+describe("findUncitedSubstantiveSections", () => {
+  it("flags substantial sections with no numeric inline citations", () => {
+    const report = [
+      "## Executive Summary",
+      "This section contains enough words to count as substantive prose but it does not include any numeric inline citation anywhere.",
+      "",
+      "## Detailed Findings",
+      "This section has a citation [1] and should pass the structural validation.",
+      "",
+      "## Sources",
+      "1. https://example.com",
+    ].join("\n");
+
+    expect(findUncitedSubstantiveSections(report)).toEqual(["Executive Summary"]);
+  });
+
+  it("ignores short uncited section labels", () => {
+    const report = [
+      "## Summary",
+      "Short setup.",
+      "",
+      "## Findings",
+      "This section has enough words and includes a numeric citation [1], so no section should be flagged here.",
+      "",
+      "## Sources",
+      "1. https://example.com",
+    ].join("\n");
+
+    expect(findUncitedSubstantiveSections(report)).toEqual([]);
+  });
+});
+
 describe("excerptsForSource", () => {
   const notes: ResearchNote[] = [
     {
@@ -150,7 +183,14 @@ describe("excerptsForSource", () => {
 describe("computeVerificationSummary", () => {
   it("returns zeros for no claims", () => {
     const s = computeVerificationSummary([]);
-    expect(s).toEqual({ total: 0, supported: 0, unsupported: 0, passRate: 1 });
+    expect(s).toEqual({
+      total: 0,
+      supported: 0,
+      unsupported: 0,
+      passRate: 0,
+      status: "no_claims",
+      reason: "No parseable numeric inline citations were found in the report body",
+    });
   });
 
   it("computes pass rate over the verified set", () => {
@@ -163,6 +203,7 @@ describe("computeVerificationSummary", () => {
     expect(s.supported).toBe(2);
     expect(s.unsupported).toBe(1);
     expect(s.passRate).toBeCloseTo(2 / 3);
+    expect(s.status).toBe("failed");
   });
 });
 
@@ -247,9 +288,16 @@ describe("verifyClaims (with stubbed verifier)", () => {
     expect(result.claims[0].reason).toMatch(/no excerpts/i);
   });
 
-  it("never triggers rewrite when there are no citations to verify", () => {
-    const summary = { total: 0, supported: 0, unsupported: 0, passRate: 1 };
-    expect(shouldTriggerRewrite({ claims: [], summary })).toBe(false);
+  it("triggers rewrite when there are no citations to verify", () => {
+    const summary = {
+      total: 0,
+      supported: 0,
+      unsupported: 0,
+      passRate: 0,
+      status: "no_claims" as const,
+      reason: "No parseable numeric inline citations were found in the report body",
+    };
+    expect(shouldTriggerRewrite({ claims: [], summary })).toBe(true);
   });
 
   it("triggers rewrite when pass rate is below threshold", () => {
@@ -258,6 +306,7 @@ describe("verifyClaims (with stubbed verifier)", () => {
       supported: 1,
       unsupported: 3,
       passRate: 0.25,
+      status: "failed" as const,
     };
     expect(shouldTriggerRewrite({ claims: [], summary })).toBe(true);
   });
@@ -268,6 +317,7 @@ describe("verifyClaims (with stubbed verifier)", () => {
       supported: 7,
       unsupported: 3,
       passRate: 0.7,
+      status: "passed" as const,
     };
     expect(shouldTriggerRewrite({ claims: [], summary: at })).toBe(false);
     expect(VERIFY_PASS_THRESHOLD).toBe(0.7);
@@ -279,14 +329,15 @@ describe("verifyClaims (with stubbed verifier)", () => {
         { claim: "fact one", sourceN: 1, sourceUrl: "https://a.com", supported: false, reason: "not in source" },
         { claim: "fact two", sourceN: 2, sourceUrl: "https://b.com", supported: true, reason: "matches" },
       ],
-      summary: { total: 2, supported: 1, unsupported: 1, passRate: 0.5 },
+      summary: { total: 2, supported: 1, unsupported: 1, passRate: 0.5, status: "failed" },
     });
     expect(text).toContain("Citation verification");
     expect(text).toContain("fact one");
+    expect(text).toContain("numeric inline citations");
     expect(text).not.toMatch(/fact two/);
   });
 
-  it("returns empty result when no citations are found", async () => {
+  it("returns no_claims failure when no numeric citations are found", async () => {
     const verifier: ClaimVerifier = async () => ({
       supported: true,
       reason: "n/a",
@@ -297,7 +348,54 @@ describe("verifyClaims (with stubbed verifier)", () => {
       verifier,
     });
     expect(result.claims).toHaveLength(0);
-    expect(result.summary.passRate).toBe(1);
+    expect(result.summary.passRate).toBe(0);
+    expect(result.summary.status).toBe("no_claims");
+    expect(shouldTriggerRewrite(result)).toBe(true);
+  });
+
+  it("does not treat markdown author links as verified citations", async () => {
+    const verifier: ClaimVerifier = async () => ({
+      supported: true,
+      reason: "n/a",
+    });
+    const result = await verifyClaims({
+      report: [
+        "LoRA reduces trainable parameters dramatically [(Hu et al., 2021)](https://arxiv.org/abs/2106.09685).",
+        "",
+        "## Sources",
+        "1. Hu et al. — [arxiv](https://arxiv.org/abs/2106.09685)",
+      ].join("\n"),
+      notes,
+      verifier,
+    });
+    expect(result.claims).toHaveLength(0);
+    expect(result.summary.status).toBe("no_claims");
+    expect(result.summary.passRate).toBe(0);
+  });
+
+  it("marks uncited substantive sections unsupported even when other sections have citations", async () => {
+    const verifier: ClaimVerifier = async () => ({
+      supported: true,
+      reason: "supported",
+    });
+    const result = await verifyClaims({
+      report: [
+        "## Executive Summary",
+        "This summary has enough source-dependent factual prose to require citation, but it has no numeric citation marker in the section body.",
+        "",
+        "## Detailed Findings",
+        "Quantum chips dropped to 0.143% error rate [1].",
+        "",
+        "## Sources",
+        "1. Acme — [acme.com](https://acme.com/p1)",
+      ].join("\n"),
+      notes,
+      verifier,
+    });
+
+    expect(result.claims.some((c) => c.claim.includes("Executive Summary"))).toBe(true);
+    expect(result.summary.status).toBe("failed");
+    expect(result.summary.unsupported).toBe(1);
   });
 
   it("falls back to urlExcerpts when notes have no excerpts for the cited URL", async () => {

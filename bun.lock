@@ -7,6 +7,7 @@
       "dependencies": {
         "@mariozechner/pi-agent-core": "*",
         "@mariozechner/pi-ai": "*",
+        "@pydantic/monty": "^0.0.17",
         "@types/pdf-parse": "^1.1.5",
         "@types/react": "^19.2.15",
         "absurd-sdk": "^0.3.0",
@@ -99,6 +100,12 @@
 
     "@babel/runtime": ["@babel/runtime@7.29.2", "", {}, "sha512-JiDShH45zKHWyGe4ZNVRrCjBz8Nh9TMmZG1kh4QTK8hCBTWBi8Da+i7s1fJw7/lYpM4ccepSNfqzZ/QvABBi5g=="],
 
+    "@emnapi/core": ["@emnapi/core@1.10.0", "", { "dependencies": { "@emnapi/wasi-threads": "1.2.1", "tslib": "^2.4.0" } }, "sha512-yq6OkJ4p82CAfPl0u9mQebQHKPJkY7WrIuk205cTYnYe+k2Z8YBh11FrbRG/H6ihirqcacOgl2BIO8oyMQLeXw=="],
+
+    "@emnapi/runtime": ["@emnapi/runtime@1.10.0", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-ewvYlk86xUoGI0zQRNq/mC+16R1QeDlKQy21Ki3oSYXNgLb45GV1P6A0M+/s6nyCuNDqe5VpaY84BzXGwVbwFA=="],
+
+    "@emnapi/wasi-threads": ["@emnapi/wasi-threads@1.2.1", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-uTII7OYF+/Mes/MrcIOYp5yOtSMLBWSIoLPpcgwipoiKbli6k322tcoFsxoIIxPDqW01SQGAgko4EzZi2BNv2w=="],
+
     "@esbuild/aix-ppc64": ["@esbuild/aix-ppc64@0.27.7", "", { "os": "aix", "cpu": "ppc64" }, "sha512-EKX3Qwmhz1eMdEJokhALr0YiD0lhQNwDqkPYyPhiSwKrh7/4KRjQc04sZ8db+5DVVnZ1LmbNDI1uAMPEUBnQPg=="],
 
     "@esbuild/android-arm": ["@esbuild/android-arm@0.27.7", "", { "os": "android", "cpu": "arm" }, "sha512-jbPXvB4Yj2yBV7HUfE2KHe4GJX51QplCN1pGbYjvsyCZbQmies29EoJbkEc+vYuU5o45AfQn37vZlyXy4YJ8RQ=="],
@@ -183,6 +190,8 @@
 
     "@napi-rs/canvas-win32-x64-msvc": ["@napi-rs/canvas-win32-x64-msvc@0.1.80", "", { "os": "win32", "cpu": "x64" }, "sha512-Z8jPsM6df5V8B1HrCHB05+bDiCxjE9QA//3YrkKIdVDEwn5RKaqOxCJDRJkl48cJbylcrJbW4HxZbTte8juuPg=="],
 
+    "@napi-rs/wasm-runtime": ["@napi-rs/wasm-runtime@1.1.4", "", { "dependencies": { "@tybys/wasm-util": "^0.10.1" }, "peerDependencies": { "@emnapi/core": "^1.7.1", "@emnapi/runtime": "^1.7.1" } }, "sha512-3NQNNgA1YSlJb/kMH1ildASP9HW7/7kYnRI2szWJaofaS1hWmbGI4H+d3+22aGzXXN9IJ+n+GiFVcGipJP18ow=="],
+
     "@protobufjs/aspromise": ["@protobufjs/aspromise@1.1.2", "", {}, "sha512-j+gKExEuLmKwvz3OgROXtrJ2UG2x8Ch2YZUxahh+s1F2HZ+wAceUNLkvy6zKCPVRkU++ZWQrdxsUeQXmcg4uoQ=="],
 
     "@protobufjs/base64": ["@protobufjs/base64@1.1.2", "", {}, "sha512-AZkcAA5vnN/v4PDqKyMR5lx7hZttPDgClv83E//FMNhR2TMcLUhfRUBHCmSl0oi9zMgDDqRUJkSxO3wm85+XLg=="],
@@ -202,6 +211,20 @@
     "@protobufjs/pool": ["@protobufjs/pool@1.1.0", "", {}, "sha512-0kELaGSIDBKvcgS4zkjz1PeddatrjYcmMWOlAuAPwAeccUrPHdUqo/J6LiymHHEiJT5NrF1UVwxY14f+fy4WQw=="],
 
     "@protobufjs/utf8": ["@protobufjs/utf8@1.1.0", "", {}, "sha512-Vvn3zZrhQZkkBE8LSuW3em98c0FwgO4nxzv6OdSxPKJIEKY2bGbHn+mhGIPerzI4twdxaP8/0+06HBpwf345Lw=="],
+
+    "@pydantic/monty": ["@pydantic/monty@0.0.17", "", { "optionalDependencies": { "@pydantic/monty-darwin-arm64": "0.0.17", "@pydantic/monty-darwin-x64": "0.0.17", "@pydantic/monty-linux-arm64-gnu": "0.0.17", "@pydantic/monty-linux-x64-gnu": "0.0.17", "@pydantic/monty-wasm32-wasi": "0.0.17", "@pydantic/monty-win32-x64-msvc": "0.0.17" } }, "sha512-z0MsRgj1QVBe4adRMAbl3ctpf0n1lZYbaq98fZg3qhKhs8sExtfS2BHCW8Z/emprUfXW25FSPe0Abd9dchEiCQ=="],
+
+    "@pydantic/monty-darwin-arm64": ["@pydantic/monty-darwin-arm64@0.0.17", "", { "os": "darwin", "cpu": "arm64" }, "sha512-vJFSwC7+rKX8lrrwwdZ6qZeqCsZCM9X9PvcUDvMYLnzI69CBAvfyd1roExkSPThg1GfDhehgC9sGrz/0uIjGhQ=="],
+
+    "@pydantic/monty-darwin-x64": ["@pydantic/monty-darwin-x64@0.0.17", "", { "os": "darwin", "cpu": "x64" }, "sha512-19gHyDM/RjBZsVz7K6vmlCpn0TyKdH8HT0CMP66yaewfPAuyhLWDJKgnv9QeVt+Vhv16dCsGuZ7l0rtmUPVC8g=="],
+
+    "@pydantic/monty-linux-arm64-gnu": ["@pydantic/monty-linux-arm64-gnu@0.0.17", "", { "os": "linux", "cpu": "arm64" }, "sha512-mx7v/LAJB/BOYfAVcohQQy+d8JiqddmByI72Hs2GuOlfRsJlk3BaHbanOi4tHAz81yDVnOKxshyPZs52VbBvZw=="],
+
+    "@pydantic/monty-linux-x64-gnu": ["@pydantic/monty-linux-x64-gnu@0.0.17", "", { "os": "linux", "cpu": "x64" }, "sha512-wJOKf9KqM6UoKvaqdArV90zT7arGAa3CDo65kxFgdY5iXByDtU0xgbPUpROfIWv8E8hMGA81cq9Do17YyIHfGQ=="],
+
+    "@pydantic/monty-wasm32-wasi": ["@pydantic/monty-wasm32-wasi@0.0.17", "", { "dependencies": { "@napi-rs/wasm-runtime": "^1.1.4" }, "cpu": "none" }, "sha512-j89Sau5+5m5oDlyOsfjD4hmLkIccVz2s6z5Ogb/s85UAjrCoBWvudH2irlLklD3Fp3Y+1lxT8PLDwx61ShjA9Q=="],
+
+    "@pydantic/monty-win32-x64-msvc": ["@pydantic/monty-win32-x64-msvc@0.0.17", "", { "os": "win32", "cpu": "x64" }, "sha512-cIYr5nOsxPqzMFRi/F58JT11T0kg9QRT7y1tVp76jeWnXMyZdAL0n/X4RnmdqIogZotLye4CwjFfNmTR5EWj7g=="],
 
     "@rollup/rollup-android-arm-eabi": ["@rollup/rollup-android-arm-eabi@4.60.1", "", { "os": "android", "cpu": "arm" }, "sha512-d6FinEBLdIiK+1uACUttJKfgZREXrF0Qc2SmLII7W2AD8FfiZ9Wjd+rD/iRuf5s5dWrr1GgwXCvPqOuDquOowA=="],
 
@@ -344,6 +367,8 @@
     "@smithy/uuid": ["@smithy/uuid@1.1.2", "", { "dependencies": { "tslib": "^2.6.2" } }, "sha512-O/IEdcCUKkubz60tFbGA7ceITTAJsty+lBjNoorP4Z6XRqaFb/OjQjZODophEcuq68nKm6/0r+6/lLQ+XVpk8g=="],
 
     "@tootallnate/quickjs-emscripten": ["@tootallnate/quickjs-emscripten@0.23.0", "", {}, "sha512-C5Mc6rdnsaJDjO3UpGW/CQTHtCKaYlScZTly4JIu97Jxo/odCiH0ITnDXSJPTOrEKk/ycSZ0AOgTmkDtkOsvIA=="],
+
+    "@tybys/wasm-util": ["@tybys/wasm-util@0.10.2", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-RoBvJ2X0wuKlWFIjrwffGw1IqZHKQqzIchKaadZZfnNpsAYp2mM0h36JtPCjNDAHGgYez/15uMBpfGwchhiMgg=="],
 
     "@types/chai": ["@types/chai@5.2.3", "", { "dependencies": { "@types/deep-eql": "*", "assertion-error": "^2.0.1" } }, "sha512-Mw558oeA9fFbv65/y4mHtXDs9bPnFMZAL/jxdPFUpOHHIXX91mcgEHbS5Lahr+pwZFR8A7GQleRWeI6cGFC2UA=="],
 

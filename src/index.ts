@@ -7,7 +7,7 @@ import dotenv from "dotenv";
 dotenv.config({ override: false });
 
 import { createResearchApp, type ResearchAppOptions } from "./agent.js";
-import type { ResearchParams } from "./types.js";
+import type { ResearchParams, ResearchResult } from "./types.js";
 import { getMaxDurationSeconds } from "./config.js";
 import { getModel } from "@mariozechner/pi-ai";
 import {
@@ -30,14 +30,25 @@ import {
   formatTask,
   createIsolatedQueueName,
 } from "./cli-help.js";
-import { saveReport, printUsage } from "./report-io.js";
+import { saveResearchResult, printUsage } from "./report-io.js";
 import { cleanupTasks } from "./task-cleanup.js";
 import { clearStaleLease, defaultWorkerId, reapOrphanedTasksAllQueues } from "./lease.js";
 import { showVerification } from "./verification-inspector.js";
+import { runCampaignCli } from "./campaign-cli.js";
 
 
 async function main() {
   const args = process.argv.slice(2);
+
+  if (args[0] === "campaign") {
+    try {
+      await runCampaignCli(args);
+    } catch (err) {
+      console.error(`Campaign error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+    process.exit(0);
+  }
 
   if (args.length === 0 || args.includes("--help") || args.includes("-h")) {
     printHelp();
@@ -542,6 +553,8 @@ async function main() {
         sources: { title: string; url: string }[];
         notes: ResearchNote[];
         messages: AgentMessage[];
+        explanation?: ResearchResult["explanation"];
+        mode?: ResearchResult["mode"];
       };
 
       // Print report if it wasn't already streamed by the logging persister.
@@ -557,8 +570,11 @@ async function main() {
           console.log("=".repeat(80) + "\n");
           console.log(research.report);
         }
-        const filepath = saveReport(research.topic, research.report);
-        console.log(`\nReport saved to: ${filepath}`);
+        const saved = saveResearchResult(research as ResearchResult);
+        console.log(`\nReport saved to: ${saved.markdownPath}`);
+        if (saved.htmlPath) {
+          console.log(`HTML artifact saved to: ${saved.htmlPath}`);
+        }
       }
 
       console.log("-".repeat(80));

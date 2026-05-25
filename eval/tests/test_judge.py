@@ -251,6 +251,41 @@ class TestBatchHelpers:
         assert verdicts[0].tokens_used == 15
 
 
+class TestBatchStateFile:
+    def test_helpers_exist(self):
+        """Idempotent batch resubmission needs a state-path helper."""
+        from bench.judge import batch_state_path
+
+        p = batch_state_path(Path("/tmp/results/draco/gemini"))
+        assert p.name == ".batch-state.json"
+        assert p.parent == Path("/tmp/results/draco/gemini")
+
+    def test_read_write_roundtrip(self, tmp_path: Path):
+        from bench.judge import read_batch_state, write_batch_state
+
+        write_batch_state(tmp_path, "batches/abc-123")
+        state = read_batch_state(tmp_path)
+        assert state == "batches/abc-123"
+
+    def test_read_returns_none_when_missing(self, tmp_path: Path):
+        from bench.judge import read_batch_state
+
+        assert read_batch_state(tmp_path) is None
+
+
+class TestBatchDisplayName:
+    def test_display_name_is_unique_per_call(self):
+        from bench.judge import make_batch_display_name
+
+        a = make_batch_display_name("draco")
+        b = make_batch_display_name("draco")
+        # Each invocation must produce a unique suffix so we don't collide on
+        # Gemini's "duplicate filename" error.
+        assert a.startswith("judge-draco-")
+        assert b.startswith("judge-draco-")
+        assert a != b
+
+
 class TestZaiConcurrencyHelpers:
     def test_known_limit_for_glm_5_1(self):
         assert get_zai_concurrency_limit("glm-5.1") == 1

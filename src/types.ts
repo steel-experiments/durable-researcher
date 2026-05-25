@@ -26,6 +26,90 @@ export type ResearchParams = {
   mode?: TaskMode;
 };
 
+/** Long-running campaign status. Campaigns orchestrate many bounded research pulses. */
+export type CampaignStatus =
+  | "running"
+  | "paused"
+  | "finalizing"
+  | "completed"
+  | "failed";
+
+/** User-controlled campaign budgets. Undefined values are unbounded. */
+export type CampaignBudgets = {
+  maxDurationMs?: number;
+  maxTokens?: number;
+  maxCostUsd?: number;
+  maxSources?: number;
+  /** Budget kept aside for final synthesis and verification work. */
+  finalizationReserveRatio?: number;
+};
+
+/** Persisted usage ledger for a whole campaign or a single pulse. */
+export type CampaignUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  estimatedCostUsd: number;
+  sources: number;
+  models: Record<string, { input: number; output: number }>;
+};
+
+/** Campaign-level params. Kept API-friendly so a future service can reuse them. */
+export type CampaignParams = {
+  topic: string;
+  depth?: "quick" | "standard" | "deep";
+  pulseDepth?: "quick" | "standard" | "deep";
+  pulseMaxSources?: number;
+  budgets: CampaignBudgets;
+  mode?: TaskMode;
+  clarify?: string;
+  stopWhenGoalMet?: boolean;
+  stopWhenExhaustedSources?: boolean;
+};
+
+/** High-level evaluator decision after a pulse. */
+export type CampaignDecision = {
+  decision: "continue" | "finalize" | "stop_budget_exhausted";
+  reason: string;
+  coverageScore: number;
+  noveltyScore: number;
+  auditabilityScore: number;
+  remainingGaps: string[];
+  nextObjective: string | null;
+};
+
+/** Persisted campaign record. */
+export type CampaignRecord = {
+  id: string;
+  topic: string;
+  status: CampaignStatus;
+  params: CampaignParams;
+  budgets: CampaignBudgets;
+  usage: CampaignUsage;
+  createdAt: Date;
+  updatedAt: Date;
+  deadlineAt: Date | null;
+  finalReport: string | null;
+  stopReason: string | null;
+};
+
+/** One bounded research episode inside a campaign. */
+export type CampaignPulse = {
+  id: number;
+  campaignId: string;
+  pulseIndex: number;
+  taskId: string | null;
+  queueName: string | null;
+  objective: string;
+  status: "running" | "completed" | "failed";
+  startedAt: Date;
+  endedAt: Date | null;
+  report: string | null;
+  result: ResearchResult | null;
+  decision: CampaignDecision | null;
+  usage: CampaignUsage | null;
+};
+
 /** Depth config maps depth labels to iteration limits and query counts. */
 export const DEPTH_CONFIG = {
   quick: { maxIterations: 1, initialQueries: 3 },
@@ -72,6 +156,106 @@ export type SearchResult = {
   snippet: string;
 };
 
+/** Addressable source used by explanation artifacts. */
+export type ExplanationSource = {
+  id: string;
+  title: string;
+  url: string;
+};
+
+/** Verbatim source text retained for provenance in explanation artifacts. */
+export type EvidenceExcerpt = {
+  id: string;
+  evidenceId: string;
+  text: string;
+  sourceUrl?: string;
+};
+
+/** A normalized piece of evidence derived from a durable research note. */
+export type Evidence = {
+  id: string;
+  title: string;
+  content: string;
+  sourceUrls: string[];
+  excerptIds: string[];
+  confidence: "high" | "medium" | "low";
+};
+
+/** A report claim with addressable links back to evidence and excerpts. */
+export type Claim = {
+  id: string;
+  text: string;
+  sourceUrls: string[];
+  evidenceIds: string[];
+  excerptIds: string[];
+  confidence: "high" | "medium" | "low";
+  verification?: {
+    supported: boolean;
+    reason: string;
+  };
+};
+
+export type ReasoningStep = {
+  id: string;
+  title: string;
+  content: string;
+  evidenceIds: string[];
+};
+
+export type Uncertainty = {
+  id: string;
+  description: string;
+  severity: "low" | "medium" | "high";
+  evidenceIds: string[];
+};
+
+export type ExtractionEvidenceTableRow = {
+  id: string;
+  label: string;
+  confidence: "high" | "medium" | "low";
+  sourceIds: string[];
+  evidenceIds: string[];
+  excerptIds: string[];
+  missingFields: string[];
+};
+
+export type ArtifactSpec =
+  | {
+      kind: "extraction_evidence_table";
+      title: string;
+      rows: ExtractionEvidenceTableRow[];
+    }
+  | {
+      kind: "comparison_matrix";
+      title: string;
+      rows: string[];
+      columns: string[];
+      cells: { row: string; column: string; value: string; claimId?: string; evidenceIds: string[] }[];
+    }
+  | {
+      kind: "timeline";
+      title: string;
+      events: { id: string; label: string; date?: string; claimId?: string; evidenceIds: string[] }[];
+    }
+  | {
+      kind: "claim_graph";
+      title: string;
+      nodes: { id: string; label: string; claimId?: string; evidenceIds: string[] }[];
+      edges: { from: string; to: string; label?: string; evidenceIds: string[] }[];
+    };
+
+/** Canonical explanatory layer: truth/provenance first, presentation second. */
+export type ExplanationModel = {
+  answer: string;
+  claims: Claim[];
+  evidence: Evidence[];
+  excerpts: EvidenceExcerpt[];
+  sources: ExplanationSource[];
+  reasoningSteps: ReasoningStep[];
+  uncertainties: Uncertainty[];
+  recommendedViews: ArtifactSpec[];
+};
+
 /** Final output of a research task. */
 export type ResearchResult = {
   topic: string;
@@ -83,6 +267,8 @@ export type ResearchResult = {
   mode: TaskMode;
   /** Claim-level citation verification result, if it ran. */
   verification?: VerificationSnapshot;
+  /** Structured explanation model used for constrained generated UI artifacts. */
+  explanation?: ExplanationModel;
 };
 
 /** Per-result snapshot of the claim-verification pass(es). */
@@ -93,6 +279,8 @@ export type VerificationSnapshot = {
   total: number;
   supported: number;
   unsupported: number;
+  status: "passed" | "failed" | "no_claims";
+  reason?: string;
   /**
    * Whether the LATEST verification attempt fell below threshold (i.e. the final
    * report would still trigger a rewrite if the loop hadn't been capped). False when

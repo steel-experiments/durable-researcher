@@ -32,7 +32,9 @@ function makeResult(
       total,
       supported,
       unsupported: total - supported,
-      passRate: total === 0 ? 1 : supported / total,
+      passRate: total === 0 ? 0 : supported / total,
+      status: total === 0 ? "no_claims" : supported / total >= 0.7 ? "passed" : "failed",
+      ...(total === 0 ? { reason: "No parseable numeric inline citations were found in the report body" } : {}),
     },
   };
 }
