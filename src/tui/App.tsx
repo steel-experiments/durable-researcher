@@ -35,6 +35,8 @@ type VerificationLine = {
   supported: number;
   total: number;
   willRewrite: boolean;
+  status?: "passed" | "failed" | "no_claims";
+  reason?: string;
 };
 
 /** One row in the live activity stream — a finished tool call (success or error). */
@@ -257,6 +259,8 @@ export function TuiApp({
             supported: event.supported,
             total: event.total,
             willRewrite: event.willRewrite,
+            status: event.status,
+            reason: event.reason,
           });
           break;
         case "task-complete":
@@ -433,7 +437,7 @@ export function TuiApp({
           )}
         </Text>
         <Text color="gray">
-          {sources}/{maxSources} sources · turn {turn} · {modelLabel}
+          {sources}/{maxSources} sources{sources > maxSources ? " after current batch" : ""} · turn {turn} · {modelLabel}
           {usage && (usage.inputTokens > 0 || usage.outputTokens > 0) ? (
             <Text color="gray">
               {" · "}
@@ -459,10 +463,15 @@ export function TuiApp({
           </Text>
         )}
         {verification && (
-          <Text color={verification.willRewrite ? "yellow" : "green"}>
+          <Text color={verification.status === "passed" ? "green" : "yellow"}>
             verify #{verification.attempt}: {verification.supported}/{verification.total}{" "}
             supported ({Math.round(verification.passRate * 100)}%)
-            {verification.willRewrite ? " — rewriting" : " — passed"}
+            {verification.willRewrite
+              ? " — rewriting"
+              : verification.status === "passed"
+                ? " — passed"
+                : " — failed"}
+            {verification.reason ? `: ${verification.reason}` : ""}
           </Text>
         )}
         {errorMessage && (

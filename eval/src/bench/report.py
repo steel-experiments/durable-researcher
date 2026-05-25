@@ -13,6 +13,7 @@ def generate_report(
     scores: list[TaskScore],
     benchmark: str,
     usage_by_task: dict[str, dict] | None = None,
+    campaign_eval_by_task: dict[str, dict] | None = None,
 ) -> str:
     """Generate a markdown summary report from task scores."""
     if not scores:
@@ -83,6 +84,35 @@ def generate_report(
             if any(val > 0 for val in cache_read_tokens):
                 lines.append(_row("Cache Read Tokens", cache_read_tokens))
             lines.append("")
+
+    if campaign_eval_by_task:
+        rows = [
+            campaign_eval_by_task[s.task_id]
+            for s in scores
+            if s.task_id in campaign_eval_by_task
+        ]
+        if rows:
+            def _mean_key(key: str) -> float:
+                vals = [float(r.get(key, 0.0)) for r in rows if r.get(key) is not None]
+                return statistics.mean(vals) if vals else 0.0
+
+            plateau_count = sum(1 for r in rows if r.get("plateau_detected"))
+            resume_ok = sum(1 for r in rows if r.get("resume_correct"))
+            lines.extend([
+                "## Campaign Eval",
+                "",
+                f"- **Tasks with campaign snapshots**: {len(rows)}/{len(scores)}",
+                f"- **Plateau detected**: {plateau_count}/{len(rows)}",
+                f"- **Resume-correct runs**: {resume_ok}/{len(rows)}",
+                "",
+                "| Metric | Mean |",
+                "|--------|------|",
+                f"| Quality per Hour | {_mean_key('quality_per_hour'):.3f} |",
+                f"| Quality per Dollar | {_mean_key('quality_per_dollar'):.3f} |",
+                f"| Auditability Rate | {_mean_key('auditability_rate'):.3f} |",
+                f"| Freshness Rate | {_mean_key('freshness_rate'):.3f} |",
+                "",
+            ])
 
     # Per-section breakdown (DRACO)
     section_data: dict[str, list[float]] = {}

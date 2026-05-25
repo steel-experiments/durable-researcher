@@ -1,0 +1,11 @@
+{
+  "inputTokens": 14075,
+  "outputTokens": 8579,
+  "cacheReadTokens": 36352,
+  "models": {
+    "glm-5.1": {
+      "input": 14075,
+      "output": 8579
+    }
+  }
+}

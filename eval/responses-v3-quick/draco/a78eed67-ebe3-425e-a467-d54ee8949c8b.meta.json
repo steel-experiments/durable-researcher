@@ -1,0 +1,13 @@
+{
+  "mode": "extraction",
+  "verification": {
+    "total": 12,
+    "attempts": 1,
+    "passRate": 0,
+    "supported": 0,
+    "unsupported": 12,
+    "rewriteTriggered": true
+  },
+  "notes": 5,
+  "sources": 4
+}

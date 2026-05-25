@@ -23,6 +23,7 @@ import { createSearchTool } from "./tools/search.js";
 import { createBrowseTool } from "./tools/browse.js";
 import { createScreenshotTool } from "./tools/screenshot.js";
 import { createNoteTool } from "./tools/note.js";
+import { createWriteAdapterTool } from "./tools/write-adapter.js";
 import { createEvaluateTool } from "./tools/evaluate.js";
 import { createPlanTool } from "./tools/plan.js";
 import { createPrefetchTool } from "./tools/prefetch.js";
@@ -48,6 +49,7 @@ import { createToolProgress } from "./event-bus.js";
 import type { SteeringQueue } from "./steering-queue.js";
 import { createUrlExcerptStore, rebuildUrlExcerptsFromCache } from "./url-excerpts.js";
 import { getCachedBrowse, getTitlesForUrls } from "./browse-cache.js";
+import { buildExplanationModel } from "./explanation.js";
 
 /** Options for creating the research app. */
 export type ResearchAppOptions = {
@@ -58,6 +60,20 @@ export type ResearchAppOptions = {
   steeringQueue?: SteeringQueue;
   quiet?: boolean;
 };
+
+/**
+ * Resolve the effective task ID used for caching browse results.
+ *
+ * When `BENCH_CACHE_KEY` is set in the environment (e.g. `draco:<task_id>`), it
+ * overrides the per-task Absurd `ctx.taskID`. This lets benchmark re-runs share
+ * the browse cache across invocations: every Absurd run gets a fresh `taskID`,
+ * so without the override the cache hit rate would be 0% on re-run.
+ */
+export function resolveCacheKey(ctxTaskId: string): string {
+  const override = process.env.BENCH_CACHE_KEY;
+  if (override && override.length > 0) return override;
+  return ctxTaskId;
+}
 
 /** Drain user-supplied steering text into user messages for the next agent turn. */
 export function drainUserSteering(queue?: SteeringQueue): AgentMessage[] {
@@ -116,7 +132,7 @@ export function createTimeoutSteeringCheck(
     messageSent = true;
     return {
       shouldStop: true,
-      message: `[SYSTEM] Approaching task timeout (${Math.round(elapsed / 1000)}s elapsed of ${Math.round(maxDuration / 1000)}s max). Stop ALL tool use immediately and write your final research report NOW using the notes you have collected.`,
+      message: `[SYSTEM] Approaching task timeout (${Math.round(elapsed / 1000)}s elapsed of ${Math.round(maxDuration / 1000)}s max). Stop ALL tool use immediately and write your final research report NOW using the notes you have collected. Use numeric inline citations like [1] and a numbered Sources section; do not use markdown author links as citations.`,
     };
   };
 }
@@ -154,22 +170,33 @@ export function buildResult(
   // Collect all unique sources
   const uniqueUrls = new Set(notes.flatMap((n) => n.sourceUrls));
 
+  const normalizedNotes = notes.map((n) => ({
+    title: n.title,
+    content: n.content,
+    sourceUrls: n.sourceUrls,
+    confidence: n.confidence ?? ("high" as const),
+    ...(n.keyExcerpts?.length ? { keyExcerpts: n.keyExcerpts } : {}),
+  }));
+  const sources = Array.from(uniqueUrls).map((url) => ({
+    title: urlTitles.get(url) ?? url,
+    url,
+  }));
+  const explanation = buildExplanationModel({
+    report,
+    notes: normalizedNotes,
+    mode,
+    ...(verification ? { verification } : {}),
+    urlTitles,
+  });
+
   return {
     topic,
     report,
-    notes: notes.map((n) => ({
-      title: n.title,
-      content: n.content,
-      sourceUrls: n.sourceUrls,
-      confidence: n.confidence ?? ("high" as const),
-      ...(n.keyExcerpts?.length ? { keyExcerpts: n.keyExcerpts } : {}),
-    })),
-    sources: Array.from(uniqueUrls).map((url) => ({
-      title: urlTitles.get(url) ?? url,
-      url,
-    })),
+    notes: normalizedNotes,
+    sources,
     messages,
     mode,
+    explanation,
     ...(verification
       ? {
           verification: {
@@ -178,6 +205,8 @@ export function buildResult(
             total: verification.result.summary.total,
             supported: verification.result.summary.supported,
             unsupported: verification.result.summary.unsupported,
+            status: verification.result.summary.status,
+            ...(verification.result.summary.reason ? { reason: verification.result.summary.reason } : {}),
             rewriteTriggered: verification.rewriteTriggered,
           },
         }
@@ -334,7 +363,9 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
 
       // 3. Create tools with closures over mutable state
       const prefetchBudget = Math.floor((params.maxSources ?? 20) / 2);
-      const taskId = ctx.taskID;
+      // BENCH_CACHE_KEY (e.g. `draco:<task_id>`) overrides ctx.taskID so benchmark
+      // re-runs share the browse cache across Absurd invocations.
+      const taskId = resolveCacheKey(ctx.taskID);
       // Per-task store of verbatim excerpts keyed by URL — populated by browse_url and
       // consumed by claim verification as a fallback when notes don't list the cited URL.
       const urlExcerpts = createUrlExcerptStore();
@@ -358,6 +389,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         createScreenshotTool(steelClient),
         createNoteTool(notes),
         createEvaluateTool(notes, scrapedUrls, mode),
+        createWriteAdapterTool(),
       ];
 
       // 4. Build system prompt from template
@@ -448,7 +480,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
               : `turn limit (${maxTurns})`;
             return [{
               role: "user" as const,
-              content: `[SYSTEM] You have reached the maximum ${reason}. Stop browsing and searching. Write your final research report NOW using the notes you have collected. Do NOT call any tools. Just write the report.`,
+              content: `[SYSTEM] You have reached the maximum ${reason}. Stop browsing and searching. Write your final research report NOW using the notes you have collected. Use numeric inline citations like [1] and a numbered Sources section; do not use markdown author links as citations. Do NOT call any tools. Just write the report.`,
               timestamp: Date.now(),
             }];
           }
@@ -474,6 +506,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
                 `Turns: ${turnCount}/${maxTurns}`,
                 ``,
                 `Review your coverage. If you have enough high-confidence notes across diverse sources, write your final report. Otherwise, identify specific gaps and do targeted searches.`,
+                `When you write the final report, use numeric inline citations like [1] and a numbered Sources section. Do not use markdown author links as citations.`,
               ].join("\n"),
               timestamp: Date.now(),
             }];
@@ -689,7 +722,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
             );
             const triggered = shouldTriggerRewrite(result);
             taskLog(
-              `[VERIFY] ${result.summary.supported}/${result.summary.total} claims supported (${Math.round(result.summary.passRate * 100)}%).${triggered ? ` Rewriting (${rewritesSoFar + 1}/${MAX_REWRITES}).` : ""}`,
+              `[VERIFY] ${result.summary.supported}/${result.summary.total} claims supported (${Math.round(result.summary.passRate * 100)}%).${result.summary.reason ? ` ${result.summary.reason}.` : ""}${triggered ? ` Rewriting (${rewritesSoFar + 1}/${MAX_REWRITES}).` : ""}`,
             );
             bus?.emit({
               type: "verification-result",
@@ -699,6 +732,8 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
               total: result.summary.total,
               threshold: VERIFY_PASS_THRESHOLD,
               willRewrite: triggered && rewritesSoFar < MAX_REWRITES,
+              status: result.summary.status,
+              reason: result.summary.reason,
             });
             bus?.emit({
               type: "agent-status",

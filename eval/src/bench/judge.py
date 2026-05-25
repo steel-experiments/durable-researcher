@@ -8,6 +8,8 @@ import json
 import os
 import re
 import time
+import uuid
+import warnings
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
@@ -318,6 +320,55 @@ def save_verdict(verdict: Verdict, jsonl_path: Path) -> None:
     jsonl_path.parent.mkdir(parents=True, exist_ok=True)
     with open(jsonl_path, "a") as f:
         f.write(json.dumps(asdict(verdict)) + "\n")
+
+
+# ---------------------------------------------------------------------------
+# Batch state — idempotent resubmission helpers
+# ---------------------------------------------------------------------------
+
+
+def batch_state_path(results_dir: Path) -> Path:
+    """Return the path to the .batch-state.json sidecar for a results dir."""
+    return results_dir / ".batch-state.json"
+
+
+def read_batch_state(results_dir: Path) -> str | None:
+    """Read the persisted batch job name from a results dir, or None if absent."""
+    path = batch_state_path(results_dir)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    name = data.get("batch_job_name")
+    return name if isinstance(name, str) and name else None
+
+
+def write_batch_state(results_dir: Path, batch_job_name: str) -> None:
+    """Persist the batch job name so a re-invocation can poll instead of resubmit."""
+    results_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "batch_job_name": batch_job_name,
+        "written_at": time.time(),
+    }
+    batch_state_path(results_dir).write_text(json.dumps(payload, indent=2))
+
+
+def clear_batch_state(results_dir: Path) -> None:
+    """Remove the batch state file. Called after a terminal-state job is consumed."""
+    path = batch_state_path(results_dir)
+    if path.exists():
+        path.unlink()
+
+
+def make_batch_display_name(benchmark: str) -> str:
+    """Generate a unique display name for a Gemini file upload + batch job.
+
+    Gemini rejects duplicate filenames within an account, so each invocation
+    needs its own suffix.
+    """
+    return f"judge-{benchmark}-{uuid.uuid4().hex[:8]}"
 
 
 def resolve_batch_output_key(
@@ -1100,41 +1151,64 @@ class Judge:
                 all_verdicts[task_id] = load_existing_verdicts(results_dir / f"{task_id}.jsonl")
             return all_verdicts
 
-        # Submit via JSONL file upload. The output file may preserve request
-        # keys, but the Gemini contract is also compatible with ordered rows, so
-        # parsing must support both keyed and positional mapping.
-        if on_status:
-            on_status(f"Submitting {len(batch_requests)} criteria...")
-
-        import tempfile
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".jsonl", delete=False, prefix="batch_judge_"
-        ) as f:
-            for req in batch_requests:
-                f.write(json.dumps(req) + "\n")
-            tmp_path = f.name
-
-        uploaded = self._gemini_client.files.upload(
-            file=tmp_path,
-            config=types.UploadFileConfig(
-                display_name=f"judge-{self.benchmark}",
-                mime_type="jsonl",
-            ),
-        )
-        os.unlink(tmp_path)
-
-        batch_job = self._gemini_client.batches.create(
-            model=self.model,
-            src=uploaded.name,
-            config={"display_name": f"judge-{self.benchmark}"},
-        )
-
-        if on_status:
-            on_status(f"Batch job created: {batch_job.name}")
-
-        # Poll for completion
+        # Idempotent batch state: if a prior invocation persisted a job name
+        # and the job is still in flight (or already completed), reuse it
+        # instead of resubmitting. Eliminates duplicate-charge risk on retry.
         completed_states = {"JOB_STATE_SUCCEEDED", "JOB_STATE_FAILED",
                            "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED"}
+        existing_job_name = read_batch_state(results_dir)
+        batch_job = None
+        if existing_job_name:
+            try:
+                batch_job = self._gemini_client.batches.get(name=existing_job_name)
+                if on_status:
+                    on_status(
+                        f"Resuming existing batch job {existing_job_name} "
+                        f"(state={batch_job.state.name})"
+                    )
+            except Exception as e:
+                if on_status:
+                    on_status(
+                        f"Could not fetch stored batch job {existing_job_name}: "
+                        f"{e}; submitting a new one."
+                    )
+                clear_batch_state(results_dir)
+                batch_job = None
+
+        if batch_job is None:
+            # Submit via JSONL file upload. The output file may preserve request
+            # keys, but the Gemini contract is also compatible with ordered rows, so
+            # parsing must support both keyed and positional mapping.
+            if on_status:
+                on_status(f"Submitting {len(batch_requests)} criteria...")
+
+            display_name = make_batch_display_name(self.benchmark)
+            import tempfile
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".jsonl", delete=False, prefix="batch_judge_"
+            ) as f:
+                for req in batch_requests:
+                    f.write(json.dumps(req) + "\n")
+                tmp_path = f.name
+
+            uploaded = self._gemini_client.files.upload(
+                file=tmp_path,
+                config=types.UploadFileConfig(
+                    display_name=display_name,
+                    mime_type="jsonl",
+                ),
+            )
+            os.unlink(tmp_path)
+
+            batch_job = self._gemini_client.batches.create(
+                model=self.model,
+                src=uploaded.name,
+                config={"display_name": display_name},
+            )
+
+            write_batch_state(results_dir, batch_job.name)
+            if on_status:
+                on_status(f"Batch job created: {batch_job.name}")
 
         last_status = ""
         while True:
@@ -1217,9 +1291,18 @@ class Judge:
 
         if row_failures:
             sample = "; ".join(row_failures[:5])
-            raise RuntimeError(
-                f"Batch output was incomplete or contained row failures ({len(row_failures)} issue(s)): {sample}"
+            summary = (
+                f"Batch finished with {verdicts_saved} succeeded and "
+                f"{len(row_failures)} failed/missing row(s); "
+                f"saving partial verdicts. Sample failures: {sample}"
             )
+            warnings.warn(summary, RuntimeWarning, stacklevel=2)
+            if on_status:
+                on_status(summary)
+
+        # Job is in a terminal state — clear the state file so the next invocation
+        # starts a fresh batch for any remaining unjudged criteria.
+        clear_batch_state(results_dir)
 
         # Load all verdicts (existing + new batch results)
         all_verdicts_final: dict[str, list[Verdict]] = {}

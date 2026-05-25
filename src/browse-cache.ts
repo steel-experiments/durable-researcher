@@ -103,20 +103,34 @@ export async function expireBrowseCache(expiryDays = CACHE_EXPIRY_DAYS): Promise
 }
 
 /**
+ * Benchmark task-id prefixes that override the per-Absurd-task cache key.
+ * Rows under these prefixes outlive any single Absurd task and must be preserved
+ * by cleanup so benchmark re-runs hit the cache instead of re-scraping every URL.
+ */
+const BENCH_TASK_ID_PREFIXES = ["draco:", "researchrubrics:"] as const;
+
+/**
  * Delete cache entries for tasks that have been cleaned up (completed/failed/cancelled).
  * Call this alongside task cleanup to keep the cache in sync.
+ * Rows whose `task_id` starts with a benchmark namespace prefix (see
+ * `BENCH_TASK_ID_PREFIXES`) are always preserved.
  * Returns the number of rows deleted.
  */
 export async function cleanupBrowseCache(): Promise<number> {
   await ensureTable();
   const p = getDbPool();
+  const benchPredicate = BENCH_TASK_ID_PREFIXES
+    .map((prefix) => `task_id NOT LIKE '${prefix}%'`)
+    .join(" AND ");
   const queuesResult = await p.query<{ queue_name: string }>(
     `SELECT queue_name FROM absurd.list_queues()`,
   );
   const queueNames = queuesResult.rows.map((row) => row.queue_name);
 
   if (queueNames.length === 0) {
-    const result = await p.query(`DELETE FROM browse_cache`);
+    const result = await p.query(
+      `DELETE FROM browse_cache WHERE ${benchPredicate}`,
+    );
     return result.rowCount ?? 0;
   }
 
@@ -125,10 +139,12 @@ export async function cleanupBrowseCache(): Promise<number> {
     return `SELECT task_id::text AS task_id FROM ${tableName}`;
   });
 
-  // Delete cache for tasks that no longer exist in any Absurd queue.
+  // Delete cache for tasks that no longer exist in any Absurd queue, except
+  // benchmark-namespaced rows which we keep so re-runs share the scrape cache.
   const result = await p.query(`
     DELETE FROM browse_cache
-    WHERE task_id NOT IN (${liveTaskSelects.join(" UNION ALL ")})
+    WHERE ${benchPredicate}
+      AND task_id NOT IN (${liveTaskSelects.join(" UNION ALL ")})
   `);
   return result.rowCount ?? 0;
 }

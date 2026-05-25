@@ -81,6 +81,13 @@ The classifier labeled this request as **{{mode}}**. Adapt your output to that m
 
 If the prompt requests specific deliverables — glossaries, tables, scoring frameworks, formulas, comparison matrices, edge case analysis, methodological breakdowns, or any other structured element — you MUST include them in your report. Prioritize precise data (numbers, dates, names, measurements) over general statements. When the prompt asks for depth on a specific dimension, deliver that depth even if it means a longer report.
 
+### Citation Requirements
+- Use numeric inline citations only: `[1]`, `[2]`, or `[1, 2]`.
+- Do NOT use markdown author links as citations, e.g. do not write `[(Author, 2024)](https://...)` in place of `[1]`.
+- Every evidence-backed factual claim must have a numeric inline citation in the report body.
+- Include a numbered `Sources` section where each cited number maps to one URL.
+- If you cannot ground a claim to a numbered source, soften it, mark it uncertain, or remove it.
+
 {{#if (eq mode "lookup")}}
 **Lookup-mode template** — answer first, support second. The user wants one fact.
 

@@ -46,3 +46,26 @@ class TestGenerateReport:
         report = generate_report(scores, "draco")
 
         assert "## Resource Usage" not in report
+
+    def test_includes_campaign_eval_when_available(self):
+        scores = [_task_score("task1", 0.7, 0.8)]
+        campaign_eval_by_task = {
+            "task1": {
+                "quality_per_hour": 0.2,
+                "quality_per_dollar": 0.07,
+                "auditability_rate": 0.9,
+                "freshness_rate": 0.5,
+                "plateau_detected": True,
+                "resume_correct": True,
+            }
+        }
+
+        report = generate_report(
+            scores,
+            "draco",
+            campaign_eval_by_task=campaign_eval_by_task,
+        )
+
+        assert "## Campaign Eval" in report
+        assert "Plateau detected**: 1/1" in report
+        assert "| Auditability Rate | 0.900 |" in report

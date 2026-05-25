@@ -1,0 +1,13 @@
+{
+  "mode": "synthesis",
+  "verification": {
+    "total": 22,
+    "attempts": 1,
+    "passRate": 0.5454545454545454,
+    "supported": 12,
+    "unsupported": 10,
+    "rewriteTriggered": true
+  },
+  "notes": 5,
+  "sources": 6
+}

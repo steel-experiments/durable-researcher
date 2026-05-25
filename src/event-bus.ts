@@ -50,6 +50,8 @@ export type ResearchEvent =
       total: number;
       threshold: number;
       willRewrite: boolean;
+      status?: "passed" | "failed" | "no_claims";
+      reason?: string;
     }
   | { type: "task-complete" }
   | { type: "task-error"; message: string };

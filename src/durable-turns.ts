@@ -130,7 +130,7 @@ export function createLoggingPersister(
           maxTurns,
         });
         log(
-          `\n--- Turn ${turnCount} [${scrapedUrls.size}/${maxSources} sources] [${turnCount}/${maxTurns} turns] ---`,
+          `\n--- Turn ${turnCount} [${scrapedUrls.size}/${maxSources} sources${scrapedUrls.size > maxSources ? " after current batch" : ""}] [${turnCount}/${maxTurns} turns] ---`,
         );
         break;
 

@@ -3,6 +3,7 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import {
+  cleanupBrowseCache,
   getCachedBrowse,
   setCachedBrowse,
   purgeNonMeaningfulCacheEntries,
@@ -11,6 +12,10 @@ import {
 import { getDbPool, closeDbPool } from "../src/db-pool.js";
 
 const TEST_TASK_ID = "test-task-browse-cache-7f4a9c";
+const BENCH_TASK_IDS = [
+  "draco:test-bench-cache-1",
+  "researchrubrics:test-bench-cache-2",
+];
 
 /**
  * Make a payload that passes isContentMeaningful (≥200 chars, ≥50 words, ≥0.2 uniqueness).
@@ -41,6 +46,9 @@ describe("browse-cache integration", () => {
   afterAll(async () => {
     const pool = getDbPool();
     await pool.query(`DELETE FROM browse_cache WHERE task_id = $1`, [TEST_TASK_ID]);
+    for (const id of BENCH_TASK_IDS) {
+      await pool.query(`DELETE FROM browse_cache WHERE task_id = $1`, [id]);
+    }
     await closeDbPool();
     resetBrowseCacheState();
   });
@@ -48,6 +56,9 @@ describe("browse-cache integration", () => {
   beforeEach(async () => {
     const pool = getDbPool();
     await pool.query(`DELETE FROM browse_cache WHERE task_id = $1`, [TEST_TASK_ID]);
+    for (const id of BENCH_TASK_IDS) {
+      await pool.query(`DELETE FROM browse_cache WHERE task_id = $1`, [id]);
+    }
   });
 
   it("returns the row for meaningful cached content", async () => {
@@ -106,5 +117,25 @@ describe("browse-cache integration", () => {
     expect(empty.rows[0].c).toBe(0);
     expect(short.rows[0].c).toBe(0);
     expect(alive.rows[0].c).toBe(1);
+  });
+
+  it("cleanupBrowseCache preserves benchmark-namespaced rows (draco:, researchrubrics:)", async () => {
+    const pool = getDbPool();
+    const ok = meaningfulContent();
+    for (const id of BENCH_TASK_IDS) {
+      await setCachedBrowse(id, "https://example.com/bench", ok);
+    }
+
+    // Run cleanup — benchmark rows must survive even though their task_ids
+    // do not correspond to live Absurd tasks.
+    await cleanupBrowseCache();
+
+    for (const id of BENCH_TASK_IDS) {
+      const row = await pool.query(
+        `SELECT count(*)::int AS c FROM browse_cache WHERE task_id = $1`,
+        [id],
+      );
+      expect(row.rows[0].c).toBe(1);
+    }
   });
 });
