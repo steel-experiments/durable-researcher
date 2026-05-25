@@ -86,6 +86,45 @@ describe("buildResult source titles", () => {
     expect(result.sources[0].title).toBe(result.sources[0].url);
   });
 
+  it("prefers a submitted report tool payload over trailing assistant text", () => {
+    const submitted = "# Submitted\n\nFull report body [1].\n\n## Sources\n1. https://known.com/page";
+    const result = buildResult(
+      notes,
+      "topic",
+      [
+        {
+          role: "assistant" as const,
+          content: [
+            {
+              type: "toolCall" as const,
+              id: "call-1",
+              name: "submit_report",
+              arguments: { report: submitted },
+            },
+          ],
+          timestamp: Date.now(),
+        },
+        {
+          role: "toolResult" as const,
+          toolCallId: "call-1",
+          toolName: "submit_report",
+          content: [{ type: "text" as const, text: "ok" }],
+          isError: false,
+          timestamp: Date.now(),
+        },
+        {
+          role: "assistant" as const,
+          content: [{ type: "text" as const, text: "Done." }],
+          timestamp: Date.now(),
+        },
+      ],
+      undefined,
+      "synthesis",
+    );
+
+    expect(result.report).toBe(submitted);
+  });
+
   it("builds an extraction evidence table from notes", () => {
     const result = buildResult(
       [

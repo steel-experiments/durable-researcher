@@ -147,7 +147,7 @@ eval/
 uv run python -m pytest tests/ -v
 ```
 
-73 unit tests covering scoring math, data parsing, judge prompt construction, verdict parsing, pricing/concurrency helpers, and runner skip logic. No LLM calls in tests.
+117 unit tests covering scoring math, data parsing, judge prompt construction, verdict parsing, pricing/concurrency helpers, and runner skip logic. No LLM calls in tests.
 
 ## Completed Evaluation Runs
 

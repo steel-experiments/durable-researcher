@@ -25,6 +25,7 @@ import { createScreenshotTool } from "./tools/screenshot.js";
 import { createNoteTool } from "./tools/note.js";
 import { createWriteAdapterTool } from "./tools/write-adapter.js";
 import { createUseAdapterTool } from "./tools/use-adapter.js";
+import { createSubmitReportTool, type SubmittedReportRef } from "./tools/submit-report.js";
 import { createEvaluateTool } from "./tools/evaluate.js";
 import { createPlanTool } from "./tools/plan.js";
 import { createPrefetchTool } from "./tools/prefetch.js";
@@ -147,21 +148,9 @@ export function buildResult(
   mode: TaskMode = "synthesis",
   urlTitles: ReadonlyMap<string, string> = new Map(),
 ): ResearchResult {
-  // Extract the final assistant message as the report
-  let report = "";
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if ("role" in msg && msg.role === "assistant") {
-      const textParts = msg.content.filter(
-        (c): c is { type: "text"; text: string } => c.type === "text",
-      );
-      const text = textParts.map((c) => c.text).join("\n");
-      if (text.length > 0) {
-        report = text;
-        break;
-      }
-    }
-  }
+  // Prefer an explicit submit_report payload; otherwise use the final text-only
+  // assistant message as the report.
+  let report = extractFinalReport(messages) ?? "";
 
   // Fall back to partial report from notes if no assistant report text
   if (!report && notes.length > 0) {
@@ -217,6 +206,19 @@ export function buildResult(
 
 /** Extract the most recent assistant text-only message (the final report). */
 function extractFinalReport(messages: AgentMessage[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (!("role" in msg) || msg.role !== "assistant") continue;
+    for (let j = msg.content.length - 1; j >= 0; j--) {
+      const content = msg.content[j];
+      if (content.type !== "toolCall" || content.name !== "submit_report") continue;
+      const args = content.arguments as { report?: unknown };
+      if (typeof args.report === "string" && args.report.trim().length > 0) {
+        return args.report.trim();
+      }
+    }
+  }
+
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
     if (!("role" in msg) || msg.role !== "assistant") continue;
@@ -382,6 +384,10 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
       // ink's render. Falls back to plain console.log when no bus is wired.
       const toolProgress = bus ? createToolProgress(bus) : undefined;
       const tools = [
+        (() => {
+          const submittedReport: SubmittedReportRef = { value: null };
+          return createSubmitReportTool(submittedReport);
+        })(),
         createPlanTool(params, toolProgress),
         createPrefetchTool(steelClient, scrapedUrls, params.topic, prefetchBudget, taskId, toolProgress, urlExcerpts),
         createScoutTool(steelClient, scrapedUrls, params.topic, taskId, toolProgress, urlExcerpts),

@@ -21,6 +21,10 @@ DB_NAME="${DB_NAME:-absurd}"
 DATABASE_URL="postgresql://${DB_USER}:${DB_PASS}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
 ABSURDCTL_BIN="${PROJECT_ROOT}/absurdctl"
 
+if [[ ! "${DB_NAME}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+  error "DB_NAME must be a simple PostgreSQL identifier (letters, numbers, underscore; not starting with a number)."
+fi
+
 # ── 1. Check prerequisites ──────────────────────────────────────────────
 
 info "Checking prerequisites..."
@@ -53,17 +57,7 @@ if [ -z "${STEEL_API_KEY:-}" ]; then
   warn "STEEL_API_KEY is not set. Set it in .env before running the agent."
 fi
 
-# ── 4. Install psql ─────────────────────────────────────────────────────
-
-if ! command -v psql >/dev/null 2>&1; then
-  info "Installing postgresql-client..."
-  sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client 2>/dev/null \
-    || warn "Could not install psql automatically. Install it manually."
-else
-  info "psql already installed."
-fi
-
-# ── 5. Start Postgres ────────────────────────────────────────────────────
+# ── 4. Start Postgres ────────────────────────────────────────────────────
 
 info "Starting Postgres via Docker..."
 docker compose -f "${PROJECT_ROOT}/docker-compose.yml" up -d
@@ -71,26 +65,27 @@ docker compose -f "${PROJECT_ROOT}/docker-compose.yml" up -d
 # Wait for Postgres to be ready
 info "Waiting for Postgres to accept connections..."
 for i in $(seq 1 30); do
-  if PGPASSWORD="${DB_PASS}" psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -c "SELECT 1" >/dev/null 2>&1; then
+  if docker compose -f "${PROJECT_ROOT}/docker-compose.yml" exec -T postgres pg_isready -U "${DB_USER}" >/dev/null 2>&1; then
     break
   fi
   sleep 1
 done
 
-if ! PGPASSWORD="${DB_PASS}" psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -c "SELECT 1" >/dev/null 2>&1; then
+if ! docker compose -f "${PROJECT_ROOT}/docker-compose.yml" exec -T postgres pg_isready -U "${DB_USER}" >/dev/null 2>&1; then
   error "Postgres is not responding after 30 seconds."
 fi
 info "Postgres is ready."
 
-# ── 6. Create database ──────────────────────────────────────────────────
+# ── 5. Create database ──────────────────────────────────────────────────
 
 info "Creating database ${DB_NAME} if it doesn't exist..."
-PGPASSWORD="${DB_PASS}" psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -lqt 2>/dev/null | cut -d \| -f 1 | grep -qw "${DB_NAME}" || {
-  PGPASSWORD="${DB_PASS}" psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -c "CREATE DATABASE ${DB_NAME};"
+DB_EXISTS="$(docker compose -f "${PROJECT_ROOT}/docker-compose.yml" exec -T postgres psql -U "${DB_USER}" -d postgres -Atc "SELECT 1 FROM pg_database WHERE datname = '${DB_NAME}'" 2>/dev/null || true)"
+if [ "${DB_EXISTS}" != "1" ]; then
+  docker compose -f "${PROJECT_ROOT}/docker-compose.yml" exec -T postgres psql -U "${DB_USER}" -d postgres -c "CREATE DATABASE \"${DB_NAME}\";"
   info "Database ${DB_NAME} created."
-}
+fi
 
-# ── 7. Install absurdctl ────────────────────────────────────────────────
+# ── 6. Install absurdctl ────────────────────────────────────────────────
 
 if [ ! -x "${ABSURDCTL_BIN}" ]; then
   info "Downloading absurdctl v${ABSURDCTL_VERSION}..."
@@ -100,7 +95,7 @@ else
   info "absurdctl already installed."
 fi
 
-# ── 8. Initialize Absurd schema ─────────────────────────────────────────
+# ── 7. Initialize Absurd schema ─────────────────────────────────────────
 
 info "Initializing Absurd schema..."
 ABSURD_DATABASE_URL="${DATABASE_URL}" "${ABSURDCTL_BIN}" schema-version >/dev/null 2>&1 && {
@@ -113,7 +108,7 @@ ABSURD_DATABASE_URL="${DATABASE_URL}" "${ABSURDCTL_BIN}" schema-version >/dev/nu
 info "Creating default queue..."
 ABSURD_DATABASE_URL="${DATABASE_URL}" "${ABSURDCTL_BIN}" create-queue default >/dev/null 2>&1 || true
 
-# ── 9. Setup eval (optional) ────────────────────────────────────────────
+# ── 8. Setup eval (optional) ────────────────────────────────────────────
 
 if [ -d "${PROJECT_ROOT}/eval" ]; then
   if command -v uv >/dev/null 2>&1; then

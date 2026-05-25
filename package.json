@@ -5,12 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "bun run src/index.ts",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "test": "vitest run tests",
+    "test:watch": "vitest tests",
     "typecheck": "tsc --noEmit",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
-    "db:init": "ABSURD_DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@localhost:5432/absurd} absurdctl schema-version 2>/dev/null && echo 'Schema already initialized' || ABSURD_DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@localhost:5432/absurd} absurdctl init; ABSURD_DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@localhost:5432/absurd} absurdctl create-queue default 2>/dev/null; echo 'Done'"
+    "db:init": "bash scripts/db-init.sh"
   },
   "dependencies": {
     "@mariozechner/pi-agent-core": "*",

@@ -747,13 +747,17 @@ export async function runCampaign(
       const spawned = await app.spawn("research", params);
       await completePulse(pulse.id, { status: "running", taskId: spawned.taskID, queueName });
       const worker = await app.startWorker({ concurrency: 1, claimTimeout: 600 });
-      const resultState = await app.awaitTaskResult(spawned.taskID, {
-        queue: queueName,
-        timeout: campaign.deadlineAt
-          ? Math.max(60, Math.ceil((campaign.deadlineAt.getTime() - Date.now()) / 1000) + 30)
-          : 24 * 60 * 60,
-      });
-      await worker.close();
+      let resultState;
+      try {
+        resultState = await app.awaitTaskResult(spawned.taskID, {
+          queue: queueName,
+          timeout: campaign.deadlineAt
+            ? Math.max(60, Math.ceil((campaign.deadlineAt.getTime() - Date.now()) / 1000) + 30)
+            : 24 * 60 * 60,
+        });
+      } finally {
+        await worker.close();
+      }
 
       if (resultState.state !== "completed" || !resultState.result) {
         await completePulse(pulse.id, { status: "failed", taskId: spawned.taskID, queueName });
