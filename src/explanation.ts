@@ -6,12 +6,13 @@ import type {
   Claim,
   Evidence,
   EvidenceExcerpt,
+  ExtractionEvidenceTableRow,
   ExplanationModel,
   ExplanationSource,
   ResearchNote,
   TaskMode,
 } from "./types.js";
-import type { VerificationResult } from "./tools/verify-claims.js";
+import { parseSourcesSection, type VerificationResult } from "./tools/verify-claims.js";
 
 type VerificationState = {
   result: VerificationResult;
@@ -37,11 +38,136 @@ function excerptIdsForEvidenceUrl(
 }
 
 function summarizeAnswer(report: string): string {
-  const firstParagraph = report
+  const analysisMatch = report.match(/^##\s+Analysis\s*\n([\s\S]*?)(?=\n##\s+|$)/i);
+  const analysisParagraph = analysisMatch?.[1]
+    ?.split(/\n\s*\n/)
+    .map((part) => part.trim())
+    .find((part) => part.length > 0 && !part.startsWith("|"));
+  if (analysisParagraph) return analysisParagraph;
+
+  const paragraphs = report
     .split(/\n\s*\n/)
     .map((part) => part.trim())
-    .find((part) => part.length > 0);
-  return firstParagraph ?? report.trim();
+    .filter((part) => part.length > 0);
+  const answer = paragraphs.find((part) =>
+    !part.startsWith("#") &&
+    !part.startsWith("|") &&
+    !part.startsWith("**Note") &&
+    !part.includes("\n|") &&
+    !/^[-*]\s/.test(part),
+  );
+  return answer ?? paragraphs.find((part) => !part.startsWith("#")) ?? report.trim();
+}
+
+function parseMarkdownTableRow(line: string): string[] {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+function normalizeConfidence(value: string): "high" | "medium" | "low" {
+  const normalized = value.trim().toLowerCase();
+  if (normalized.includes("low")) return "low";
+  if (normalized.includes("medium") || normalized.includes("med")) return "medium";
+  return "high";
+}
+
+function sourceNumbersFromCell(value: string): number[] {
+  return [...value.matchAll(/\[(\d+)\]/g)]
+    .map((match) => Number.parseInt(match[1], 10))
+    .filter((n) => Number.isFinite(n) && n > 0);
+}
+
+function extractMarkdownEvidenceTableRows(input: {
+  report: string;
+  sources: ExplanationSource[];
+  evidence: Evidence[];
+  excerpts: EvidenceExcerpt[];
+}): ExtractionEvidenceTableRow[] | null {
+  const lines = input.report.split("\n");
+  const headingIndex = lines.findIndex((line) => /^#{2,3}\s+Evidence Table\s*$/i.test(line.trim()));
+  if (headingIndex < 0) return null;
+
+  const tableStart = lines.findIndex((line, index) =>
+    index > headingIndex && line.trim().startsWith("|"),
+  );
+  if (tableStart < 0 || tableStart + 1 >= lines.length) return null;
+
+  const tableLines: string[] = [];
+  for (let i = tableStart; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line.startsWith("|")) break;
+    tableLines.push(line);
+  }
+  if (tableLines.length < 3) return null;
+
+  const headers = parseMarkdownTableRow(tableLines[0]);
+  const separator = parseMarkdownTableRow(tableLines[1]);
+  if (!separator.every((cell) => /^:?-{3,}:?$/.test(cell))) return null;
+
+  const sourceUrlByNumber = parseSourcesSection(input.report);
+  const sourceIdByUrl = new Map(input.sources.map((source) => [source.url, source.id]));
+  const evidenceByUrl = new Map<string, Evidence[]>();
+  for (const item of input.evidence) {
+    for (const url of item.sourceUrls) {
+      evidenceByUrl.set(url, [...(evidenceByUrl.get(url) ?? []), item]);
+    }
+  }
+  const excerptsByEvidenceId = new Map<string, EvidenceExcerpt[]>();
+  for (const excerpt of input.excerpts) {
+    excerptsByEvidenceId.set(excerpt.evidenceId, [
+      ...(excerptsByEvidenceId.get(excerpt.evidenceId) ?? []),
+      excerpt,
+    ]);
+  }
+
+  const sourceColumn = headers.findIndex((header) => header.toLowerCase() === "source");
+  const confidenceColumn = headers.findIndex((header) => header.toLowerCase() === "confidence");
+  const metricColumn = headers.findIndex((header) => ["metric", "field", "finding"].includes(header.toLowerCase()));
+
+  const rows = tableLines.slice(2).map((line, rowIndex) => {
+    const cells = parseMarkdownTableRow(line);
+    const sourceNumbers = sourceColumn >= 0 ? sourceNumbersFromCell(cells[sourceColumn] ?? "") : [];
+    const sourceUrls = sourceNumbers
+      .map((n) => sourceUrlByNumber.get(n))
+      .filter((url): url is string => !!url);
+    const matchedEvidence = sourceUrls.flatMap((url) => evidenceByUrl.get(url) ?? []);
+    const evidenceIds = Array.from(new Set(matchedEvidence.map((item) => item.id)));
+    const excerptIds = Array.from(new Set(matchedEvidence.flatMap((item) =>
+      excerptsByEvidenceId.get(item.id)?.map((excerpt) => excerpt.id) ?? [],
+    )));
+    const confidence = normalizeConfidence(confidenceColumn >= 0 ? cells[confidenceColumn] ?? "" : "");
+    const fields = headers
+      .map((header, index) => ({ label: header, value: cells[index] ?? "" }))
+      .filter((field, index) =>
+        field.value.length > 0 &&
+        index !== metricColumn &&
+        index !== sourceColumn &&
+        index !== confidenceColumn &&
+        field.label !== "#",
+      );
+    const missingFields = [
+      ...(sourceUrls.length === 0 ? ["source URL"] : []),
+      ...(excerptIds.length === 0 ? ["verbatim excerpt"] : []),
+      ...(confidence !== "high" ? ["high-confidence support"] : []),
+    ];
+
+    return {
+      id: `row-extraction-${rowIndex + 1}`,
+      label: metricColumn >= 0 ? cells[metricColumn] ?? `Row ${rowIndex + 1}` : `Row ${rowIndex + 1}`,
+      fields,
+      confidence,
+      sourceIds: sourceUrls.map((url) => sourceIdByUrl.get(url)).filter((id): id is string => !!id),
+      evidenceIds,
+      excerptIds,
+      missingFields,
+    };
+  });
+
+  return rows.length > 0 ? rows : null;
 }
 
 export function buildExplanationModel(input: {
@@ -112,7 +238,7 @@ export function buildExplanationModel(input: {
         confidence: item.confidence,
       }));
 
-  const uncertainties = [
+  const rawUncertainties = [
     ...evidence
       .filter((item) => item.confidence === "low")
       .map((item, index) => ({
@@ -130,13 +256,26 @@ export function buildExplanationModel(input: {
         evidenceIds: claim.evidenceIds,
       })),
   ];
+  const seenUncertainty = new Set<string>();
+  const uncertainties = rawUncertainties.filter((item) => {
+    const key = item.description.trim().toLowerCase();
+    if (!key || seenUncertainty.has(key)) return false;
+    seenUncertainty.add(key);
+    return true;
+  });
 
   const recommendedViews: ArtifactSpec[] = [];
   if (input.mode === "extraction") {
+    const parsedRows = extractMarkdownEvidenceTableRows({
+      report: input.report,
+      sources,
+      evidence,
+      excerpts,
+    });
     recommendedViews.push({
       kind: "extraction_evidence_table",
       title: "Evidence Table",
-      rows: evidence.map((item) => ({
+      rows: parsedRows ?? evidence.map((item) => ({
         id: `row-${item.id}`,
         label: item.title,
         confidence: item.confidence,

@@ -212,6 +212,7 @@ export type Uncertainty = {
 export type ExtractionEvidenceTableRow = {
   id: string;
   label: string;
+  fields?: { label: string; value: string }[];
   confidence: "high" | "medium" | "low";
   sourceIds: string[];
   evidenceIds: string[];

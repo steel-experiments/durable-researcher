@@ -118,6 +118,75 @@ describe("buildResult source titles", () => {
       ],
     });
   });
+
+  it("uses a report evidence table for extraction artifacts when present", () => {
+    const report = [
+      "# ACME Extracts",
+      "",
+      "## Evidence Table",
+      "",
+      "| # | Metric | Value | Period | Source | Confidence |",
+      "|---|--------|-------|--------|--------|------------|",
+      "| 1 | Revenue | $10m | FY2025 | [1] | High |",
+      "| 2 | Guidance | Not provided | — | [1] | Medium |",
+      "",
+      "## Analysis",
+      "",
+      "Revenue increased while guidance was not provided [1].",
+      "",
+      "## Sources",
+      "",
+      "1. ACME Annual Report, https://known.com/page",
+    ].join("\n");
+    const result = buildResult(
+      [
+        {
+          title: "Revenue",
+          content: "Revenue was $10m.",
+          sourceUrls: ["https://known.com/page"],
+          confidence: "high" as const,
+          keyExcerpts: ["Revenue: $10m"],
+        },
+      ],
+      "topic",
+      [
+        {
+          role: "assistant" as const,
+          content: [{ type: "text" as const, text: report }],
+          timestamp: Date.now(),
+        },
+      ],
+      undefined,
+      "extraction",
+      new Map([["https://known.com/page", "Known Page Title"]]),
+    );
+
+    const artifact = result.explanation?.recommendedViews[0];
+    expect(result.explanation?.answer).toBe("Revenue increased while guidance was not provided [1].");
+    expect(artifact).toMatchObject({
+      kind: "extraction_evidence_table",
+      rows: [
+        expect.objectContaining({
+          label: "Revenue",
+          confidence: "high",
+          fields: [
+            { label: "Value", value: "$10m" },
+            { label: "Period", value: "FY2025" },
+          ],
+          missingFields: [],
+        }),
+        expect.objectContaining({
+          label: "Guidance",
+          confidence: "medium",
+          fields: [
+            { label: "Value", value: "Not provided" },
+            { label: "Period", value: "—" },
+          ],
+          missingFields: ["high-confidence support"],
+        }),
+      ],
+    });
+  });
 });
 
 describe("resolveCacheKey", () => {

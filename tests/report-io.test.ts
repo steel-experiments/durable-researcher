@@ -68,6 +68,7 @@ describe("saveResearchResult", () => {
               {
                 id: "row-evidence-1",
                 label: "Revenue",
+                fields: [{ label: "Value", value: "$10m" }],
                 confidence: "high",
                 sourceIds: ["source-1"],
                 evidenceIds: ["evidence-1"],
@@ -86,6 +87,8 @@ describe("saveResearchResult", () => {
     expect(saved.htmlPath).toMatch(/\.html$/);
     const html = readFileSync(saved.htmlPath!, "utf8");
     expect(html).toContain("Evidence Table");
+    expect(html).toContain("Extracted Values");
+    expect(html).toContain("field-label");
     expect(html).toContain("<summary>View evidence</summary>");
     expect(html).toContain("Revenue: $10m");
     expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");

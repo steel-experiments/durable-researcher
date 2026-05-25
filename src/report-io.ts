@@ -89,18 +89,20 @@ function renderArtifact(artifact: ArtifactSpec, explanation: ExplanationModel): 
     const evidence: Evidence[] = row.evidenceIds.map((id) => evidenceById.get(id)).filter(isPresent);
     const excerpts: EvidenceExcerpt[] = row.excerptIds.map((id) => excerptById.get(id)).filter(isPresent);
     const sources: ExplanationSource[] = row.sourceIds.map((id) => sourceById.get(id)).filter(isPresent);
+    const fields = row.fields ?? [];
     const missing = row.missingFields.length
       ? `<span class="missing">${escapeHtml(row.missingFields.join(", "))}</span>`
       : `<span class="ok">complete</span>`;
     return `
       <tr>
         <td><strong>${escapeHtml(row.label)}</strong></td>
+        <td>${fields.map((field) => `<div><span class="field-label">${escapeHtml(field.label)}</span> ${escapeHtml(field.value)}</div>`).join("")}</td>
         <td><span class="confidence ${row.confidence}">${row.confidence}</span></td>
         <td>${sources.map((source) => `<a href="${escapeHtml(source.url)}">${escapeHtml(source.title)}</a>`).join("<br>")}</td>
         <td>${missing}</td>
       </tr>
       <tr class="detail">
-        <td colspan="4">
+        <td colspan="5">
           <details>
             <summary>View evidence</summary>
             ${evidence.map((item) => `<p>${escapeHtml(item.content)}</p>`).join("")}
@@ -118,6 +120,7 @@ function renderArtifact(artifact: ArtifactSpec, explanation: ExplanationModel): 
         <thead>
           <tr>
             <th>Finding</th>
+            <th>Extracted Values</th>
             <th>Confidence</th>
             <th>Sources</th>
             <th>Evidence</th>
@@ -134,8 +137,10 @@ export function renderResearchResultHtml(result: ResearchResult): string {
   const artifactHtml = explanation?.recommendedViews
     .map((artifact) => renderArtifact(artifact, explanation))
     .join("\n") ?? "";
-  const uncertainties = explanation?.uncertainties.length
-    ? `<section><h2>Uncertainties</h2><ul>${explanation.uncertainties.map((item) => `<li>${escapeHtml(item.description)}</li>`).join("")}</ul></section>`
+  const visibleUncertainties = explanation?.uncertainties.slice(0, 4) ?? [];
+  const hiddenUncertaintyCount = Math.max(0, (explanation?.uncertainties.length ?? 0) - visibleUncertainties.length);
+  const uncertainties = visibleUncertainties.length
+    ? `<section><h2>Uncertainties</h2><ul>${visibleUncertainties.map((item) => `<li>${escapeHtml(item.description)}</li>`).join("")}${hiddenUncertaintyCount ? `<li>${hiddenUncertaintyCount} more verification caveats omitted from this preview.</li>` : ""}</ul></section>`
     : "";
 
   return `<!doctype html>
@@ -155,6 +160,7 @@ export function renderResearchResultHtml(result: ResearchResult): string {
     table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #d8dde5; border-radius: 8px; overflow: hidden; }
     th, td { padding: 12px; border-bottom: 1px solid #e6e9ef; text-align: left; vertical-align: top; }
     th { background: #edf1f5; font-size: 13px; color: #4b5868; }
+    .field-label { display: inline-block; min-width: 58px; color: #4b5868; font-size: 13px; font-weight: 700; }
     a { color: #1260a8; }
     blockquote { margin: 10px 0 0; padding: 8px 12px; border-left: 3px solid #9aa8b8; background: #f5f7fa; }
     summary { cursor: pointer; font-weight: 600; }
