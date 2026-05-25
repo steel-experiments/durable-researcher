@@ -25,7 +25,15 @@ describe("saveResearchResult", () => {
   it("writes a static HTML artifact for extraction evidence tables", () => {
     const result: ResearchResult = {
       topic: "ACME <Revenue>",
-      report: "ACME reported <script>alert(1)</script> revenue.",
+      report: [
+        "# ACME Financials",
+        "",
+        "ACME reported <script>alert(1)</script> revenue with `verified` support.",
+        "",
+        "| Metric | Value |",
+        "|---|---|",
+        "| Revenue | $10m |",
+      ].join("\n"),
       notes: [],
       sources: [],
       messages: [],
@@ -91,6 +99,11 @@ describe("saveResearchResult", () => {
     expect(html).toContain("field-label");
     expect(html).toContain("<summary>View evidence</summary>");
     expect(html).toContain("Revenue: $10m");
+    expect(html).toContain("<h2>ACME Financials</h2>");
+    expect(html).toContain("<code>verified</code>");
+    expect(html).toContain("<td>Revenue</td>");
+    expect(html).not.toContain("# ACME Financials");
+    expect(html).not.toContain("| Metric | Value |");
     expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
     expect(html).not.toContain("<script>alert(1)</script>");
   });
