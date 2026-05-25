@@ -1,7 +1,7 @@
 // ABOUTME: Sandbox runtime for agent-written Python adapters via @pydantic/monty.
 // ABOUTME: Defines the host-function surface (http_get, http_post, now) and a swappable AdapterRuntime.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { Monty, runMontyAsync } from "@pydantic/monty";
@@ -11,6 +11,20 @@ const ADAPTERS_DIR = join(dirname(fileURLToPath(import.meta.url)), "adapters");
 /** Read a blessed Python adapter from src/adapters/<name>.py and return its source. */
 export function loadAdapter(name: string): string {
   return readFileSync(join(ADAPTERS_DIR, `${name}.py`), "utf8");
+}
+
+/** Does a blessed adapter exist for this source name? */
+export function hasBlessedAdapter(name: string): boolean {
+  return existsSync(join(ADAPTERS_DIR, `${name}.py`));
+}
+
+/** List every blessed adapter currently shipped under src/adapters/. */
+export function listBlessedAdapters(): string[] {
+  if (!existsSync(ADAPTERS_DIR)) return [];
+  return readdirSync(ADAPTERS_DIR)
+    .filter((f) => f.endsWith(".py"))
+    .map((f) => f.replace(/\.py$/, ""))
+    .sort();
 }
 
 /** Shape returned to the Python sandbox from http_get / http_post. */

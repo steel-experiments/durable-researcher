@@ -4,7 +4,11 @@
 import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { MontyError } from "@pydantic/monty";
-import { MontyRuntime, type AdapterRuntime } from "../code-adapter.js";
+import {
+  MontyRuntime,
+  listBlessedAdapters,
+  type AdapterRuntime,
+} from "../code-adapter.js";
 import { appendHistory, previewOutput } from "../adapters-history.js";
 
 const WriteAdapterParams = Type.Object({
@@ -28,9 +32,14 @@ const WriteAdapterParams = Type.Object({
   ),
 });
 
-const TOOL_DESCRIPTION = [
+function buildDescription(blessed: string[]): string {
+  return [
   "Write and run a Python adapter to query a structured source (arXiv, PubMed,",
   "Crossref, FRED, USPTO, etc.) when no built-in tool fits.",
+  "",
+  blessed.length === 0
+    ? "No blessed adapters yet — every adapter is author-on-demand."
+    : `Blessed adapters available (use \`use_adapter\` instead, NOT write_adapter): ${blessed.join(", ")}`,
   "",
   "Available host functions (call directly — do NOT use `await`):",
   "  http_get(url, headers?) -> {status, headers, body_text}",
@@ -42,6 +51,11 @@ const TOOL_DESCRIPTION = [
   "Stdlib available: json, re, datetime, asyncio, typing, sys, os.",
   "NOT available: requests, httpx, urllib, lxml, pandas, feedparser, numpy.",
   "",
+  "Common patterns (copy these, don't reinvent them):",
+  "  URL-encoded query: `qs = 'q=' + url_encode(query)`  ← NOT urllib.parse",
+  "  POST JSON body:    `resp = http_post(url, json.dumps(body), {'Content-Type':'application/json'})`",
+  "  Parse Atom/XML:    use `re.findall(r'<entry>(.*?)</entry>', body, re.DOTALL)` — no lxml/feedparser",
+  "",
   "Critical gotchas:",
   "  • Do NOT use the Python `await` keyword. The sandbox auto-awaits host",
   "    functions. `resp = http_get(url)` works; `resp = await http_get(url)` fails.",
@@ -52,7 +66,8 @@ const TOOL_DESCRIPTION = [
   "Use this when: a structured JSON or XML API is the right primary source and",
   "no built-in tool covers it. Don't use this for general web pages (use",
   "browse_url) or for things web_search / web_search source=edgar already handle.",
-].join("\n");
+  ].join("\n");
+}
 
 /** Format any error caught from MontyRuntime as agent-readable text. */
 function formatError(err: unknown): { type: string; message: string; text: string } {
@@ -84,10 +99,11 @@ function formatError(err: unknown): { type: string; message: string; text: strin
 export function createWriteAdapterTool(
   runtime: AdapterRuntime = new MontyRuntime(),
 ): AgentTool<typeof WriteAdapterParams> {
+  const description = buildDescription(listBlessedAdapters());
   return {
     name: "write_adapter",
     label: "Write Adapter",
-    description: TOOL_DESCRIPTION,
+    description,
     parameters: WriteAdapterParams,
     execute: async (_toolCallId, params) => {
       const inputs = params.inputs ?? {};

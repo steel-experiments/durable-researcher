@@ -24,6 +24,7 @@ import { createBrowseTool } from "./tools/browse.js";
 import { createScreenshotTool } from "./tools/screenshot.js";
 import { createNoteTool } from "./tools/note.js";
 import { createWriteAdapterTool } from "./tools/write-adapter.js";
+import { createUseAdapterTool } from "./tools/use-adapter.js";
 import { createEvaluateTool } from "./tools/evaluate.js";
 import { createPlanTool } from "./tools/plan.js";
 import { createPrefetchTool } from "./tools/prefetch.js";
@@ -389,6 +390,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         createScreenshotTool(steelClient),
         createNoteTool(notes),
         createEvaluateTool(notes, scrapedUrls, mode),
+        createUseAdapterTool(),
         createWriteAdapterTool(),
       ];
 
