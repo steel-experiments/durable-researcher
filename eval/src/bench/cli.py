@@ -68,7 +68,7 @@ def run(
     responses_dir: Path = typer.Option("responses"),
     depth: str = typer.Option("quick", help="Research depth: quick, standard, deep"),
     max_sources: int = typer.Option(10),
-    concurrency: int = typer.Option(1),
+    concurrency: int = typer.Option(6),
     timeout: int = typer.Option(900, help="Per-task timeout in seconds"),
     limit: Optional[int] = typer.Option(None, help="Max tasks to run"),
     project_root: Path = typer.Option(
@@ -566,21 +566,120 @@ def compare(
     console.print(markdown)
 
 
+DEFAULT_SCOREBOARD_DB = Path("runs/scoreboard.sqlite")
+DEFAULT_SCOREBOARD_MD = Path("runs/SCOREBOARD.md")
+
+
+def _ensure_scoreboard_dir(db_path: Path, md_path: Path) -> None:
+    """Make sure the parent dir exists for the sqlite db and markdown output."""
+    for p in (db_path, md_path):
+        p.parent.mkdir(parents=True, exist_ok=True)
+
+
 @app.command()
 def scoreboard(
-    benchmark: str = typer.Argument(..., help="Benchmark: researchrubrics or draco"),
-    judge_model: str = typer.Option(
-        ..., help="Judge model subdir to scan (e.g. glm-4.7-flashx)"
+    benchmark: str = typer.Option(
+        None, help="Filter to a single benchmark (default: all benchmarks in DB)"
     ),
-    root: Path = typer.Option(
-        ".", help="Directory to scan for results-* dirs (default: cwd)"
+    db: Path = typer.Option(
+        DEFAULT_SCOREBOARD_DB, help="Path to scoreboard sqlite DB"
+    ),
+    limit: int = typer.Option(20, help="Max runs to show per benchmark"),
+) -> None:
+    """Print recent runs from the sqlite scoreboard with delta-vs-previous."""
+    from bench.scoreboard import latest_runs, render_markdown
+
+    if not db.exists():
+        console.print(
+            f"[yellow]No scoreboard at {db}. Run 'bench finalize' first.[/yellow]"
+        )
+        raise typer.Exit(0)
+
+    if benchmark:
+        rows = latest_runs(db, benchmark=benchmark, limit=limit)
+        if not rows:
+            console.print(f"[yellow]No runs for benchmark={benchmark}[/yellow]")
+            raise typer.Exit(0)
+        table = Table(title=f"{benchmark} scoreboard")
+        table.add_column("run_id")
+        table.add_column("ts")
+        table.add_column("sha")
+        table.add_column("agent")
+        table.add_column("n", justify="right")
+        table.add_column("mean", justify="right")
+        table.add_column("Δ", justify="right")
+        table.add_column("judge")
+        for i, r in enumerate(rows):
+            prev_score = rows[i + 1].mean_score if i + 1 < len(rows) else None
+            if prev_score is None:
+                delta = "—"
+            else:
+                d = r.mean_score - prev_score
+                sign = "+" if d > 0 else ""
+                delta = f"{sign}{d:.3f}"
+            table.add_row(
+                r.run_id,
+                r.ts.replace("T", " ").replace("+00:00", "Z"),
+                (r.git_sha or "—")[:7],
+                r.agent_model or "—",
+                str(r.n_tasks),
+                f"{r.mean_score:.3f}",
+                delta,
+                r.judge_model or "—",
+            )
+        console.print(table)
+    else:
+        # Render the full markdown across all benchmarks
+        md = render_markdown(db, benchmark=None, limit=limit)
+        console.print(md)
+
+
+@app.command()
+def finalize(
+    benchmark: str = typer.Argument(
+        ..., help="Benchmark: researchrubrics or draco"
+    ),
+    results_dir: Path = typer.Option(
+        ..., help="Results dir holding {benchmark}/{judge_model}/*.jsonl"
+    ),
+    judge_model: str = typer.Option(
+        ..., help="Judge model subdir (e.g. glm-4.7-flashx)"
     ),
     data_dir: Path = typer.Option("data", help="Benchmark dataset directory"),
+    db: Path = typer.Option(
+        DEFAULT_SCOREBOARD_DB, help="Path to scoreboard sqlite DB"
+    ),
+    markdown: Path = typer.Option(
+        DEFAULT_SCOREBOARD_MD,
+        help="Path to write the regenerated SCOREBOARD.md",
+    ),
+    agent_model: str = typer.Option(None, help="Override the agent_model column"),
+    agent_depth: str = typer.Option(None, help="Override the agent_depth column"),
+    agent_max_sources: int = typer.Option(
+        None, help="Override the agent_max_sources column"
+    ),
+    judge_mode: str = typer.Option(
+        None, help="Override the judge_mode column (realtime|batch)"
+    ),
+    wall_seconds: int = typer.Option(None, help="Wall time in seconds for this run"),
+    cost_usd: float = typer.Option(None, help="Estimated USD cost for this run"),
+    notes: str = typer.Option(None, help="Free-form notes attached to this run"),
+    run_id: str = typer.Option(
+        None, help="Explicit run_id (default: random 12-hex)"
+    ),
+    project_root: Path = typer.Option(
+        "..", help="Project root for git rev-parse / git status"
+    ),
 ) -> None:
-    """List all results dirs under root that have verdicts for the given judge model."""
-    from datetime import datetime
-
-    from bench.compare import discover_runs, score_run_info
+    """Read verdicts under results_dir/<benchmark>/<judge_model>/ and insert one
+    row in the sqlite scoreboard. Regenerates SCOREBOARD.md from the DB."""
+    from bench.data import load_benchmark
+    from bench.scoreboard import (
+        finalize_run,
+        git_head_sha,
+        git_is_dirty,
+        render_markdown,
+    )
 
     data_path = _resolve_data_path(benchmark, data_dir)
     if not data_path.exists():
@@ -589,29 +688,185 @@ def scoreboard(
         )
         raise typer.Exit(1)
 
-    runs = discover_runs(root, benchmark=benchmark, judge_model=judge_model)
-    if not runs:
+    tasks = load_benchmark(benchmark, data_path)
+    criteria_by_task = {t.task_id: t.criteria for t in tasks}
+
+    sha = git_head_sha(project_root.resolve())
+    dirty = git_is_dirty(project_root.resolve())
+
+    _ensure_scoreboard_dir(db, markdown)
+
+    rid = finalize_run(
+        db_path=db,
+        results_dir=results_dir,
+        benchmark=benchmark,
+        judge_model=judge_model,
+        criteria_by_task=criteria_by_task,
+        git_sha=sha,
+        git_dirty=dirty,
+        agent_model=agent_model,
+        agent_depth=agent_depth,
+        agent_max_sources=agent_max_sources,
+        judge_mode=judge_mode,
+        wall_seconds=wall_seconds,
+        cost_usd=cost_usd,
+        notes=notes,
+        run_id=run_id,
+    )
+
+    console.print(f"[green]Recorded run {rid}[/green] in {db}")
+
+    md = render_markdown(db, benchmark=None, limit=20)
+    markdown.write_text(md + "\n")
+    console.print(f"Regenerated {markdown}")
+
+
+@app.command()
+def eval(
+    benchmark: str = typer.Argument(..., help="Benchmark: researchrubrics or draco"),
+    results_dir: Path = typer.Option(
+        ..., help="Results dir for verdicts (e.g. results-latest)"
+    ),
+    responses_dir: Path = typer.Option(
+        Path("responses"), help="Responses dir for agent reports"
+    ),
+    data_dir: Path = typer.Option("data", help="Benchmark dataset directory"),
+    db: Path = typer.Option(
+        DEFAULT_SCOREBOARD_DB, help="Path to scoreboard sqlite DB"
+    ),
+    markdown: Path = typer.Option(
+        DEFAULT_SCOREBOARD_MD, help="Path to SCOREBOARD.md"
+    ),
+    depth: str = typer.Option("quick"),
+    max_sources: int = typer.Option(10),
+    concurrency: int = typer.Option(6),
+    timeout: int = typer.Option(900),
+    limit: int = typer.Option(None, help="Limit number of tasks (debugging)"),
+    judge_model: str = typer.Option(None, help="Override judge model"),
+    judge_concurrency: int = typer.Option(20),
+    batch: bool = typer.Option(False, help="Use Gemini Batch API for judging"),
+    notes: str = typer.Option(None, help="Free-form notes attached to this run"),
+    project_root: Path = typer.Option(
+        "..", help="Project root for git + bench.ts"
+    ),
+) -> None:
+    """Orchestrator: run → judge → score → report → finalize in one command.
+
+    Note: this is a convenience wrapper for the common eval-loop. For more
+    granular control, invoke run/judge/score/finalize separately.
+    """
+    import time
+
+    from rich.progress import (
+        BarColumn,
+        MofNCompleteColumn,
+        Progress,
+        TextColumn,
+        TimeElapsedColumn,
+    )
+
+    from bench.data import load_benchmark
+    from bench.runner import run_benchmark, RunResult as _RunResult
+
+    data_path = _resolve_data_path(benchmark, data_dir)
+    if not data_path.exists():
         console.print(
-            f"[yellow]No results dirs under {root} contain "
-            f"{benchmark}/{judge_model} verdicts.[/yellow]"
+            f"[red]Dataset not found at {data_path}. Run 'bench download {benchmark}' first.[/red]"
         )
-        raise typer.Exit(0)
+        raise typer.Exit(1)
 
-    for run in runs:
-        score_run_info(run, data_path)
+    tasks = load_benchmark(benchmark, data_path)
+    if limit:
+        tasks = tasks[:limit]
 
-    table = Table(title=f"{benchmark} runs ({judge_model})")
-    table.add_column("Run")
-    table.add_column("Tasks", justify="right")
-    table.add_column("Mean Score", justify="right")
-    table.add_column("Modified")
+    console.print(f"[bold]bench eval[/bold] benchmark={benchmark} n={len(tasks)} depth={depth}")
+    started = time.monotonic()
 
-    for run in runs:
-        mean_str = f"{run.mean_score:.3f}" if run.mean_score is not None else "—"
-        ts = datetime.fromtimestamp(run.mtime).strftime("%Y-%m-%d %H:%M")
-        table.add_row(run.name, str(run.task_count), mean_str, ts)
+    # 1. Run
+    task_tuples = [(t.task_id, t.benchmark, t.prompt) for t in tasks]
 
-    console.print(table)
+    import asyncio
+
+    async def _run_with_progress():
+        with Progress(
+            TextColumn("[bold]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            bar = progress.add_task("Running", total=len(task_tuples))
+
+            def _on_done(result: _RunResult):
+                status = "skip" if result.skipped else ("ok" if result.success else "FAIL")
+                elapsed_s = f"{result.duration_seconds:.0f}s" if result.duration_seconds > 0 else "cached"
+                progress.console.print(f"  {result.task_id[:12]}… {status} ({elapsed_s})")
+                progress.advance(bar)
+
+            return await run_benchmark(
+                task_tuples,
+                responses_dir,
+                depth=depth,
+                max_sources=max_sources,
+                concurrency=concurrency,
+                timeout=timeout,
+                project_root=project_root.resolve(),
+                on_task_done=_on_done,
+            )
+
+    asyncio.run(_run_with_progress())
+
+    # 2. Judge
+    judge_config = _resolve_judge_config(benchmark)
+    if judge_model:
+        judge_config["model"] = judge_model
+    console.print(f"\n[bold]Judging[/bold] with {judge_config['model']}")
+    from bench.judge import Judge, estimate_judge_cost
+
+    judge_tasks = []
+    for task in tasks:
+        report_path = responses_dir / benchmark / f"{task.task_id}.md"
+        if report_path.exists() and report_path.stat().st_size > 0:
+            judge_tasks.append((task.task_id, report_path, task.criteria, task.prompt))
+
+    if judge_tasks:
+        bench_results_dir = results_dir / benchmark / judge_config["model"]
+        j = Judge(
+            model=judge_config["model"],
+            benchmark=benchmark,
+            max_concurrent=judge_concurrency,
+            temperature=judge_config["temperature"],
+            thinking_level=judge_config["thinking_level"],
+            rpm=judge_config["rpm"],
+        )
+        if batch and judge_config["model"].strip().lower().startswith("gemini-"):
+            j.judge_batch(
+                judge_tasks, bench_results_dir,
+                on_status=lambda msg: console.print(f"  [dim]{msg}[/dim]"),
+            )
+        else:
+            asyncio.run(j.judge_benchmark(judge_tasks, bench_results_dir))
+
+    wall = int(time.monotonic() - started)
+
+    # 3. Finalize — invoke as a function call so the user sees the same output path
+    finalize(
+        benchmark=benchmark,
+        results_dir=results_dir,
+        judge_model=judge_config["model"],
+        data_dir=data_dir,
+        db=db,
+        markdown=markdown,
+        agent_model=None,
+        agent_depth=depth,
+        agent_max_sources=max_sources,
+        judge_mode="batch" if batch else "realtime",
+        wall_seconds=wall,
+        cost_usd=None,
+        notes=notes,
+        run_id=None,
+        project_root=project_root,
+    )
 
 
 if __name__ == "__main__":
