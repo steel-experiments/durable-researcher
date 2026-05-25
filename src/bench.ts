@@ -2,6 +2,7 @@
 // ABOUTME: writes the markdown report to a file. No interactive prompts or task-finding.
 
 import "dotenv/config";
+import { randomUUID } from "node:crypto";
 import { writeFileSync, mkdirSync } from "fs";
 import { dirname } from "path";
 import { createResearchApp } from "./agent.js";
@@ -54,7 +55,10 @@ function parseArgs(argv: string[]): {
 async function main() {
   const { topic, output, usageOutput, depth, maxSources } = parseArgs(process.argv);
 
-  const app = createResearchApp();
+  // Unique queue per invocation so parallel benchmark runs don't race on the
+  // same Absurd queue (mirrors createIsolatedQueueName in index.ts).
+  const queueName = `bench-${randomUUID()}`;
+  const app = createResearchApp({ queueName });
 
   const params: ResearchParams = { topic, depth, maxSources };
   const { taskID } = await app.spawn("research", params);

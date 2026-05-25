@@ -97,6 +97,9 @@ async def run_task(
     try:
         env = os.environ.copy()
         env["MAX_DURATION"] = str(timeout)
+        # Cross-run browse cache key: every Absurd invocation gets a fresh task_id,
+        # so without this override the cache hit rate on re-run is 0%.
+        env["BENCH_CACHE_KEY"] = f"{benchmark}:{task_id}"
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -153,7 +156,7 @@ async def run_benchmark(
     responses_dir: Path,
     depth: str = "quick",
     max_sources: int = 10,
-    concurrency: int = 1,
+    concurrency: int = 6,
     timeout: int = 900,
     project_root: Path | None = None,
     on_task_done: Callable[[RunResult], None] | None = None,
@@ -162,9 +165,12 @@ async def run_benchmark(
 
     tasks: list of (task_id, benchmark, prompt) tuples.
     on_task_done: called after each task completes (for progress updates).
+
+    One task's exception does not tear down the batch: we use
+    return_exceptions=True and translate any raised exception into a failed
+    RunResult so the rest of the batch keeps running.
     """
     sem = asyncio.Semaphore(concurrency)
-    results: list[RunResult] = []
 
     async def _run_one(task_id: str, benchmark: str, prompt: str) -> RunResult:
         async with sem:
@@ -183,5 +189,22 @@ async def run_benchmark(
             return result
 
     coros = [_run_one(tid, bench, prompt) for tid, bench, prompt in tasks]
-    results = await asyncio.gather(*coros)
-    return list(results)
+    raw_results = await asyncio.gather(*coros, return_exceptions=True)
+
+    results: list[RunResult] = []
+    for (task_id, benchmark, _prompt), r in zip(tasks, raw_results):
+        if isinstance(r, BaseException):
+            result = RunResult(
+                task_id=task_id,
+                benchmark=benchmark,
+                success=False,
+                skipped=False,
+                duration_seconds=0.0,
+                error=f"{type(r).__name__}: {r}"[:500],
+            )
+            if on_task_done:
+                on_task_done(result)
+            results.append(result)
+        else:
+            results.append(r)
+    return results

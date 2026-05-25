@@ -1,10 +1,10 @@
 // ABOUTME: Tests for agent orchestration — template loading and result building.
 // ABOUTME: Verifies that the system prompt renders correctly and results are structured.
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import { loadTemplate } from "../src/prompts.js";
 import { DEPTH_CONFIG } from "../src/types.js";
-import { buildResult } from "../src/agent.js";
+import { buildResult, resolveCacheKey } from "../src/agent.js";
 
 describe("loadTemplate", () => {
   it("renders system prompt with topic and depth", async () => {
@@ -84,6 +84,33 @@ describe("buildResult source titles", () => {
   it("defaults to URL titles when no map is provided (backwards compat)", () => {
     const result = buildResult(notes, "topic", [], undefined, "synthesis");
     expect(result.sources[0].title).toBe(result.sources[0].url);
+  });
+});
+
+describe("resolveCacheKey", () => {
+  const original = process.env.BENCH_CACHE_KEY;
+
+  afterEach(() => {
+    if (original === undefined) {
+      delete process.env.BENCH_CACHE_KEY;
+    } else {
+      process.env.BENCH_CACHE_KEY = original;
+    }
+  });
+
+  it("returns ctx.taskID when BENCH_CACHE_KEY is unset", () => {
+    delete process.env.BENCH_CACHE_KEY;
+    expect(resolveCacheKey("ctx-task-123")).toBe("ctx-task-123");
+  });
+
+  it("returns BENCH_CACHE_KEY when it is set, overriding ctx.taskID", () => {
+    process.env.BENCH_CACHE_KEY = "draco:abc-def";
+    expect(resolveCacheKey("ctx-task-123")).toBe("draco:abc-def");
+  });
+
+  it("ignores an empty BENCH_CACHE_KEY", () => {
+    process.env.BENCH_CACHE_KEY = "";
+    expect(resolveCacheKey("ctx-task-123")).toBe("ctx-task-123");
   });
 });
 

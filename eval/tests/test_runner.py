@@ -148,3 +148,77 @@ class TestRunTaskExecution:
         assert result.success is True
         assert result.skipped is False
         assert captured["env"]["MAX_DURATION"] == "123"
+
+    @pytest.mark.asyncio
+    async def test_sets_bench_cache_key_env(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """Runner must pass BENCH_CACHE_KEY=<benchmark>:<task_id> so the agent
+        shares its browse cache across benchmark re-runs."""
+        captured: dict[str, object] = {}
+
+        class FakeProcess:
+            returncode = 0
+
+            async def communicate(self):
+                return b"", b""
+
+        async def fake_create_subprocess_exec(*cmd, **kwargs):
+            captured["env"] = kwargs["env"]
+            return FakeProcess()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+        await run_task(
+            task_id="abc-123",
+            benchmark="draco",
+            prompt="t",
+            responses_dir=tmp_path / "responses",
+            depth="quick",
+            max_sources=10,
+            timeout=60,
+            project_root=tmp_path,
+        )
+
+        assert captured["env"]["BENCH_CACHE_KEY"] == "draco:abc-123"
+
+
+class TestRunBenchmarkConcurrency:
+    @pytest.mark.asyncio
+    async def test_default_concurrency_is_six(self):
+        """Concurrency default of 6 is part of the eval-loop unblock."""
+        from bench import runner as runner_mod
+        import inspect
+
+        sig = inspect.signature(runner_mod.run_benchmark)
+        assert sig.parameters["concurrency"].default == 6
+
+    @pytest.mark.asyncio
+    async def test_one_failing_task_does_not_tear_down_batch(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        """A single task raising must not abort the gather — translate to a failed RunResult."""
+        from bench import runner as runner_mod
+
+        async def fake_run_task(task_id: str, benchmark: str, prompt: str, **kwargs):
+            if task_id == "bad":
+                raise RuntimeError("boom")
+            return RunResult(
+                task_id=task_id,
+                benchmark=benchmark,
+                success=True,
+                skipped=False,
+                duration_seconds=0.0,
+            )
+
+        monkeypatch.setattr(runner_mod, "run_task", fake_run_task)
+
+        results = await runner_mod.run_benchmark(
+            tasks=[("good1", "draco", "p"), ("bad", "draco", "p"), ("good2", "draco", "p")],
+            responses_dir=tmp_path,
+            concurrency=2,
+        )
+
+        assert len(results) == 3
+        by_id = {r.task_id: r for r in results}
+        assert by_id["good1"].success is True
+        assert by_id["good2"].success is True
+        assert by_id["bad"].success is False
+        assert by_id["bad"].error is not None
+        assert "boom" in by_id["bad"].error

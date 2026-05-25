@@ -59,6 +59,20 @@ export type ResearchAppOptions = {
   quiet?: boolean;
 };
 
+/**
+ * Resolve the effective task ID used for caching browse results.
+ *
+ * When `BENCH_CACHE_KEY` is set in the environment (e.g. `draco:<task_id>`), it
+ * overrides the per-task Absurd `ctx.taskID`. This lets benchmark re-runs share
+ * the browse cache across invocations: every Absurd run gets a fresh `taskID`,
+ * so without the override the cache hit rate would be 0% on re-run.
+ */
+export function resolveCacheKey(ctxTaskId: string): string {
+  const override = process.env.BENCH_CACHE_KEY;
+  if (override && override.length > 0) return override;
+  return ctxTaskId;
+}
+
 /** Drain user-supplied steering text into user messages for the next agent turn. */
 export function drainUserSteering(queue?: SteeringQueue): AgentMessage[] {
   if (!queue) return [];
@@ -334,7 +348,9 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
 
       // 3. Create tools with closures over mutable state
       const prefetchBudget = Math.floor((params.maxSources ?? 20) / 2);
-      const taskId = ctx.taskID;
+      // BENCH_CACHE_KEY (e.g. `draco:<task_id>`) overrides ctx.taskID so benchmark
+      // re-runs share the browse cache across Absurd invocations.
+      const taskId = resolveCacheKey(ctx.taskID);
       // Per-task store of verbatim excerpts keyed by URL — populated by browse_url and
       // consumed by claim verification as a fallback when notes don't list the cited URL.
       const urlExcerpts = createUrlExcerptStore();
