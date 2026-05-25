@@ -483,5 +483,136 @@ def report(
         console.print(report_text)
 
 
+@app.command()
+def compare(
+    benchmark: str = typer.Argument(..., help="Benchmark: researchrubrics or draco"),
+    baseline: Path = typer.Option(
+        ..., help="Baseline results dir (e.g. results-baseline-15)"
+    ),
+    candidate: list[Path] = typer.Option(
+        ...,
+        "--candidate",
+        help="Candidate results dir(s); pass --candidate multiple times for multi-way",
+    ),
+    judge_model: str = typer.Option(
+        ..., help="Judge model subdir (e.g. glm-4.7-flashx)"
+    ),
+    data_dir: Path = typer.Option("data", help="Benchmark dataset directory"),
+    out: Optional[Path] = typer.Option(None, help="Write markdown report to this path"),
+) -> None:
+    """Compare task scores across one baseline and one or more candidate result dirs."""
+    from bench.compare import (
+        compute_comparison,
+        format_comparison_report,
+        load_run_scores,
+        save_comparison_report,
+    )
+
+    data_path = _resolve_data_path(benchmark, data_dir)
+    if not data_path.exists():
+        console.print(
+            f"[red]Dataset not found at {data_path}. Run 'bench download {benchmark}' first.[/red]"
+        )
+        raise typer.Exit(1)
+
+    baseline_scores = load_run_scores(
+        results_dir=baseline,
+        benchmark=benchmark,
+        judge_model=judge_model,
+        data_path=data_path,
+    )
+    if not baseline_scores:
+        console.print(
+            f"[red]No verdicts found in baseline: "
+            f"{baseline / benchmark / judge_model}[/red]"
+        )
+        raise typer.Exit(1)
+
+    candidate_score_maps = []
+    candidate_labels = []
+    for cand_dir in candidate:
+        scores = load_run_scores(
+            results_dir=cand_dir,
+            benchmark=benchmark,
+            judge_model=judge_model,
+            data_path=data_path,
+        )
+        if not scores:
+            console.print(
+                f"[yellow]Warning: no verdicts found in candidate "
+                f"{cand_dir / benchmark / judge_model}[/yellow]"
+            )
+        candidate_score_maps.append(scores)
+        candidate_labels.append(cand_dir.name)
+
+    comparison = compute_comparison(
+        baseline=baseline_scores,
+        candidates=candidate_score_maps,
+        candidate_labels=candidate_labels,
+        baseline_label=baseline.name,
+    )
+
+    markdown = format_comparison_report(
+        comparison,
+        benchmark=benchmark,
+        judge_model=judge_model,
+        baseline_label=baseline.name,
+        candidate_labels=candidate_labels,
+    )
+
+    if out:
+        save_comparison_report(markdown, out)
+        console.print(f"[green]Comparison report written to {out}[/green]")
+    console.print(markdown)
+
+
+@app.command()
+def scoreboard(
+    benchmark: str = typer.Argument(..., help="Benchmark: researchrubrics or draco"),
+    judge_model: str = typer.Option(
+        ..., help="Judge model subdir to scan (e.g. glm-4.7-flashx)"
+    ),
+    root: Path = typer.Option(
+        ".", help="Directory to scan for results-* dirs (default: cwd)"
+    ),
+    data_dir: Path = typer.Option("data", help="Benchmark dataset directory"),
+) -> None:
+    """List all results dirs under root that have verdicts for the given judge model."""
+    from datetime import datetime
+
+    from bench.compare import discover_runs, score_run_info
+
+    data_path = _resolve_data_path(benchmark, data_dir)
+    if not data_path.exists():
+        console.print(
+            f"[red]Dataset not found at {data_path}. Run 'bench download {benchmark}' first.[/red]"
+        )
+        raise typer.Exit(1)
+
+    runs = discover_runs(root, benchmark=benchmark, judge_model=judge_model)
+    if not runs:
+        console.print(
+            f"[yellow]No results dirs under {root} contain "
+            f"{benchmark}/{judge_model} verdicts.[/yellow]"
+        )
+        raise typer.Exit(0)
+
+    for run in runs:
+        score_run_info(run, data_path)
+
+    table = Table(title=f"{benchmark} runs ({judge_model})")
+    table.add_column("Run")
+    table.add_column("Tasks", justify="right")
+    table.add_column("Mean Score", justify="right")
+    table.add_column("Modified")
+
+    for run in runs:
+        mean_str = f"{run.mean_score:.3f}" if run.mean_score is not None else "—"
+        ts = datetime.fromtimestamp(run.mtime).strftime("%Y-%m-%d %H:%M")
+        table.add_row(run.name, str(run.task_count), mean_str, ts)
+
+    console.print(table)
+
+
 if __name__ == "__main__":
     app()
