@@ -31,6 +31,7 @@ import {
   verifyClaims,
   shouldTriggerRewrite,
   buildRewriteSteering,
+  VERIFY_PASS_THRESHOLD,
   type VerificationResult,
 } from "./tools/verify-claims.js";
 import {
@@ -45,6 +46,8 @@ import { convertToLlm } from "./agent-messages.js";
 import type { ResearchEventBus } from "./event-bus.js";
 import { createToolProgress } from "./event-bus.js";
 import type { SteeringQueue } from "./steering-queue.js";
+import { createUrlExcerptStore, rebuildUrlExcerptsFromCache } from "./url-excerpts.js";
+import { getCachedBrowse, getTitlesForUrls } from "./browse-cache.js";
 
 /** Options for creating the research app. */
 export type ResearchAppOptions = {
@@ -125,6 +128,7 @@ export function buildResult(
   messages: AgentMessage[],
   verification?: { result: VerificationResult; attempts: number; rewriteTriggered: boolean },
   mode: TaskMode = "synthesis",
+  urlTitles: ReadonlyMap<string, string> = new Map(),
 ): ResearchResult {
   // Extract the final assistant message as the report
   let report = "";
@@ -160,7 +164,10 @@ export function buildResult(
       confidence: n.confidence ?? ("high" as const),
       ...(n.keyExcerpts?.length ? { keyExcerpts: n.keyExcerpts } : {}),
     })),
-    sources: Array.from(uniqueUrls).map((url) => ({ title: url, url })),
+    sources: Array.from(uniqueUrls).map((url) => ({
+      title: urlTitles.get(url) ?? url,
+      url,
+    })),
     messages,
     mode,
     ...(verification
@@ -328,16 +335,26 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
       // 3. Create tools with closures over mutable state
       const prefetchBudget = Math.floor((params.maxSources ?? 20) / 2);
       const taskId = ctx.taskID;
+      // Per-task store of verbatim excerpts keyed by URL — populated by browse_url and
+      // consumed by claim verification as a fallback when notes don't list the cited URL.
+      const urlExcerpts = createUrlExcerptStore();
+      // On resume the in-memory store starts empty; rebuild from browse_cache so the
+      // verifier has the same grounding it would have had during the original run.
+      if (scrapedUrls.size > 0) {
+        await rebuildUrlExcerptsFromCache(urlExcerpts, scrapedUrls, (url) =>
+          getCachedBrowse(taskId, url).catch(() => null),
+        );
+      }
       // Route per-tool progress (plan/prefetch/scout) through the bus when the
       // TUI is active so those lines don't write straight to stdout and corrupt
       // ink's render. Falls back to plain console.log when no bus is wired.
       const toolProgress = bus ? createToolProgress(bus) : undefined;
       const tools = [
         createPlanTool(params, toolProgress),
-        createPrefetchTool(steelClient, scrapedUrls, params.topic, prefetchBudget, taskId, toolProgress),
-        createScoutTool(steelClient, scrapedUrls, params.topic, taskId, toolProgress),
+        createPrefetchTool(steelClient, scrapedUrls, params.topic, prefetchBudget, taskId, toolProgress, urlExcerpts),
+        createScoutTool(steelClient, scrapedUrls, params.topic, taskId, toolProgress, urlExcerpts),
         createSearchTool(steelClient, scrapedUrls, params.topic),
-        createBrowseTool(steelClient, scrapedUrls, params.topic, taskId),
+        createBrowseTool(steelClient, scrapedUrls, params.topic, taskId, urlExcerpts),
         createScreenshotTool(steelClient),
         createNoteTool(notes),
         createEvaluateTool(notes, scrapedUrls, mode),
@@ -475,7 +492,15 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         eventBus: options.eventBus,
         quiet: options.quiet,
       };
-      const persistEvent = createLoggingPersister(ctx, nextHandle, persisterOpts);
+      // Helper: count completed assistant turns so subsequent persisters resume the
+      // turn counter instead of restarting at 0 (which made resume + rewrite turns
+      // appear as "turn 1" in the TUI).
+      const countCompletedTurns = (): number =>
+        context.messages.filter((m) => "role" in m && m.role === "assistant").length;
+      const persistEvent = createLoggingPersister(ctx, nextHandle, {
+        ...persisterOpts,
+        initialTurnCount: countCompletedTurns(),
+      });
 
       // Helper: run agent loop with a hard timeout safety net
       async function runWithTimeout(
@@ -529,6 +554,10 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
             `Here are findings from the previous research session (${params.priorNotes.length} notes, ${params.priorUrls?.length ?? 0} sources already visited):`,
             notesSummary,
             ``,
+            params.extensionInstruction
+              ? `User instruction for this extension: ${params.extensionInstruction}`
+              : `User instruction for this extension: gather more sources and strengthen weak or under-covered parts of the prior report.`,
+            ``,
             `Focus on: gaps in the existing research, newer developments, alternative perspectives, and areas marked as low confidence. Do NOT re-browse URLs you have already visited.`,
           ].join("\n");
         }
@@ -546,7 +575,10 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         context.messages.push(userMessage);
         nextHandle = await ctx.beginStep<MessageLogEntry>("message");
 
-        const updatedPersister = createLoggingPersister(ctx, nextHandle, persisterOpts);
+        const updatedPersister = createLoggingPersister(ctx, nextHandle, {
+          ...persisterOpts,
+          initialTurnCount: countCompletedTurns(),
+        });
         await runWithTimeout(updatedPersister);
         checkForAgentError(context.messages);
       } else if (
@@ -581,49 +613,151 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         checkForAgentError(context.messages);
       }
 
-      // 8. Claim verification (durable step) + at most one rewrite.
+      // 8. Claim verification + bounded rewrite loop.
+      //
+      // Each iteration extracts the most recent assistant-text report, runs the
+      // verifier as its own durable step (`verify-claims-attempt-N`), and — if the
+      // pass rate is below threshold — injects a rewrite-steering message and re-runs
+      // the agent loop. Stops on first verification that clears the threshold, when
+      // the rewrite cap is hit, or when no fresh report is produced.
+      //
+      // The cap is 2 rewrites (so worst case: 3 verifies + 2 rewrite turns). Picked
+      // because each rewrite is a full agent turn and we don't want runaway loops; a
+      // model that can't reach 70% after two corrective passes likely needs different
+      // sources rather than more attempts.
       const priorAttempts = countRewriteAttempts(context.messages);
       const finalReport = extractFinalReport(context.messages);
       const notesHaveExcerpts = notes.some((n) => n.keyExcerpts && n.keyExcerpts.length > 0);
+      const MAX_REWRITES = 2;
 
-      if (finalReport && notesHaveExcerpts && priorAttempts === 0) {
-        taskLog("[VERIFY] Checking citations against source excerpts...");
-        bus?.emit({ type: "agent-status", text: "Verifying citations..." });
-        const result = await ctx.step("verify-claims-attempt-1", () =>
-          verifyClaims({ report: finalReport, notes }),
-        );
-        const triggered = shouldTriggerRewrite(result);
-        taskLog(
-          `[VERIFY] ${result.summary.supported}/${result.summary.total} claims supported (${Math.round(result.summary.passRate * 100)}%).${triggered ? " Rewriting." : ""}`,
-        );
-        bus?.emit({
-          type: "agent-status",
-          text: `Citations: ${result.summary.supported}/${result.summary.total} supported (${Math.round(result.summary.passRate * 100)}%)${triggered ? " — rewriting" : ""}`,
-        });
-        verificationState = { result, attempts: 1, rewriteTriggered: triggered };
+      // On a cold resume of an already-complete task (no fresh agent turn ran in this
+      // process), don't initiate new rewrites — only load cached verification state.
+      // This avoids burning verifier tokens on every resume, and prevents triggering
+      // brand-new rewrites against reports that were already accepted previously.
+      const lastForVerify = context.messages.at(-1);
+      const resumedAlreadyComplete =
+        !!lastForVerify &&
+        "role" in lastForVerify &&
+        lastForVerify.role === "assistant" &&
+        lastForVerify.content.every((c) => c.type !== "toolCall") &&
+        priorAttempts > 0;
 
-        if (triggered) {
-          const steeringMessage: AgentMessage = {
-            role: "user" as const,
-            content: buildRewriteSteering(result),
-            timestamp: Date.now(),
-          };
-          await ctx.completeStep(nextHandle, { message: steeringMessage } satisfies MessageLogEntry);
-          context.messages.push(steeringMessage);
-          nextHandle = await ctx.beginStep<MessageLogEntry>("message");
-          const rewritePersister = createLoggingPersister(ctx, nextHandle, persisterOpts);
-          await runWithTimeout(rewritePersister);
-          checkForAgentError(context.messages);
+      if (notesHaveExcerpts && finalReport) {
+        const urlExcerptMap = urlExcerpts.asMap();
+
+        if (resumedAlreadyComplete) {
+          // Rebuild state from the most recently committed verify step. ctx.step is a
+          // free cache lookup when committed; the try/catch only matters if the
+          // verifier function itself throws (rare — verifyClaims swallows per-claim
+          // errors). On a cold resume where attempt-(priorAttempts+1) was never run,
+          // this transparently runs a fresh verification, which is the right call:
+          // the rewrite produced a new report and we still need to verify it.
+          for (let attemptN = priorAttempts + 1; attemptN >= 1; attemptN--) {
+            try {
+              const cached = await ctx.step(`verify-claims-attempt-${attemptN}`, () =>
+                verifyClaims({ report: finalReport, notes, urlExcerpts: urlExcerptMap }),
+              );
+              verificationState = {
+                result: cached,
+                attempts: attemptN,
+                // Reflect whether THIS attempt would still trigger a rewrite, not
+                // whether earlier rewrites happened — that's what downstream code
+                // means by "rewriteTriggered".
+                rewriteTriggered: shouldTriggerRewrite(cached),
+              };
+              break;
+            } catch {
+              // Verifier throw on this attempt — fall back to the previous index.
+            }
+          }
+        } else {
+          let rewritesSoFar = priorAttempts;
+          let currentReport = finalReport;
+
+          while (currentReport) {
+            const attemptN = rewritesSoFar + 1;
+            if (attemptN === 1) {
+              taskLog("[VERIFY] Checking citations against source excerpts...");
+            } else {
+              taskLog(`[VERIFY] Re-checking citations after rewrite ${attemptN - 1}...`);
+            }
+            bus?.emit({ type: "phase", phase: "verifying" });
+            bus?.emit({ type: "agent-status", text: `Verifying citations (attempt ${attemptN})...` });
+
+            const result: VerificationResult = await ctx.step(`verify-claims-attempt-${attemptN}`, () =>
+              verifyClaims({ report: currentReport!, notes, urlExcerpts: urlExcerptMap }),
+            );
+            const triggered = shouldTriggerRewrite(result);
+            taskLog(
+              `[VERIFY] ${result.summary.supported}/${result.summary.total} claims supported (${Math.round(result.summary.passRate * 100)}%).${triggered ? ` Rewriting (${rewritesSoFar + 1}/${MAX_REWRITES}).` : ""}`,
+            );
+            bus?.emit({
+              type: "verification-result",
+              attempt: attemptN,
+              passRate: result.summary.passRate,
+              supported: result.summary.supported,
+              total: result.summary.total,
+              threshold: VERIFY_PASS_THRESHOLD,
+              willRewrite: triggered && rewritesSoFar < MAX_REWRITES,
+            });
+            bus?.emit({
+              type: "agent-status",
+              text: `Citations attempt ${attemptN}: ${result.summary.supported}/${result.summary.total} (${Math.round(result.summary.passRate * 100)}%)${triggered ? " — rewriting" : " — passed"}`,
+            });
+
+            verificationState = {
+              result,
+              attempts: attemptN,
+              // Reflect the LATEST attempt's verdict — final-pass after rewrites
+              // should report false, not true-because-an-earlier-attempt-triggered.
+              rewriteTriggered: triggered,
+            };
+
+            if (!triggered) break;
+            if (rewritesSoFar >= MAX_REWRITES) {
+              taskLog(`[VERIFY] Hit rewrite cap (${MAX_REWRITES}); accepting current report.`);
+              break;
+            }
+
+            bus?.emit({ type: "phase", phase: "rewriting" });
+            const steeringMessage: AgentMessage = {
+              role: "user" as const,
+              content: buildRewriteSteering(result),
+              timestamp: Date.now(),
+            };
+            await ctx.completeStep(nextHandle, { message: steeringMessage } satisfies MessageLogEntry);
+            context.messages.push(steeringMessage);
+            nextHandle = await ctx.beginStep<MessageLogEntry>("message");
+            // Continue the turn counter from the prior research turns so the TUI shows
+            // the rewrite as turn N+1, not as a fresh "turn 1".
+            const rewritePersister = createLoggingPersister(ctx, nextHandle, {
+              ...persisterOpts,
+              initialTurnCount: countCompletedTurns(),
+            });
+            await runWithTimeout(rewritePersister);
+            checkForAgentError(context.messages);
+
+            rewritesSoFar++;
+            const nextReport = extractFinalReport(context.messages);
+            if (!nextReport || nextReport === currentReport) {
+              taskLog("[VERIFY] Rewrite produced no new report; stopping.");
+              break;
+            }
+            currentReport = nextReport;
+          }
         }
-      } else if (finalReport && notesHaveExcerpts && priorAttempts > 0) {
-        // Resuming after a rewrite has already happened — load the cached verdict.
-        const cached = await ctx.step("verify-claims-attempt-1", () =>
-          verifyClaims({ report: finalReport, notes }),
-        );
-        verificationState = { result: cached, attempts: 1, rewriteTriggered: true };
       }
 
-      return buildResult(notes, params.topic, messages, verificationState, mode);
+      bus?.emit({ type: "phase", phase: "complete" });
+
+      // Fetch real page titles for cited sources. Falls back to URL on miss, so the
+      // final report stops rendering ugly URLs as titles.
+      const allCitedUrls = Array.from(new Set(notes.flatMap((n) => n.sourceUrls)));
+      const urlTitles = await getTitlesForUrls(taskId, allCitedUrls).catch(
+        () => new Map<string, string>(),
+      );
+
+      return buildResult(notes, params.topic, messages, verificationState, mode, urlTitles);
     },
   );
 

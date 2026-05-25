@@ -77,8 +77,8 @@ describe("createResearchEventBus", () => {
     };
 
     bus.emit({ type: "turn-start", turn: 1, sources: 0, maxSources: 20, maxTurns: 45 });
-    bus.emit({ type: "tool-start", toolName: "browse_url", argSummary: '"https://x.com"' });
-    bus.emit({ type: "tool-end", toolName: "browse_url", isError: false, summary: "3.2KB" });
+    bus.emit({ type: "tool-start", toolCallId: "call_1", toolName: "browse_url", argSummary: '"https://x.com"' });
+    bus.emit({ type: "tool-end", toolCallId: "call_1", toolName: "browse_url", isError: false, summary: "3.2KB" });
     bus.emit({ type: "browse-added", url: "https://x.com" });
     bus.emit({ type: "note-added", note, index: 0 });
     bus.emit({ type: "agent-text", delta: "hello " });
@@ -89,6 +89,18 @@ describe("createResearchEventBus", () => {
     });
     bus.emit({ type: "agent-status", text: "Loading checkpoint..." });
     bus.emit({ type: "snapshot", turn: 3, sources: 2, notes: [note] });
+    bus.emit({ type: "phase", phase: "verifying" });
+    bus.emit({
+      type: "verification-result",
+      passRate: 0.7,
+      supported: 7,
+      total: 10,
+      threshold: 0.7,
+      willRewrite: false,
+      attempt: 1,
+    });
+    bus.emit({ type: "phase", phase: "rewriting" });
+    bus.emit({ type: "phase", phase: "complete" });
     bus.emit({ type: "task-complete" });
     bus.emit({ type: "task-error", message: "oops" });
 
@@ -103,6 +115,10 @@ describe("createResearchEventBus", () => {
       "usage-update",
       "agent-status",
       "snapshot",
+      "phase",
+      "verification-result",
+      "phase",
+      "phase",
       "task-complete",
       "task-error",
     ]);

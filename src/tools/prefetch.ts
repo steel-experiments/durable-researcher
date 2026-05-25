@@ -9,6 +9,7 @@ import { isContentMeaningful, truncateContent } from "../content.js";
 import { fetchBrowseContent, summarizeContent } from "./browse.js";
 import { getCachedBrowse, setCachedBrowse } from "../browse-cache.js";
 import type { ToolProgress } from "../event-bus.js";
+import { captureExcerptsForUrl, type UrlExcerptStore } from "../url-excerpts.js";
 
 const PrefetchParams = Type.Object({
   queries: Type.Array(Type.String(), {
@@ -68,6 +69,7 @@ export function createPrefetchTool(
   maxBudget: number,
   taskId?: string,
   progress?: ToolProgress,
+  urlExcerpts?: UrlExcerptStore,
 ): AgentTool<typeof PrefetchParams> {
   const report = progress ?? ((text: string) => console.log(text));
   return {
@@ -103,16 +105,20 @@ export function createPrefetchTool(
                 scraped = { content: cached.content, title: cached.title, rawLength: cached.rawLength };
               } else {
                 scraped = await fetchBrowseContent(client, url);
-                if (taskId) {
-                  await setCachedBrowse(taskId, url, scraped).catch(() => {});
-                }
               }
               scrapedUrls.add(url);
               totalBrowsed++;
               allBrowsedUrls.push(url);
               report(`    [${totalBrowsed}/${totalQueued}] ${cached ? "Cached" : "Browsed"}: ${scraped.title.slice(0, 60)}`);
 
-              if (!isContentMeaningful(scraped.content)) {
+              const meaningful = isContentMeaningful(scraped.content);
+
+              // Skip caching dead pages — see browse.ts for the rationale.
+              if (!cached && taskId && meaningful) {
+                await setCachedBrowse(taskId, url, scraped).catch(() => {});
+              }
+
+              if (!meaningful) {
                 qr.browseResults.push({ query, url, title: scraped.title, summary: "[Insufficient content]", rawLength: scraped.rawLength });
                 return;
               }
@@ -127,6 +133,11 @@ export function createPrefetchTool(
                   summary = truncateContent(scraped.content, 4000);
                 }
               }
+
+              captureExcerptsForUrl(urlExcerpts, url, {
+                summary,
+                content: scraped.content,
+              });
 
               qr.browseResults.push({ query, url, title: scraped.title, summary, rawLength: scraped.rawLength });
             } catch (err) {

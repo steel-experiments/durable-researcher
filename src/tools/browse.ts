@@ -12,6 +12,7 @@ import { loadTemplate } from "../prompts.js";
 import { getCachedBrowse, setCachedBrowse } from "../browse-cache.js";
 import { isPdfUrl, fetchAndExtractPdf } from "../pdf.js";
 import type { RefinedContent } from "../types.js";
+import { captureExcerptsForUrl, type UrlExcerptStore } from "../url-excerpts.js";
 
 const BrowseParams = Type.Object({
   url: Type.String({ description: "The URL to browse and extract content from" }),
@@ -61,6 +62,7 @@ export function createBrowseTool(
   scrapedUrls: Set<string>,
   researchTopic: string,
   taskId?: string,
+  urlExcerpts?: UrlExcerptStore,
 ): AgentTool<typeof BrowseParams> {
   return {
     name: "browse_url",
@@ -84,13 +86,18 @@ export function createBrowseTool(
         content = scraped.content;
         title = scraped.title;
         rawLength = scraped.rawLength;
-        if (taskId) {
-          await setCachedBrowse(taskId, params.url, { title, content, rawLength }).catch(() => {});
-        }
       }
       scrapedUrls.add(params.url);
 
-      if (!isContentMeaningful(content)) {
+      const meaningful = isContentMeaningful(content);
+
+      // Only cache meaningful content. Caching dead pages (bot blocks, paywalls,
+      // empty responses) just makes resume blind to retries and pollutes the table.
+      if (!cached && taskId && meaningful) {
+        await setCachedBrowse(taskId, params.url, { title, content, rawLength }).catch(() => {});
+      }
+
+      if (!meaningful) {
         return {
           content: [
             {
@@ -118,6 +125,10 @@ export function createBrowseTool(
           summary = truncateContent(content, 4000);
         }
       }
+
+      // Stash verbatim excerpts so claim verification can ground citations to this URL
+      // even when the model doesn't list it on a note's sourceUrls.
+      captureExcerptsForUrl(urlExcerpts, params.url, { summary, content });
 
       const refined: RefinedContent = {
         title,

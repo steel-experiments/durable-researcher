@@ -2,6 +2,7 @@
 // ABOUTME: Prevents re-scraping on crash/resume and benefits extend mode across tasks.
 
 import { getDbPool } from "./db-pool.js";
+import { isContentMeaningful } from "./content.js";
 
 export type CachedBrowse = {
   url: string;
@@ -35,7 +36,11 @@ async function ensureTable(): Promise<void> {
   tableInitialized = true;
 }
 
-/** Look up a cached browse result for a given task and URL. */
+/**
+ * Look up a cached browse result for a given task and URL. Returns null if the cached
+ * content fails meaningfulness — old rows written by versions before the agent learned
+ * to skip dead pages get treated as cache misses so the caller refetches.
+ */
 export async function getCachedBrowse(
   taskId: string,
   url: string,
@@ -48,6 +53,9 @@ export async function getCachedBrowse(
   );
   if (result.rows.length === 0) return null;
   const row = result.rows[0];
+  if (typeof row.content !== "string" || !isContentMeaningful(row.content)) {
+    return null;
+  }
   return {
     url: row.url,
     title: row.title,
@@ -122,6 +130,55 @@ export async function cleanupBrowseCache(): Promise<number> {
     DELETE FROM browse_cache
     WHERE task_id NOT IN (${liveTaskSelects.join(" UNION ALL ")})
   `);
+  return result.rowCount ?? 0;
+}
+
+/**
+ * Look up cached page titles for a set of URLs (for a single task). Returns a map of
+ * URL → title for entries that exist. Used to render meaningful source titles instead
+ * of dumping URLs as titles in the final report's Sources section.
+ */
+export async function getTitlesForUrls(
+  taskId: string,
+  urls: string[],
+): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  if (urls.length === 0) return map;
+  await ensureTable();
+  const p = getDbPool();
+  const result = await p.query<{ url: string; title: string | null }>(
+    `SELECT url, title FROM browse_cache WHERE task_id = $1 AND url = ANY($2::text[])`,
+    [taskId, urls],
+  );
+  for (const row of result.rows) {
+    if (row.title && row.title.trim().length > 0 && row.title !== row.url) {
+      map.set(row.url, row.title.trim());
+    }
+  }
+  return map;
+}
+
+/**
+ * Delete cache rows whose content was too thin to be meaningful (bot blocks, empty
+ * scrapes, paywalled stubs). Uses a simple length-based heuristic at the SQL level —
+ * matches the lower bound of `isContentMeaningful`. Run this once after upgrading to a
+ * version that stops caching such pages, to clean out polluted rows from earlier runs.
+ *
+ * Returns the number of rows deleted.
+ */
+export async function purgeNonMeaningfulCacheEntries(): Promise<number> {
+  await ensureTable();
+  const p = getDbPool();
+  // 200 chars matches isContentMeaningful's `minLength`. Rows with NULL content are
+  // also dead. A row that passes this filter may still be uninteresting, but those are
+  // judgment calls the agent makes per-run — only purge the certain-dead ones here.
+  const result = await p.query(
+    `DELETE FROM browse_cache
+     WHERE content IS NULL
+        OR length(content) < 200
+        OR raw_length IS NULL
+        OR raw_length < 200`,
+  );
   return result.rowCount ?? 0;
 }
 

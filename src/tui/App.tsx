@@ -17,13 +17,25 @@ export type TuiAppProps = {
   steeringQueue: SteeringQueue;
   /** Called when the user requests to quit while the task is still running. */
   onQuit?: () => void;
+  /** Called when the user requests a post-completion extension run. */
+  onExtend?: (instruction: string) => void;
 };
 
 type Activity =
   | { kind: "idle" }
   | { kind: "tool"; toolName: string; argSummary: string }
   | { kind: "thinking"; turn: number }
-  | { kind: "finalizing" };
+  | { kind: "finalizing" }
+  | { kind: "verifying" }
+  | { kind: "rewriting" };
+
+type VerificationLine = {
+  attempt: number;
+  passRate: number;
+  supported: number;
+  total: number;
+  willRewrite: boolean;
+};
 
 /** One row in the live activity stream — a finished tool call (success or error). */
 type ActivityLogEntry = {
@@ -38,6 +50,13 @@ type ActivityLogEntry = {
 const MAX_ACTIVITY_LOG = 50;
 const ACTIVITY_VISIBLE = 6;
 const NOTE_PREVIEW_CHARS = 110;
+const EXTENSION_PRESETS = [
+  "Find more sources and strengthen under-supported claims.",
+  "Use primary sources only where possible.",
+  "Find opposing evidence and alternative interpretations.",
+  "Update the report with the latest available information.",
+  "Expand the research, then rewrite the report with the new evidence.",
+];
 
 const CONFIDENCE_ICON: Record<ResearchNote["confidence"], string> = {
   high: "●",
@@ -59,11 +78,24 @@ function hostOf(url: string): string {
   }
 }
 
+/** Render wall-clock elapsed (used in the header timer). */
 function formatElapsed(ms: number): string {
   const s = Math.floor(ms / 1000);
   const m = Math.floor(s / 60);
   const ss = (s % 60).toString().padStart(2, "0");
   return `${m}:${ss}`;
+}
+
+/**
+ * Render a per-event offset in the activity stream as `+M:SS`. Without the leading `+`
+ * the eye reads `4:41` as HH:MM, which is wrong and clashes with the header's wall-clock
+ * timer rendered right above it.
+ */
+function formatRelativeOffset(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(s / 60);
+  const ss = (s % 60).toString().padStart(2, "0");
+  return `+${m}:${ss}`;
 }
 
 function formatTokens(n: number): string {
@@ -98,6 +130,7 @@ export function TuiApp({
   bus,
   steeringQueue,
   onQuit,
+  onExtend,
 }: TuiAppProps) {
   const app = useApp();
   const [findings, setFindings] = useState<ResearchNote[]>([]);
@@ -108,6 +141,9 @@ export function TuiApp({
   const [elapsed, setElapsed] = useState(0);
   const [steeringMode, setSteeringMode] = useState(false);
   const [steeringDraft, setSteeringDraft] = useState("");
+  const [extendMode, setExtendMode] = useState(false);
+  const [extendDraft, setExtendDraft] = useState("");
+  const [extendPresetIndex, setExtendPresetIndex] = useState(0);
   const [confirmation, setConfirmation] = useState<string | null>(null);
   const [done, setDone] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -120,8 +156,9 @@ export function TuiApp({
   // Tail of finished tool calls, newest last. Bounded to MAX_ACTIVITY_LOG.
   const [activityLog, setActivityLog] = useState<ActivityLogEntry[]>([]);
   const [usage, setUsage] = useState<UsageStats | null>(null);
-  // Pending tool calls keyed by toolName so tool-end can recover the argSummary
-  // recorded at tool-start (closure-captured state would be stale across events).
+  const [verification, setVerification] = useState<VerificationLine | null>(null);
+  // Pending tool calls keyed by toolCallId so parallel calls of the same tool (e.g.
+  // five take_note in one turn) don't collide and lose their per-call argSummary.
   const pendingToolRef = useRef<Map<string, string>>(new Map());
 
   // Ticker for elapsed time
@@ -147,13 +184,14 @@ export function TuiApp({
             argSummary: event.argSummary,
           });
           // Stash the args so the matching tool-end can render the full row.
-          pendingToolRef.current.set(event.toolName, event.argSummary);
+          // Keyed by toolCallId so parallel calls of the same tool don't collide.
+          pendingToolRef.current.set(event.toolCallId, event.argSummary);
           setThinkingText("");
           break;
         case "tool-end": {
           setActivity({ kind: "thinking", turn });
-          const argSummary = pendingToolRef.current.get(event.toolName) ?? "";
-          pendingToolRef.current.delete(event.toolName);
+          const argSummary = pendingToolRef.current.get(event.toolCallId) ?? "";
+          pendingToolRef.current.delete(event.toolCallId);
           const entry: ActivityLogEntry = {
             toolName: event.toolName,
             argSummary,
@@ -199,6 +237,28 @@ export function TuiApp({
           setActivity({ kind: "finalizing" });
           setThinkingText("");
           break;
+        case "phase":
+          if (event.phase === "verifying") {
+            setActivity({ kind: "verifying" });
+            setThinkingText("");
+          } else if (event.phase === "rewriting") {
+            setActivity({ kind: "rewriting" });
+            setThinkingText("");
+          } else if (event.phase === "complete") {
+            // Don't flip done here — wait for task-complete so the worker has
+            // actually returned. `complete` just marks the pipeline finished.
+            setActivity({ kind: "idle" });
+          }
+          break;
+        case "verification-result":
+          setVerification({
+            attempt: event.attempt,
+            passRate: event.passRate,
+            supported: event.supported,
+            total: event.total,
+            willRewrite: event.willRewrite,
+          });
+          break;
         case "task-complete":
           setDone(true);
           setActivity({ kind: "idle" });
@@ -221,6 +281,19 @@ export function TuiApp({
 
   useInput(
     (input, key) => {
+      if (extendMode) {
+        if (key.escape) {
+          setExtendDraft("");
+          setExtendMode(false);
+        }
+        if (key.upArrow || key.downArrow) {
+          const delta = key.upArrow ? -1 : 1;
+          const next = (extendPresetIndex + delta + EXTENSION_PRESETS.length) % EXTENSION_PRESETS.length;
+          setExtendPresetIndex(next);
+          setExtendDraft(EXTENSION_PRESETS[next]);
+        }
+        return;
+      }
       if (steeringMode) {
         if (key.escape) {
           setSteeringDraft("");
@@ -233,7 +306,11 @@ export function TuiApp({
         app.exit();
         return;
       }
-      const canSteer = !done && activity.kind !== "finalizing";
+      const canSteer =
+        !done &&
+        activity.kind !== "finalizing" &&
+        activity.kind !== "verifying" &&
+        activity.kind !== "rewriting";
       if (input === "s" && canSteer) {
         setSteeringMode(true);
         return;
@@ -243,6 +320,12 @@ export function TuiApp({
           "Stop all tool use immediately. Write the final research report NOW using the notes you have collected.",
         );
         setConfirmation("Report requested — agent will finalize after the current turn.");
+        return;
+      }
+      if (done && !errorMessage && input === "e") {
+        setExtendPresetIndex(0);
+        setExtendDraft(EXTENSION_PRESETS[0]);
+        setExtendMode(true);
         return;
       }
       if (done && (key.return || input === "q")) {
@@ -312,7 +395,7 @@ export function TuiApp({
         ) : (
           activityLog.slice(-ACTIVITY_VISIBLE).map((entry, i) => (
             <Box key={`${entry.ts}-${i}`} flexDirection="row">
-              <Text color="gray">{formatElapsed(entry.ts).padStart(5, " ")} </Text>
+              <Text color="gray">{formatRelativeOffset(entry.ts).padStart(7, " ")} </Text>
               <Text color={entry.isError ? "red" : "cyan"}>{toolLabel(entry.toolName)}</Text>
               {entry.argSummary.length > 0 && (
                 <Text color="gray">{" "}{entry.argSummary}</Text>
@@ -337,6 +420,10 @@ export function TuiApp({
             <Text color="gray">thinking…</Text>
           ) : activity.kind === "finalizing" ? (
             <Text color="gray">finalizing…</Text>
+          ) : activity.kind === "verifying" ? (
+            <Text color="yellow">verifying citations…</Text>
+          ) : activity.kind === "rewriting" ? (
+            <Text color="yellow">rewriting report (citation fix)…</Text>
           ) : done ? (
             <Text color="green">complete — press enter to exit</Text>
           ) : (
@@ -371,6 +458,13 @@ export function TuiApp({
             {thinkingText.replace(/\s+/g, " ").trim()}
           </Text>
         )}
+        {verification && (
+          <Text color={verification.willRewrite ? "yellow" : "green"}>
+            verify #{verification.attempt}: {verification.supported}/{verification.total}{" "}
+            supported ({Math.round(verification.passRate * 100)}%)
+            {verification.willRewrite ? " — rewriting" : " — passed"}
+          </Text>
+        )}
         {errorMessage && (
           <Text color="red">error: {errorMessage}</Text>
         )}
@@ -380,7 +474,29 @@ export function TuiApp({
       </Box>
 
       {/* Steering input or help */}
-      {steeringMode ? (
+      {extendMode ? (
+        <Box borderStyle="round" borderColor="yellow" paddingX={1} flexDirection="column">
+          <Text color="yellow" bold>extend research (up/down presets, enter to start, esc to cancel)</Text>
+          <Box flexDirection="row">
+            <Text color="cyan">{"> "}</Text>
+            <TextInput
+              value={extendDraft}
+              onChange={setExtendDraft}
+              onSubmit={(value) => {
+                const trimmed = value.trim();
+                onExtend?.(
+                  trimmed.length > 0
+                    ? trimmed
+                    : EXTENSION_PRESETS[0],
+                );
+                setExtendDraft("");
+                setExtendMode(false);
+                app.exit();
+              }}
+            />
+          </Box>
+        </Box>
+      ) : steeringMode ? (
         <Box borderStyle="round" borderColor="yellow" paddingX={1} flexDirection="column">
           <Text color="yellow" bold>steer the agent (enter to send, esc to cancel)</Text>
           <Box flexDirection="row">
@@ -404,9 +520,15 @@ export function TuiApp({
         <Box paddingX={1}>
           <Text color="gray">
             {done
-              ? "[enter] exit  [q] quit"
+              ? errorMessage
+                ? "[enter] exit  [q] quit"
+                : "[e] extend research  [enter] exit  [q] quit"
               : activity.kind === "finalizing"
               ? "finalizing task…"
+              : activity.kind === "verifying"
+              ? "verifying citations… [q] quit"
+              : activity.kind === "rewriting"
+              ? "rewriting (citation fix)… [q] quit"
               : "[s] steer  [r] write report now  [q] quit"}
           </Text>
         </Box>

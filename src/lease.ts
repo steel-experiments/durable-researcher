@@ -101,6 +101,194 @@ export type ClearResult = {
   lease: LeaseInfo | null;
 };
 
+export type OrphanCandidate = {
+  taskId: string;
+  runId: string;
+  claimedBy: string | null;
+  claimExpiresAt: Date | null;
+};
+
+export type OrphanReapResult = {
+  taskId: string;
+  runId: string;
+  reaped: boolean;
+  /** Why we did (or did not) reap this orphan. */
+  reason: "holder-dead" | "different-host" | "holder-alive" | "no-lease" | "error";
+  error?: string;
+};
+
+/**
+ * List running-task rows whose lease has already expired. Inspect-only — does not
+ * mutate state. The reap pass narrows these candidates down by holder host + PID.
+ */
+export async function listOrphanCandidates(
+  queueName: string,
+): Promise<OrphanCandidate[]> {
+  const pool = getDbPool();
+  const runsTable = quoteIdent(`r_${queueName}`);
+  const tasksTable = quoteIdent(`t_${queueName}`);
+  try {
+    const result = await pool.query(
+      `SELECT r.task_id::text AS task_id,
+              r.run_id::text  AS run_id,
+              r.claimed_by    AS claimed_by,
+              r.claim_expires_at AS claim_expires_at
+         FROM absurd.${runsTable} r
+         JOIN absurd.${tasksTable} t ON t.task_id = r.task_id
+        WHERE r.state = 'running'
+          AND t.state = 'running'
+          AND r.claim_expires_at IS NOT NULL
+          AND r.claim_expires_at < now()`,
+    );
+    return (result.rows as Array<{
+      task_id: string;
+      run_id: string;
+      claimed_by: string | null;
+      claim_expires_at: Date | null;
+    }>).map((row) => ({
+      taskId: row.task_id,
+      runId: row.run_id,
+      claimedBy: row.claimed_by,
+      claimExpiresAt: row.claim_expires_at,
+    }));
+  } catch (err) {
+    // Missing per-queue table (e.g. queue dropped) — treat as no orphans.
+    if ((err as { code?: string }).code === "42P01") return [];
+    throw err;
+  }
+}
+
+/**
+ * Reap orphaned running tasks whose worker died without releasing the lease. A task is
+ * orphaned when its lease has expired AND the holder process (on this host) is dead.
+ * Failed reap candidates (holder on another host, or holder still alive) are skipped.
+ *
+ * Marks both the run row and the task row as `failed` so subsequent `--cleanup` removes
+ * them. Without this sweep, a worker that crashes leaves the task forever stuck in
+ * `state='running'` (the lease-clear in clearStaleLease only fires on `--resume`).
+ */
+export async function reapOrphanedTasks(
+  queueName: string,
+): Promise<OrphanReapResult[]> {
+  const candidates = await listOrphanCandidates(queueName);
+  if (candidates.length === 0) return [];
+
+  const pool = getDbPool();
+  const runsTable = quoteIdent(`r_${queueName}`);
+  const tasksTable = quoteIdent(`t_${queueName}`);
+  const ourHost = os.hostname();
+  const results: OrphanReapResult[] = [];
+
+  for (const candidate of candidates) {
+    const holder = parseWorkerId(candidate.claimedBy);
+    if (!candidate.claimedBy || !holder) {
+      results.push({
+        taskId: candidate.taskId,
+        runId: candidate.runId,
+        reaped: false,
+        reason: "no-lease",
+      });
+      continue;
+    }
+    if (holder.host !== ourHost) {
+      results.push({
+        taskId: candidate.taskId,
+        runId: candidate.runId,
+        reaped: false,
+        reason: "different-host",
+      });
+      continue;
+    }
+    if (!isPidDead(holder.pid)) {
+      results.push({
+        taskId: candidate.taskId,
+        runId: candidate.runId,
+        reaped: false,
+        reason: "holder-alive",
+      });
+      continue;
+    }
+
+    // Atomicity matters: if the run UPDATE commits but the task UPDATE fails
+    // (network blip, pool timeout), the listOrphanCandidates JOIN — which
+    // requires BOTH rows in state='running' — will never re-list this task,
+    // permanently stranding it. Run both UPDATEs inside one transaction.
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `UPDATE absurd.${runsTable}
+            SET state = 'failed',
+                failed_at = now(),
+                claim_expires_at = now() - interval '1 second',
+                failure_reason = $2::jsonb
+          WHERE run_id = $1 AND state = 'running'`,
+        [candidate.runId, JSON.stringify({ kind: "orphaned", reason: "worker died without releasing lease" })],
+      );
+      await client.query(
+        `UPDATE absurd.${tasksTable}
+            SET state = 'failed'
+          WHERE task_id = $1 AND state = 'running'`,
+        [candidate.taskId],
+      );
+      await client.query("COMMIT");
+      results.push({
+        taskId: candidate.taskId,
+        runId: candidate.runId,
+        reaped: true,
+        reason: "holder-dead",
+      });
+    } catch (err) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        // Connection may already be in an aborted state — ignore.
+      }
+      results.push({
+        taskId: candidate.taskId,
+        runId: candidate.runId,
+        reaped: false,
+        reason: "error",
+        error: (err as Error).message,
+      });
+    } finally {
+      client.release();
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Sweep every Absurd queue for orphaned running tasks and reap them. Used at CLI
+ * startup so a fresh run doesn't leave dead-worker tasks behind from earlier sessions.
+ */
+export async function reapOrphanedTasksAllQueues(): Promise<OrphanReapResult[]> {
+  const pool = getDbPool();
+  let queues: string[];
+  try {
+    const result = await pool.query<{ queue_name: string }>(
+      `SELECT queue_name FROM absurd.list_queues()`,
+    );
+    queues = result.rows.map((row) => row.queue_name);
+  } catch (err) {
+    // No Absurd schema yet — nothing to sweep.
+    if ((err as { code?: string }).code === "42P01") return [];
+    throw err;
+  }
+
+  const all: OrphanReapResult[] = [];
+  for (const queue of queues) {
+    try {
+      const reaped = await reapOrphanedTasks(queue);
+      all.push(...reaped);
+    } catch {
+      // Skip on per-queue failure — best-effort sweep.
+    }
+  }
+  return all;
+}
+
 /**
  * Clear the lease on the running run for `taskId`, but only when it is safe:
  *   - `force: true` — caller takes responsibility

@@ -7,9 +7,15 @@ import type { UsageStats } from "./durable-turns.js";
 /** Discriminated union of all events emitted during a research run. */
 export type ResearchEvent =
   | { type: "turn-start"; turn: number; sources: number; maxSources: number; maxTurns: number }
-  | { type: "tool-start"; toolName: string; argSummary: string }
+  | { type: "tool-start"; toolCallId: string; toolName: string; argSummary: string }
   /** `summary` is a short, human-readable result digest (e.g. "5 new", "3.2KB"). */
-  | { type: "tool-end"; toolName: string; isError: boolean; summary: string }
+  | {
+      type: "tool-end";
+      toolCallId: string;
+      toolName: string;
+      isError: boolean;
+      summary: string;
+    }
   | { type: "browse-added"; url: string }
   | { type: "note-added"; note: ResearchNote; index: number }
   | { type: "agent-text"; delta: string }
@@ -25,6 +31,26 @@ export type ResearchEvent =
   // pane and counters even when no new agent turn runs (e.g. fully-completed
   // task being re-claimed for finalization).
   | { type: "snapshot"; turn: number; sources: number; notes: ResearchNote[] }
+  // Coarse-grained pipeline phase. `research` covers the agent loop. `verifying` runs
+  // claim verification. `rewriting` runs a citation-fix turn. `complete` is terminal.
+  // The TUI uses this to label the AGENT line so the user knows what's happening
+  // between the research turn ending and the report being saved (verify-claims +
+  // rewrite together take minutes; without a phase signal the TUI looks frozen).
+  | {
+      type: "phase";
+      phase: "research" | "verifying" | "rewriting" | "complete";
+    }
+  // Outcome of one citation-verification attempt. `willRewrite` indicates whether the
+  // agent will follow up with a rewrite turn (pass rate < threshold).
+  | {
+      type: "verification-result";
+      attempt: number;
+      passRate: number;
+      supported: number;
+      total: number;
+      threshold: number;
+      willRewrite: boolean;
+    }
   | { type: "task-complete" }
   | { type: "task-error"; message: string };
 

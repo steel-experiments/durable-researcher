@@ -72,11 +72,13 @@ describe("createLoggingPersister event emission", () => {
 
     await persister({
       type: "tool_execution_start",
+      toolCallId: "tc-1",
       toolName: "browse_url",
       args: { url: "https://example.com" },
     } as AgentEvent);
     await persister({
       type: "tool_execution_end",
+      toolCallId: "tc-1",
       toolName: "browse_url",
       isError: false,
     } as AgentEvent);
@@ -84,7 +86,58 @@ describe("createLoggingPersister event emission", () => {
     expect(received.map((e) => e.type)).toEqual(["tool-start", "tool-end"]);
     const start = received[0] as Extract<ResearchEvent, { type: "tool-start" }>;
     expect(start.toolName).toBe("browse_url");
+    expect(start.toolCallId).toBe("tc-1");
     expect(start.argSummary).toContain("example.com");
+    const end = received[1] as Extract<ResearchEvent, { type: "tool-end" }>;
+    expect(end.toolCallId).toBe("tc-1");
+  });
+
+  it("respects initialTurnCount so subsequent persisters keep counting up", async () => {
+    const { ctx } = createCtxStub();
+    const bus = createResearchEventBus();
+    const received: ResearchEvent[] = [];
+    bus.subscribe((e) => received.push(e));
+
+    // Simulate creating a rewrite persister after 2 research turns already happened.
+    const opts = { ...makeOpts(), eventBus: bus, quiet: true, initialTurnCount: 2 };
+    const persister = createLoggingPersister(ctx as any, { id: "h" } as any, opts);
+
+    await persister({ type: "turn_start" } as AgentEvent);
+
+    const turnEvent = received.find(
+      (e): e is Extract<ResearchEvent, { type: "turn-start" }> => e.type === "turn-start",
+    );
+    expect(turnEvent?.turn).toBe(3);
+  });
+
+  it("propagates distinct toolCallIds so parallel calls of the same tool don't collide", async () => {
+    const { ctx } = createCtxStub();
+    const bus = createResearchEventBus();
+    const received: ResearchEvent[] = [];
+    bus.subscribe((e) => received.push(e));
+
+    const opts = { ...makeOpts(), eventBus: bus, quiet: true };
+    const persister = createLoggingPersister(ctx as any, { id: "h" } as any, opts);
+
+    // Five take_note calls in one turn — the original bug was that they all keyed
+    // by toolName="take_note" and overwrote each other's argSummary.
+    for (let i = 1; i <= 3; i++) {
+      await persister({
+        type: "tool_execution_start",
+        toolCallId: `tc-${i}`,
+        toolName: "take_note",
+        args: { title: `Note ${i}` },
+      } as AgentEvent);
+    }
+    const starts = received.filter((e) => e.type === "tool-start") as Array<
+      Extract<ResearchEvent, { type: "tool-start" }>
+    >;
+    expect(starts.map((s) => s.toolCallId)).toEqual(["tc-1", "tc-2", "tc-3"]);
+    expect(starts.map((s) => s.argSummary)).toEqual([
+      '"Note 1"',
+      '"Note 2"',
+      '"Note 3"',
+    ]);
   });
 
   it("emits note-added when a successful take_note toolResult arrives", async () => {

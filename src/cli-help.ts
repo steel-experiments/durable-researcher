@@ -18,6 +18,7 @@ Options:
   --view                          View existing report without re-running
   --list                          List recent research tasks
   --cleanup                       Remove completed/failed/cancelled tasks
+  --show-verification <task-id>   Dump per-claim verdicts for a task's verification checkpoints
   --no-tui                        Disable the live TUI; stream logs instead
 
 Examples:
@@ -28,6 +29,7 @@ Examples:
   bun run src/index.ts --resume 019d6485-29ae-7484-a08e-659bb5a82b8c
   bun run src/index.ts --list
   bun run src/index.ts --cleanup
+  bun run src/index.ts --show-verification 019d6485-29ae-7484-a08e-659bb5a82b8c
 `);
 }
 

@@ -299,4 +299,99 @@ describe("verifyClaims (with stubbed verifier)", () => {
     expect(result.claims).toHaveLength(0);
     expect(result.summary.passRate).toBe(1);
   });
+
+  it("falls back to urlExcerpts when notes have no excerpts for the cited URL", async () => {
+    // This is the citation-attribution failure mode: the model browsed URL A, wrote a
+    // note citing URL B (same content found at both places), then cited URL A in the
+    // report. With urlExcerpts populated from the browse, the verifier should still be
+    // able to ground the claim instead of failing with "No excerpts recorded".
+    const notesCitingB: ResearchNote[] = [
+      {
+        title: "Original Paper",
+        content: "LoRA paper",
+        sourceUrls: ["https://b.com/paper"],
+        confidence: "high",
+        keyExcerpts: ["B-side quote does not mention 0.143%"],
+      },
+    ];
+
+    const reportCitingA = [
+      "Quantum chips dropped to 0.143% error rate [1].",
+      "",
+      "## Sources",
+      "1. arXiv — [a.com](https://a.com/paper)",
+    ].join("\n");
+
+    const urlExcerpts = new Map<string, string[]>([
+      ["https://a.com/paper", ["Logical error rate dropped to 0.143% in Willow chip."]],
+    ]);
+
+    const calls: string[] = [];
+    const verifier: ClaimVerifier = async ({ excerpts }) => {
+      calls.push(excerpts.join("|"));
+      const supported = excerpts.some((e) => e.includes("0.143%"));
+      return { supported, reason: supported ? "found" : "missing" };
+    };
+
+    const result = await verifyClaims({
+      report: reportCitingA,
+      notes: notesCitingB,
+      verifier,
+      urlExcerpts,
+    });
+
+    expect(result.claims).toHaveLength(1);
+    expect(result.claims[0].supported).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("prefers note excerpts over urlExcerpts when both are available", async () => {
+    // When the note itself lists the URL, those excerpts win — they're explicit
+    // attribution by the model rather than implicit fallback from browse.
+    const notesWithA: ResearchNote[] = [
+      {
+        title: "A",
+        content: "from A",
+        sourceUrls: ["https://a.com/p"],
+        confidence: "high",
+        keyExcerpts: ["NOTE_EXCERPT_A"],
+      },
+    ];
+    const urlExcerpts = new Map<string, string[]>([
+      ["https://a.com/p", ["URL_EXCERPT_A"]],
+    ]);
+
+    const seen: string[][] = [];
+    const verifier: ClaimVerifier = async ({ excerpts }) => {
+      seen.push(excerpts);
+      return { supported: true, reason: "ok" };
+    };
+
+    await verifyClaims({
+      report: "Claim [1].\n\n## Sources\n1. — [a](https://a.com/p)\n",
+      notes: notesWithA,
+      verifier,
+      urlExcerpts,
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain("NOTE_EXCERPT_A");
+    expect(seen[0]).not.toContain("URL_EXCERPT_A");
+  });
+
+  it("still marks claims unsupported when neither notes nor urlExcerpts have anything", async () => {
+    const notesEmpty: ResearchNote[] = [];
+    const urlExcerpts = new Map<string, string[]>();
+    const verifier: ClaimVerifier = async () => ({ supported: true, reason: "n/a" });
+
+    const result = await verifyClaims({
+      report: "Claim [1].\n\n## Sources\n1. — [a](https://a.com/p)\n",
+      notes: notesEmpty,
+      verifier,
+      urlExcerpts,
+    });
+
+    expect(result.claims[0].supported).toBe(false);
+    expect(result.claims[0].reason).toMatch(/no excerpts/i);
+  });
 });

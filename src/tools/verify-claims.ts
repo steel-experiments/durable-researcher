@@ -165,6 +165,22 @@ export function excerptsForSource(
   return out;
 }
 
+/**
+ * Return the effective excerpts for `url`: note excerpts when any note explicitly lists
+ * the URL, otherwise the fallback excerpts captured during browsing. The fallback fixes
+ * the citation-attribution gap where a corroborating URL was browsed but never added to
+ * a note's sourceUrls.
+ */
+export function effectiveExcerptsForSource(
+  notes: ResearchNote[],
+  url: string,
+  urlExcerpts?: ReadonlyMap<string, string[]>,
+): string[] {
+  const fromNotes = excerptsForSource(notes, url);
+  if (fromNotes.length > 0) return fromNotes;
+  return urlExcerpts?.get(url) ?? [];
+}
+
 export function computeVerificationSummary(
   claims: ClaimVerification[],
 ): VerificationSummary {
@@ -207,6 +223,13 @@ export async function verifyClaims(opts: {
   verifier?: ClaimVerifier;
   concurrency?: number;
   signal?: AbortSignal;
+  /**
+   * Fallback excerpts keyed by URL, captured during browsing. Used to ground citations
+   * to URLs that no note explicitly lists in its sourceUrls — the citation-attribution
+   * failure mode where the model browsed corroborating URL A but only attached URL B to
+   * the note.
+   */
+  urlExcerpts?: ReadonlyMap<string, string[]>;
 }): Promise<VerificationResult> {
   const verifier = opts.verifier ?? defaultClaimVerifier;
   const concurrency = opts.concurrency ?? VERIFY_CONCURRENCY;
@@ -225,7 +248,7 @@ export async function verifyClaims(opts: {
         reason: `Cited source [${sourceN}] not found in the report's Sources section`,
       } satisfies ClaimVerification;
     }
-    const excerpts = excerptsForSource(opts.notes, url);
+    const excerpts = effectiveExcerptsForSource(opts.notes, url, opts.urlExcerpts);
     if (excerpts.length === 0) {
       return {
         claim: text,

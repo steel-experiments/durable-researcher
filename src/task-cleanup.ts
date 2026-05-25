@@ -2,7 +2,11 @@
 // ABOUTME: and tidy up the browse cache. Uses the shared db-pool.
 
 import { getDbPool } from "./db-pool.js";
-import { cleanupBrowseCache, expireBrowseCache } from "./browse-cache.js";
+import {
+  cleanupBrowseCache,
+  expireBrowseCache,
+  purgeNonMeaningfulCacheEntries,
+} from "./browse-cache.js";
 
 function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, "\"\"")}"`;
@@ -61,10 +65,15 @@ export async function cleanupTasks(): Promise<void> {
 
   console.log(`Cleaned up ${deletedTasks} tasks.`);
 
-  // Clean up browse cache: remove entries for deleted tasks + expire old entries
+  // Clean up browse cache: remove entries for deleted tasks + expire old entries +
+  // drop the dead (bot-blocked / empty / paywalled) rows that bloated the cache before
+  // the agent learned to skip writing them.
   const cacheOrphans = await cleanupBrowseCache();
   const cacheExpired = await expireBrowseCache();
-  if (cacheOrphans > 0 || cacheExpired > 0) {
-    console.log(`Browse cache: ${cacheOrphans} orphaned + ${cacheExpired} expired entries removed.`);
+  const cacheDead = await purgeNonMeaningfulCacheEntries();
+  if (cacheOrphans > 0 || cacheExpired > 0 || cacheDead > 0) {
+    console.log(
+      `Browse cache: ${cacheOrphans} orphaned + ${cacheExpired} expired + ${cacheDead} non-meaningful entries removed.`,
+    );
   }
 }

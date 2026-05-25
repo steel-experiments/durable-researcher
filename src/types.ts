@@ -20,6 +20,8 @@ export type ResearchParams = {
   priorNotes?: ResearchNote[];
   /** Prior source URLs to avoid re-browsing. */
   priorUrls?: string[];
+  /** User instruction for how an extension run should deepen or redirect prior research. */
+  extensionInstruction?: string;
   /** Override the auto-classified task mode. */
   mode?: TaskMode;
 };
@@ -91,6 +93,11 @@ export type VerificationSnapshot = {
   total: number;
   supported: number;
   unsupported: number;
-  /** Whether a rewrite was triggered. */
+  /**
+   * Whether the LATEST verification attempt fell below threshold (i.e. the final
+   * report would still trigger a rewrite if the loop hadn't been capped). False when
+   * the final attempt passed, even if earlier attempts triggered rewrites that
+   * fixed the report.
+   */
   rewriteTriggered: boolean;
 };

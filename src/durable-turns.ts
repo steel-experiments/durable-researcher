@@ -89,6 +89,13 @@ export type LoggingPersisterOptions = {
   usage: UsageStats;
   eventBus?: ResearchEventBus;
   quiet?: boolean;
+  /**
+   * Initial turn count. When the agent invokes a second persister mid-run (e.g. for a
+   * citation-rewrite turn), pass the running total so the turn counter continues from
+   * where it left off instead of resetting to 0. The persister increments this on each
+   * `turn_start`.
+   */
+  initialTurnCount?: number;
 };
 
 /**
@@ -102,7 +109,7 @@ export function createLoggingPersister(
 ): (event: AgentEvent) => Promise<void> {
   const persister = createMessagePersister(ctx, initialHandle);
   const { maxSources, maxTurns, scrapedUrls, usage, eventBus, quiet = false } = options;
-  let turnCount = 0;
+  let turnCount = options.initialTurnCount ?? 0;
   let isStreamingReport = false;
   const noteCalls = new Map<string, ResearchNote>();
   const browseCalls = new Map<string, string>();
@@ -130,7 +137,12 @@ export function createLoggingPersister(
       case "tool_execution_start": {
         const icon = TOOL_ICONS[event.toolName] ?? "[TOOL]";
         const argSummary = formatToolArgs(event.toolName, event.args);
-        eventBus?.emit({ type: "tool-start", toolName: event.toolName, argSummary });
+        eventBus?.emit({
+          type: "tool-start",
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          argSummary,
+        });
         log(`  ${icon} ${event.toolName}(${argSummary})`);
         // Extend lease at start of tool execution — long-running tools like
         // plan_research and prefetch_sources may take minutes without any
@@ -146,6 +158,7 @@ export function createLoggingPersister(
       case "tool_execution_end": {
         eventBus?.emit({
           type: "tool-end",
+          toolCallId: event.toolCallId,
           toolName: event.toolName,
           isError: event.isError,
           summary: summarizeToolResult(event.toolName, event.result, event.isError),

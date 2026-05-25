@@ -9,6 +9,7 @@ import { isContentMeaningful, truncateContent } from "../content.js";
 import { fetchBrowseContent, summarizeContent } from "./browse.js";
 import { getCachedBrowse, setCachedBrowse } from "../browse-cache.js";
 import type { ToolProgress } from "../event-bus.js";
+import { captureExcerptsForUrl, type UrlExcerptStore } from "../url-excerpts.js";
 
 const ScoutParams = Type.Object({
   query: Type.String({ description: "The search query to execute" }),
@@ -44,6 +45,7 @@ export function createScoutTool(
   topic: string,
   taskId?: string,
   progress?: ToolProgress,
+  urlExcerpts?: UrlExcerptStore,
 ): AgentTool<typeof ScoutParams> {
   const report = progress ?? ((text: string) => console.log(text));
   return {
@@ -89,15 +91,19 @@ export function createScoutTool(
               scraped = { content: cached.content, title: cached.title, rawLength: cached.rawLength };
             } else {
               scraped = await fetchBrowseContent(client, result.url);
-              if (taskId) {
-                await setCachedBrowse(taskId, result.url, scraped).catch(() => {});
-              }
             }
 
             scrapedUrls.add(result.url);
             browsedUrls.push(result.url);
 
-            if (!isContentMeaningful(scraped.content)) {
+            const meaningful = isContentMeaningful(scraped.content);
+
+            // Skip caching dead pages — see browse.ts for the rationale.
+            if (!cached && taskId && meaningful) {
+              await setCachedBrowse(taskId, result.url, scraped).catch(() => {});
+            }
+
+            if (!meaningful) {
               browseResults.push({
                 url: result.url,
                 title: scraped.title,
@@ -118,6 +124,11 @@ export function createScoutTool(
                 processedContent = truncateContent(scraped.content, 4000);
               }
             }
+
+            captureExcerptsForUrl(urlExcerpts, result.url, {
+              summary: processedContent,
+              content: scraped.content,
+            });
 
             browseResults.push({
               url: result.url,

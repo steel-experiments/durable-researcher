@@ -32,7 +32,8 @@ import {
 } from "./cli-help.js";
 import { saveReport, printUsage } from "./report-io.js";
 import { cleanupTasks } from "./task-cleanup.js";
-import { clearStaleLease, defaultWorkerId } from "./lease.js";
+import { clearStaleLease, defaultWorkerId, reapOrphanedTasksAllQueues } from "./lease.js";
+import { showVerification } from "./verification-inspector.js";
 
 
 async function main() {
@@ -63,6 +64,33 @@ async function main() {
     process.exit(0);
   }
 
+  // --show-verification <task-id>: dump per-claim verdicts for the task's
+  // verify-claims-attempt-N checkpoints and exit.
+  const showVerifyIdx = args.indexOf("--show-verification");
+  if (showVerifyIdx >= 0) {
+    const targetId = args[showVerifyIdx + 1];
+    if (!targetId) {
+      console.error("Error: --show-verification requires a task ID.");
+      process.exit(1);
+    }
+    await showVerification(targetId);
+    process.exit(0);
+  }
+
+  // Sweep orphaned running tasks (workers that died without releasing their lease)
+  // before doing anything else. Without this, dead-worker tasks stay state='running'
+  // forever and pollute `--list` output. Best-effort: per-queue failures are swallowed.
+  try {
+    const reaped = await reapOrphanedTasksAllQueues();
+    const actuallyReaped = reaped.filter((r) => r.reaped);
+    if (actuallyReaped.length > 0) {
+      console.log(`Reaped ${actuallyReaped.length} orphaned task(s) from prior runs.`);
+    }
+  } catch {
+    // Schema missing or DB unreachable — proceed; the rest of the CLI will surface
+    // a clearer error if the DB is genuinely down.
+  }
+
   const forceNew = args.includes("--new");
   const forceExtend = args.includes("--extend");
   const forceView = args.includes("--view");
@@ -74,7 +102,13 @@ async function main() {
   let isResume = false;
 
   // Parse flags with values
-  const flagsWithValues = new Set(["--depth", "--max-sources", "--resume", "--model"]);
+  const flagsWithValues = new Set([
+    "--depth",
+    "--max-sources",
+    "--resume",
+    "--model",
+    "--show-verification",
+  ]);
   const skipNext = new Set<number>();
   args.forEach((a, i) => {
     if (flagsWithValues.has(a)) skipNext.add(i + 1);
@@ -358,202 +392,244 @@ async function main() {
     process.exit(1);
   }
 
-  let tuiHandle: ReturnType<typeof runTui> | undefined;
-  if (useTui && eventBus && steeringQueue) {
-    tuiHandle = runTui({
-      topic: liveTopic,
-      maxSources,
-      modelLabel,
-      bus: eventBus,
-      steeringQueue,
-    });
-    // Surface what the CLI is doing *before* the worker claims — otherwise the
-    // TUI sits idle while Absurd polls and waits for any stale lease to expire.
-    eventBus.emit({
-      type: "agent-status",
-      text: isResume ? `Starting worker — claiming task ${taskID?.slice(0, 8)}...` : "Starting worker...",
-    });
-  } else {
-    console.log(`Starting worker...\n`);
-  }
-
-  // On resume: if the prior process exited without releasing its lease, the next
-  // worker would otherwise block for up to claimTimeout. Detect a lease held by
-  // a dead PID on this host and clear it before startWorker polls.
-  const workerId = defaultWorkerId();
-  if (isResume) {
-    try {
-      const clear = await clearStaleLease(taskID!, taskQueue);
-      if (clear.cleared) {
-        const msg = `Cleared stale lease (holder: ${clear.lease?.claimedBy ?? "?"}, reason: ${clear.reason}).`;
-        if (eventBus) eventBus.emit({ type: "agent-status", text: msg });
-        else console.log(msg);
-      } else if (clear.reason === "holder-alive" && clear.lease?.secondsRemaining) {
-        const msg = `Another worker still holds the lease (${clear.lease.claimedBy}); waiting up to ${clear.lease.secondsRemaining}s for it to expire.`;
-        if (eventBus) eventBus.emit({ type: "agent-status", text: msg });
-        else console.log(msg);
-      } else if (clear.reason === "different-host" && clear.lease?.secondsRemaining) {
-        const msg = `Lease held by another host (${clear.lease.claimedBy}); waiting up to ${clear.lease.secondsRemaining}s for it to expire.`;
-        if (eventBus) eventBus.emit({ type: "agent-status", text: msg });
-        else console.log(msg);
-      }
-    } catch (err) {
-      // Non-fatal — fall through to normal worker claim polling.
-      const msg = `Could not check stale lease: ${(err as Error).message}`;
-      if (eventBus) eventBus.emit({ type: "agent-status", text: msg });
-      else console.warn(msg);
-    }
-  }
-
-  // Release our own lease on graceful exit so the next resume is immediate.
-  // Idempotent: only fires once even if multiple signals arrive.
-  let releasing = false;
-  const releaseOwnLease = async (): Promise<void> => {
-    if (releasing) return;
-    releasing = true;
-    try {
-      await clearStaleLease(taskID!, taskQueue, {
-        force: true,
-        currentWorkerId: workerId,
+  while (taskID) {
+    let extensionInstruction: string | undefined;
+    let tuiHandle: ReturnType<typeof runTui> | undefined;
+    if (useTui && eventBus && steeringQueue) {
+      tuiHandle = runTui({
+        topic: liveTopic,
+        maxSources,
+        modelLabel,
+        bus: eventBus,
+        steeringQueue,
+        onExtend: (instruction) => {
+          extensionInstruction = instruction;
+        },
       });
-    } catch {
-      // Best-effort — if release fails, the lease will expire on its own.
-    }
-  };
-
-  // SIGINT/SIGTERM: release the lease and exit without waiting on the in-flight
-  // task. The task is durable; the next resume rebuilds from checkpoints.
-  const onSignal = (signal: NodeJS.Signals) => {
-    // Async release, then exit. Don't await worker.close() — it would block on
-    // the running task.
-    void releaseOwnLease().finally(() => {
-      if (!useTui) console.log(`\nReceived ${signal}. Task ${taskID} can be resumed.`);
-      process.exit(0);
-    });
-  };
-  process.once("SIGINT", onSignal);
-  process.once("SIGTERM", onSignal);
-
-  const worker = await app.startWorker({
-    concurrency: 1,
-    claimTimeout: 600,
-    workerId,
-    onError: (err) => {
-      eventBus?.emit({ type: "task-error", message: err.message });
-      if (!useTui) console.error("Worker error:", err.message);
-    },
-  });
-
-  // In TUI mode: render the TUI and race the task result against the user quitting.
-  let result;
-  if (tuiHandle && eventBus) {
-    const taskPromise = app.awaitTaskResult(taskID, {
-      queue: taskQueue,
-      timeout: getMaxDurationSeconds() + 30,
-    });
-
-    const winner = await Promise.race([
-      taskPromise.then((r) => ({ kind: "task" as const, result: r })),
-      tuiHandle.waitForExit.then(() => ({ kind: "tui-exit" as const })),
-    ]);
-
-    if (winner.kind === "tui-exit") {
-      // Don't kill the task — Absurd checkpoints survive process exit.
-      // Release our own lease first so the next resume claims immediately
-      // instead of waiting up to claimTimeout for the lease to expire.
-      await releaseOwnLease();
-      console.log(
-        `\nQuit requested. Task ${taskID} can be resumed:\n  bun run src/index.ts --resume ${taskID}`,
-      );
-      // Don't await worker.close() — it would block on the in-flight task.
-      // The lease is already released; let process.exit tear down the worker.
-      process.exit(0);
+      // Surface what the CLI is doing *before* the worker claims — otherwise the
+      // TUI sits idle while Absurd polls and waits for any stale lease to expire.
+      eventBus.emit({
+        type: "agent-status",
+        text: isResume ? `Starting worker — claiming task ${taskID.slice(0, 8)}...` : "Starting worker...",
+      });
+    } else {
+      console.log(`Starting worker...\n`);
     }
 
-    result = winner.result;
-    if (result.state === "completed") {
-      eventBus.emit({ type: "task-complete" });
-    } else if (result.state === "failed") {
-      const failureText =
-        typeof result.failure === "string"
-          ? result.failure
-          : result.failure
-          ? JSON.stringify(result.failure)
-          : "task failed";
-      eventBus.emit({ type: "task-error", message: failureText });
+    // On resume: if the prior process exited without releasing its lease, the next
+    // worker would otherwise block for up to claimTimeout. Detect a lease held by
+    // a dead PID on this host and clear it before startWorker polls.
+    const workerId = defaultWorkerId();
+    if (isResume) {
+      try {
+        const clear = await clearStaleLease(taskID, taskQueue);
+        if (clear.cleared) {
+          const msg = `Cleared stale lease (holder: ${clear.lease?.claimedBy ?? "?"}, reason: ${clear.reason}).`;
+          if (eventBus) eventBus.emit({ type: "agent-status", text: msg });
+          else console.log(msg);
+        } else if (clear.reason === "holder-alive" && clear.lease?.secondsRemaining) {
+          const msg = `Another worker still holds the lease (${clear.lease.claimedBy}); waiting up to ${clear.lease.secondsRemaining}s for it to expire.`;
+          if (eventBus) eventBus.emit({ type: "agent-status", text: msg });
+          else console.log(msg);
+        } else if (clear.reason === "different-host" && clear.lease?.secondsRemaining) {
+          const msg = `Lease held by another host (${clear.lease.claimedBy}); waiting up to ${clear.lease.secondsRemaining}s for it to expire.`;
+          if (eventBus) eventBus.emit({ type: "agent-status", text: msg });
+          else console.log(msg);
+        }
+      } catch (err) {
+        // Non-fatal — fall through to normal worker claim polling.
+        const msg = `Could not check stale lease: ${(err as Error).message}`;
+        if (eventBus) eventBus.emit({ type: "agent-status", text: msg });
+        else console.warn(msg);
+      }
     }
-    await tuiHandle.waitForExit;
-  } else {
-    result = await app.awaitTaskResult(taskID, {
-      queue: taskQueue,
-      timeout: getMaxDurationSeconds() + 30, // extra buffer beyond task max duration
-    });
-  }
+    eventBus?.emit({ type: "agent-status", text: "Starting worker claim..." });
 
-  if (result.state === "completed" && result.result) {
-    const research = result.result as unknown as {
-      topic: string;
-      report: string;
-      sources: { title: string; url: string }[];
-      notes: ResearchNote[];
-      messages: AgentMessage[];
+    // Release our own lease on graceful exit so the next resume is immediate.
+    // Idempotent: only fires once even if multiple signals arrive.
+    let releasing = false;
+    const releaseOwnLease = async (): Promise<void> => {
+      if (releasing) return;
+      releasing = true;
+      try {
+        await clearStaleLease(taskID!, taskQueue, {
+          force: true,
+          currentWorkerId: workerId,
+        });
+      } catch {
+        // Best-effort — if release fails, the lease will expire on its own.
+      }
     };
 
-    // Print report if it wasn't already streamed by the logging persister.
-    // On timeout, the report is built from notes and was never streamed.
-    // On resume, the agent produced the report in a previous run.
-    // In TUI mode, the persister is quiet so the report needs to be printed here.
-    // On a normal fresh run with logs, the persister already printed it.
-    if (research.report) {
-      const isPartialReport = research.report.startsWith("[Partial results");
-      if (useTui || isResume || isPartialReport) {
-        console.log("\n" + "=".repeat(80));
-        console.log("RESEARCH REPORT");
-        console.log("=".repeat(80) + "\n");
-        console.log(research.report);
+    // SIGINT/SIGTERM: release the lease and exit without waiting on the in-flight
+    // task. The task is durable; the next resume rebuilds from checkpoints.
+    const onSignal = (signal: NodeJS.Signals) => {
+      // Async release, then exit. Don't await worker.close() — it would block on
+      // the running task.
+      void releaseOwnLease().finally(() => {
+        if (!useTui) console.log(`\nReceived ${signal}. Task ${taskID} can be resumed.`);
+        process.exit(0);
+      });
+    };
+    process.once("SIGINT", onSignal);
+    process.once("SIGTERM", onSignal);
+
+    const worker = await app.startWorker({
+      concurrency: 1,
+      claimTimeout: 600,
+      workerId,
+      onError: (err) => {
+        eventBus?.emit({ type: "task-error", message: err.message });
+        if (!useTui) console.error("Worker error:", err.message);
+      },
+    });
+
+    // In TUI mode: render the TUI and race the task result against the user quitting.
+    let result;
+    if (tuiHandle && eventBus) {
+      const taskPromise = app.awaitTaskResult(taskID, {
+        queue: taskQueue,
+        timeout: getMaxDurationSeconds() + 30,
+      });
+
+      const winner = await Promise.race([
+        taskPromise.then((r) => ({ kind: "task" as const, result: r })),
+        tuiHandle.waitForExit.then(() => ({ kind: "tui-exit" as const })),
+      ]);
+
+      if (winner.kind === "tui-exit") {
+        // Don't kill the task — Absurd checkpoints survive process exit.
+        // Release our own lease first so the next resume claims immediately
+        // instead of waiting up to claimTimeout for the lease to expire.
+        await releaseOwnLease();
+        console.log(
+          `\nQuit requested. Task ${taskID} can be resumed:\n  bun run src/index.ts --resume ${taskID}`,
+        );
+        // Don't await worker.close() — it would block on the in-flight task.
+        // The lease is already released; let process.exit tear down the worker.
+        process.exit(0);
       }
-      const filepath = saveReport(research.topic, research.report);
-      console.log(`\nReport saved to: ${filepath}`);
-    }
 
-    console.log("-".repeat(80));
-    console.log(`Sources consulted: ${research.sources.length}`);
-
-    // Print usage stats
-    const usage = (app as any).getLastUsage?.() as UsageStats | undefined;
-    if (usage && (usage.inputTokens > 0 || usage.outputTokens > 0)) {
-      printUsage(usage);
-    }
-
-    await worker.close();
-
-    // Offer follow-up questions if we have messages
-    if (research.messages?.length > 0 && process.stdin.isTTY) {
-      const { scrapedUrls } = rebuildStateFromMessages(research.messages);
-      await runFollowUp(
-        research.messages,
-        research.topic,
-        research.notes ?? [],
-        scrapedUrls,
-        appOptions.model,
-      );
-    }
-
-    await app.close();
-  } else {
-    if (result.state === "failed") {
-      console.error("\nResearch task failed:", result.failure);
+      result = winner.result;
+      if (result.state === "completed") {
+        eventBus.emit({ type: "task-complete" });
+      } else if (result.state === "failed") {
+        const failureText =
+          typeof result.failure === "string"
+            ? result.failure
+            : result.failure
+            ? JSON.stringify(result.failure)
+            : "task failed";
+        eventBus.emit({ type: "task-error", message: failureText });
+      } else {
+        eventBus.emit({ type: "task-error", message: `Task ${result.state}.` });
+      }
+      await tuiHandle.waitForExit;
     } else {
-      console.error("\nUnexpected task state:", result.state);
+      result = await app.awaitTaskResult(taskID, {
+        queue: taskQueue,
+        timeout: getMaxDurationSeconds() + 30, // extra buffer beyond task max duration
+      });
     }
 
-    const usage = (app as any).getLastUsage?.() as UsageStats | undefined;
-    if (usage && (usage.inputTokens > 0 || usage.outputTokens > 0)) {
-      printUsage(usage);
-    }
+    process.removeListener("SIGINT", onSignal);
+    process.removeListener("SIGTERM", onSignal);
 
-    await worker.close();
-    await app.close();
+    if (result.state === "completed" && result.result) {
+      const research = result.result as unknown as {
+        topic: string;
+        report: string;
+        sources: { title: string; url: string }[];
+        notes: ResearchNote[];
+        messages: AgentMessage[];
+      };
+
+      // Print report if it wasn't already streamed by the logging persister.
+      // On timeout, the report is built from notes and was never streamed.
+      // On resume, the agent produced the report in a previous run.
+      // In TUI mode, the persister is quiet so the report needs to be printed here.
+      // On a normal fresh run with logs, the persister already printed it.
+      if (research.report) {
+        const isPartialReport = research.report.startsWith("[Partial results");
+        if (useTui || isResume || isPartialReport) {
+          console.log("\n" + "=".repeat(80));
+          console.log("RESEARCH REPORT");
+          console.log("=".repeat(80) + "\n");
+          console.log(research.report);
+        }
+        const filepath = saveReport(research.topic, research.report);
+        console.log(`\nReport saved to: ${filepath}`);
+      }
+
+      console.log("-".repeat(80));
+      console.log(`Sources consulted: ${research.sources.length}`);
+
+      // Print usage stats
+      const usage = (app as any).getLastUsage?.() as UsageStats | undefined;
+      if (usage && (usage.inputTokens > 0 || usage.outputTokens > 0)) {
+        printUsage(usage);
+      }
+
+      await worker.close();
+
+      if (extensionInstruction && useTui) {
+        const priorUrls = research.sources?.map((s) => s.url) ?? [];
+        const params: ResearchParams = {
+          topic: research.topic,
+          depth,
+          maxSources,
+          priorNotes: research.notes ?? [],
+          priorUrls,
+          extensionInstruction,
+        };
+
+        taskQueue = createIsolatedQueueName();
+        await app.close();
+        app = createResearchApp({ ...appOptions, queueName: taskQueue });
+        await app.createQueue();
+
+        console.log(
+          `\nExtending research with ${params.priorNotes?.length ?? 0} prior notes, ${priorUrls.length} prior sources...`,
+        );
+        console.log(`Instruction: ${extensionInstruction}\n`);
+        const spawned = await app.spawn("research", params);
+        taskID = spawned.taskID;
+        liveTopic = research.topic;
+        isResume = false;
+        console.log(`Task spawned: ${taskID}`);
+        continue;
+      }
+
+      // Offer follow-up questions if we have messages
+      if (research.messages?.length > 0 && process.stdin.isTTY) {
+        const { scrapedUrls } = rebuildStateFromMessages(research.messages);
+        await runFollowUp(
+          research.messages,
+          research.topic,
+          research.notes ?? [],
+          scrapedUrls,
+          appOptions.model,
+        );
+      }
+
+      await app.close();
+      break;
+    } else {
+      if (result.state === "failed") {
+        console.error("\nResearch task failed:", result.failure);
+      } else {
+        console.error("\nUnexpected task state:", result.state);
+      }
+
+      const usage = (app as any).getLastUsage?.() as UsageStats | undefined;
+      if (usage && (usage.inputTokens > 0 || usage.outputTokens > 0)) {
+        printUsage(usage);
+      }
+
+      await worker.close();
+      await app.close();
+      break;
+    }
   }
 }
 
