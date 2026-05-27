@@ -55,6 +55,49 @@ describe("loadTemplate", () => {
     expect(result).toContain("AI safety");
     expect(result).toContain("relevant to the research topic");
   });
+
+  it("renders the survey-mode system prompt with enumeration tables and gap/chase guidance", async () => {
+    const result = await loadTemplate("system", {
+      topic: "state of agent steering",
+      depth: "deep",
+      mode: "survey",
+      maxSources: 80,
+      maxIterations: 10,
+    });
+
+    expect(result).toContain("Survey-mode template");
+    expect(result).toContain("Systems / Tools Surveyed");
+    expect(result).toContain("Benchmarks / Datasets");
+    expect(result).toContain("gap_analysis");
+    expect(result).toContain("chase_references");
+    expect(result).toContain("find_entity");
+  });
+
+  it("renders the synthesis-mode system prompt without survey tables", async () => {
+    const result = await loadTemplate("system", {
+      topic: "x",
+      depth: "standard",
+      mode: "synthesis",
+      maxSources: 50,
+      maxIterations: 5,
+    });
+
+    expect(result).toContain("Synthesis-mode template");
+    expect(result).not.toContain("Systems / Tools Surveyed");
+    // synthesis still gets optional gap analysis guidance
+    expect(result).toContain("gap_analysis");
+  });
+
+  it("renders the survey-mode plan prompt with the enumeration lens block", async () => {
+    const result = await loadTemplate("plan", {
+      maxQueries: "12",
+      depth: "deep",
+      mode: "survey",
+    });
+
+    expect(result).toContain("Survey mode");
+    expect(result.toLowerCase()).toContain("enumeration");
+  });
 });
 
 describe("buildResult source titles", () => {
@@ -257,14 +300,26 @@ describe("resolveCacheKey", () => {
 
 describe("DEPTH_CONFIG", () => {
   it("has correct iteration limits", () => {
-    expect(DEPTH_CONFIG.quick.maxIterations).toBe(1);
-    expect(DEPTH_CONFIG.standard.maxIterations).toBe(3);
-    expect(DEPTH_CONFIG.deep.maxIterations).toBe(5);
+    expect(DEPTH_CONFIG.quick.maxIterations).toBe(2);
+    expect(DEPTH_CONFIG.standard.maxIterations).toBe(5);
+    expect(DEPTH_CONFIG.deep.maxIterations).toBe(10);
   });
 
   it("has correct initial query counts", () => {
-    expect(DEPTH_CONFIG.quick.initialQueries).toBe(3);
-    expect(DEPTH_CONFIG.standard.initialQueries).toBe(5);
-    expect(DEPTH_CONFIG.deep.initialQueries).toBe(8);
+    expect(DEPTH_CONFIG.quick.initialQueries).toBe(4);
+    expect(DEPTH_CONFIG.standard.initialQueries).toBe(7);
+    expect(DEPTH_CONFIG.deep.initialQueries).toBe(12);
+  });
+
+  it("has source ceilings that scale with depth", () => {
+    expect(DEPTH_CONFIG.quick.maxSources).toBe(20);
+    expect(DEPTH_CONFIG.standard.maxSources).toBe(50);
+    expect(DEPTH_CONFIG.deep.maxSources).toBe(80);
+  });
+
+  it("budgets gap-fill passes that scale with depth", () => {
+    expect(DEPTH_CONFIG.quick.gapPasses).toBe(0);
+    expect(DEPTH_CONFIG.standard.gapPasses).toBe(1);
+    expect(DEPTH_CONFIG.deep.gapPasses).toBe(2);
   });
 });

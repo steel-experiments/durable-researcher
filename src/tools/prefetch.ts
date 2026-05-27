@@ -81,7 +81,9 @@ export function createPrefetchTool(
     execute: async (_toolCallId, params) => {
       const { queries } = params;
       const semaphore = createSemaphore(MAX_CONCURRENT_BROWSES);
-      const SMART_SUMMARIZE_THRESHOLD = 4000;
+      // Keep in sync with browse.ts / scout.ts — short content goes through raw to
+      // preserve specific data, citations, and named entities.
+      const SMART_SUMMARIZE_THRESHOLD = 10000;
 
       // Track budget across all queries
       let totalBrowsed = 0;

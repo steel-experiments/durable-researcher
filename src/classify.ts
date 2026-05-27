@@ -4,31 +4,44 @@
 import { completeSimple, getEnvApiKey } from "@mariozechner/pi-ai";
 import { getUtilityModel, getUtilityReasoning } from "./config.js";
 
-/** Three task modes the research loop adapts to. */
-export const TASK_MODES = ["lookup", "extraction", "synthesis"] as const;
+/** Task modes the research loop adapts to. */
+export const TASK_MODES = ["lookup", "extraction", "synthesis", "survey"] as const;
 export type TaskMode = (typeof TASK_MODES)[number];
 
 const TASK_MODE_SET = new Set<string>(TASK_MODES);
 
 const CLASSIFY_TIMEOUT_MS = 20_000;
 
+/**
+ * Survey mode is gated until it's been validated against real prompts.
+ * Set RESEARCHER_SURVEY_MODE_ENABLED=true to let the classifier emit / upgrade to survey.
+ */
+export function isSurveyModeEnabled(): boolean {
+  return process.env.RESEARCHER_SURVEY_MODE_ENABLED === "true";
+}
+
 /** Signature for the classifier LLM call. Injectable so tests can avoid real LLM calls. */
 export type ModeClassifier = (topic: string) => Promise<string | null>;
 
 const CLASSIFY_SYSTEM = [
-  "You classify a research request into one of three modes.",
+  "You classify a research request into one of four modes.",
   "",
   "  lookup     — the user wants one specific fact (a number, name, date, entity).",
   "  extraction — the user wants several exact values from a primary source (filing, dataset, paper, report).",
-  "  synthesis  — the user wants a structured analysis, comparison, plan, or overview.",
+  "  survey     — the user wants exhaustive enumeration of a research space: a literature review, 'state of X',",
+  "               landscape, benchmark survey, or comparison across many systems / papers / benchmarks.",
+  "  synthesis  — the user wants a structured analysis, argument, plan, or overview of a focused question.",
   "",
   "Rules:",
   "  • If the prompt names a single entity and asks 'what is / when / who / how much / X = ?', use lookup.",
   "  • If the prompt names a document/dataset and asks for tabular/numeric data, use extraction.",
-  "  • If the prompt asks for explanation, comparison, advice, or a report, use synthesis.",
+  "  • If the prompt asks to 'identify all / survey / review the landscape of / what benchmarks-systems-papers exist'",
+  "    across a field, use survey. Survey wants breadth: many named items enumerated, not one focused argument.",
+  "  • If the prompt asks for explanation, comparison of a few things, advice, or a focused report, use synthesis.",
   "  • When uncertain between extraction and synthesis, prefer extraction if numbers are central.",
+  "  • When uncertain between survey and synthesis, prefer survey if the prompt asks to enumerate a whole field.",
   "",
-  "Output exactly one word on a single line: lookup | extraction | synthesis. No explanation, no JSON.",
+  "Output exactly one word on a single line: lookup | extraction | survey | synthesis. No explanation, no JSON.",
 ].join("\n");
 
 /** Default classifier — calls the utility LLM with a strict single-word output prompt. */
@@ -67,8 +80,42 @@ export function parseClassification(raw: string | null | undefined): TaskMode | 
   const trimmed = raw.trim().toLowerCase();
   if (TASK_MODE_SET.has(trimmed)) return trimmed as TaskMode;
   // Look for the first canonical word anywhere in the response.
-  const match = trimmed.match(/\b(lookup|extraction|synthesis)\b/);
+  const match = trimmed.match(/\b(lookup|extraction|synthesis|survey)\b/);
   return match ? (match[1] as TaskMode) : null;
+}
+
+/**
+ * Heuristic: does this prompt clearly ask for an exhaustive survey of a research
+ * space rather than a focused synthesis? Two-signal rule, mirroring the extraction
+ * heuristic: a survey-intent verb (survey / review / landscape / identify-all /
+ * state-of) PLUS an enumeration target (benchmarks, systems, papers, literature,
+ * tools, methods, frameworks, metrics, datasets, approaches).
+ *
+ * Requiring two signals avoids upgrading a focused synthesis prompt that merely
+ * says "review the evidence" or mentions "systems" in passing.
+ */
+export function hasSurveySignals(topic: string): boolean {
+  const t = topic.toLowerCase();
+
+  const surveyVerbs = [
+    "survey", "literature review", "state of the", "state of ",
+    "landscape", "identify relevant", "identify all", "identify the",
+    "what are all", "comprehensive overview", "map the", "taxonomy of",
+    "review of", "review the", "catalog", "enumerate",
+  ];
+  const hasSurveyVerb = surveyVerbs.some((w) => t.includes(w));
+
+  const enumerationTargets = [
+    "benchmark", "benchmarks", "systems", "papers", "literature",
+    "tools", "methods", "frameworks", "metrics", "datasets",
+    "approaches", "techniques", "models", "algorithms", "protocols",
+  ];
+  // Require at least two distinct enumeration targets, OR one target plus an
+  // explicit "and gaps / and metrics" research-space framing. A single target
+  // alone ("review the systems") is too weak.
+  const matchedTargets = enumerationTargets.filter((w) => t.includes(w));
+
+  return hasSurveyVerb && matchedTargets.length >= 2;
 }
 
 /**
@@ -124,12 +171,28 @@ export async function classifyTask(opts: {
   } catch {
     llmMode = null;
   }
-  const baseMode = llmMode ?? "synthesis";
+  let baseMode = llmMode ?? "synthesis";
+
+  // Survey mode is gated. When disabled, never let the LLM's survey verdict
+  // through — fall back to synthesis so behavior is unchanged from before.
+  const surveyEnabled = isSurveyModeEnabled();
+  if (baseMode === "survey" && !surveyEnabled) {
+    baseMode = "synthesis";
+  }
+
   // Heuristic override: if the LLM under-classified to synthesis but the
   // prompt clearly asks for extraction, upgrade. Never override lookup or
   // extraction outright — only push synthesis up to extraction.
   if (baseMode === "synthesis" && hasExtractionSignals(opts.topic)) {
     return "extraction";
   }
+
+  // Heuristic override: push synthesis up to survey when the prompt clearly
+  // asks to enumerate a whole research space (gated). Extraction wins over
+  // survey when both fire, since exact-value extraction is the narrower intent.
+  if (baseMode === "synthesis" && surveyEnabled && hasSurveySignals(opts.topic)) {
+    return "survey";
+  }
+
   return baseMode;
 }

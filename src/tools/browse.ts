@@ -13,6 +13,11 @@ import { getCachedBrowse, setCachedBrowse } from "../browse-cache.js";
 import { isPdfUrl, fetchAndExtractPdf } from "../pdf.js";
 import type { RefinedContent } from "../types.js";
 import { captureExcerptsForUrl, type UrlExcerptStore } from "../url-excerpts.js";
+import {
+  isPaperLikeUrl,
+  extractReferenceCandidates,
+  type ReferenceQueue,
+} from "../reference-queue.js";
 
 const BrowseParams = Type.Object({
   url: Type.String({ description: "The URL to browse and extract content from" }),
@@ -24,10 +29,10 @@ const BrowseParams = Type.Object({
   ),
 });
 
-const SUMMARY_MAX_TOKENS = 500;
+const SUMMARY_MAX_TOKENS = 700;
 
-/** Content shorter than this is returned raw — preserves specific data. */
-const SMART_SUMMARIZE_THRESHOLD = 4000;
+/** Content shorter than this is returned raw — preserves specific data, citations, named entities. */
+const SMART_SUMMARIZE_THRESHOLD = 10000;
 
 export type BrowseContent = {
   content: string;
@@ -56,6 +61,103 @@ export async function fetchBrowseContent(
   return scrapeUrl(client, url);
 }
 
+/** Outcome of browsing a single URL. */
+export type BrowseOneResult = {
+  text: string;
+  title: string;
+  meaningful: boolean;
+  details: Record<string, unknown>;
+};
+
+/**
+ * Scrape one URL, summarize it, capture excerpts, and (when a reference queue is
+ * provided and the page is paper-like) enqueue its citations for later chasing.
+ * Shared by the browse_url tool and chase_references.
+ */
+export async function browseOne(opts: {
+  client: Steel;
+  url: string;
+  topic: string;
+  scrapedUrls: Set<string>;
+  focus?: string;
+  taskId?: string;
+  urlExcerpts?: UrlExcerptStore;
+  referenceQueue?: ReferenceQueue;
+}): Promise<BrowseOneResult> {
+  const { client, url, topic, scrapedUrls, focus, taskId, urlExcerpts, referenceQueue } = opts;
+
+  let content: string;
+  let title: string;
+  let rawLength: number;
+
+  const cached = taskId ? await getCachedBrowse(taskId, url).catch(() => null) : null;
+  if (cached) {
+    content = cached.content;
+    title = cached.title;
+    rawLength = cached.rawLength;
+  } else {
+    const scraped = await fetchBrowseContent(client, url);
+    content = scraped.content;
+    title = scraped.title;
+    rawLength = scraped.rawLength;
+  }
+  scrapedUrls.add(url);
+
+  const meaningful = isContentMeaningful(content);
+
+  // Only cache meaningful content. Caching dead pages (bot blocks, paywalls,
+  // empty responses) just makes resume blind to retries and pollutes the table.
+  if (!cached && taskId && meaningful) {
+    await setCachedBrowse(taskId, url, { title, content, rawLength }).catch(() => {});
+  }
+
+  if (!meaningful) {
+    return {
+      text: `Page "${title}" (${url}) had insufficient content (${rawLength} chars raw). The page may require authentication, be paywalled, or contain mostly non-text content.`,
+      title,
+      meaningful: false,
+      details: { url, title, rawLength, meaningful: false },
+    };
+  }
+
+  // Harvest references from primary sources so chase_references can follow the citation graph.
+  if (referenceQueue && isPaperLikeUrl(url)) {
+    referenceQueue.add(extractReferenceCandidates(content));
+  }
+
+  // Smart summarization: only LLM-summarize long content.
+  // Short pages go through raw to preserve specific data (numbers, quotes).
+  let summary: string;
+  if (content.length <= SMART_SUMMARIZE_THRESHOLD) {
+    summary = content;
+  } else {
+    try {
+      summary = await summarizeContent(content, topic, focus);
+    } catch {
+      summary = truncateContent(content, 4000);
+    }
+  }
+
+  // Stash verbatim excerpts so claim verification can ground citations to this URL
+  // even when the model doesn't list it on a note's sourceUrls.
+  captureExcerptsForUrl(urlExcerpts, url, { summary, content });
+
+  const refined: RefinedContent = {
+    title,
+    url,
+    summary,
+    rawLength,
+    scrapedAt: Date.now(),
+  };
+
+  return {
+    text: `## ${refined.title}\n**Source:** ${refined.url}\n**Raw length:** ${refined.rawLength} chars\n\n${refined.summary}`,
+    title,
+    meaningful: true,
+    details: refined as unknown as Record<string, unknown>,
+  };
+}
+
 /** Create a browse_url tool that scrapes and summarizes page content. */
 export function createBrowseTool(
   client: Steel,
@@ -63,6 +165,7 @@ export function createBrowseTool(
   researchTopic: string,
   taskId?: string,
   urlExcerpts?: UrlExcerptStore,
+  referenceQueue?: ReferenceQueue,
 ): AgentTool<typeof BrowseParams> {
   return {
     name: "browse_url",
@@ -71,81 +174,19 @@ export function createBrowseTool(
       "Navigate to a URL, scrape its content, and return a focused summary. Use the 'focus' parameter to guide what information to extract.",
     parameters: BrowseParams,
     execute: async (_toolCallId, params) => {
-      // Check browse cache first
-      let content: string;
-      let title: string;
-      let rawLength: number;
-
-      const cached = taskId ? await getCachedBrowse(taskId, params.url).catch(() => null) : null;
-      if (cached) {
-        content = cached.content;
-        title = cached.title;
-        rawLength = cached.rawLength;
-      } else {
-        const scraped = await fetchBrowseContent(client, params.url);
-        content = scraped.content;
-        title = scraped.title;
-        rawLength = scraped.rawLength;
-      }
-      scrapedUrls.add(params.url);
-
-      const meaningful = isContentMeaningful(content);
-
-      // Only cache meaningful content. Caching dead pages (bot blocks, paywalls,
-      // empty responses) just makes resume blind to retries and pollutes the table.
-      if (!cached && taskId && meaningful) {
-        await setCachedBrowse(taskId, params.url, { title, content, rawLength }).catch(() => {});
-      }
-
-      if (!meaningful) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Page "${title}" (${params.url}) had insufficient content (${rawLength} chars raw). The page may require authentication, be paywalled, or contain mostly non-text content.`,
-            },
-          ],
-          details: { url: params.url, title, rawLength, meaningful: false },
-        };
-      }
-
-      // Smart summarization: only LLM-summarize long content.
-      // Short pages go through raw to preserve specific data (numbers, quotes).
-      let summary: string;
-      if (content.length <= SMART_SUMMARIZE_THRESHOLD) {
-        summary = content;
-      } else {
-        try {
-          summary = await summarizeContent(
-            content,
-            researchTopic,
-            params.focus,
-          );
-        } catch {
-          summary = truncateContent(content, 4000);
-        }
-      }
-
-      // Stash verbatim excerpts so claim verification can ground citations to this URL
-      // even when the model doesn't list it on a note's sourceUrls.
-      captureExcerptsForUrl(urlExcerpts, params.url, { summary, content });
-
-      const refined: RefinedContent = {
-        title,
+      const result = await browseOne({
+        client,
         url: params.url,
-        summary,
-        rawLength,
-        scrapedAt: Date.now(),
-      };
-
+        topic: researchTopic,
+        scrapedUrls,
+        focus: params.focus,
+        taskId,
+        urlExcerpts,
+        referenceQueue,
+      });
       return {
-        content: [
-          {
-            type: "text" as const,
-            text: `## ${refined.title}\n**Source:** ${refined.url}\n**Raw length:** ${refined.rawLength} chars\n\n${refined.summary}`,
-          },
-        ],
-        details: refined,
+        content: [{ type: "text" as const, text: result.text }],
+        details: result.details,
       };
     },
   };

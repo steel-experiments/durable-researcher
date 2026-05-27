@@ -45,4 +45,14 @@ describe("createEvaluateTool", () => {
     const result = await tool.execute("call-1", {});
     expect(result.content[0].text).toContain("synthesize your report");
   });
+
+  it("emits survey-mode gating with breadth thresholds", async () => {
+    const tool = createEvaluateTool(sampleNotes, new Set(["https://a.com"]), "survey");
+    const result = await tool.execute("call-1", {});
+    const text = result.content[0].text;
+    expect(text.toLowerCase()).toContain("survey");
+    expect(text.toLowerCase()).toMatch(/named systems|named benchmarks/);
+    expect(text).toMatch(/≥10|10 named/);
+    expect(text.toLowerCase()).toContain("breadth");
+  });
 });

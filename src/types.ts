@@ -6,8 +6,8 @@ import type { AgentMessage } from "@mariozechner/pi-agent-core";
 /** A single entry in the durable message log, persisted as an Absurd step. */
 export type MessageLogEntry = { message: AgentMessage };
 
-/** Three task modes the research loop adapts to. */
-export type TaskMode = "lookup" | "extraction" | "synthesis";
+/** Task modes the research loop adapts to. Canonical list lives in classify.ts (TASK_MODES). */
+export type TaskMode = "lookup" | "extraction" | "synthesis" | "survey";
 
 /** Parameters for spawning a research task. */
 export type ResearchParams = {
@@ -110,11 +110,17 @@ export type CampaignPulse = {
   usage: CampaignUsage | null;
 };
 
-/** Depth config maps depth labels to iteration limits and query counts. */
+/**
+ * Depth config maps depth labels to loop budgets.
+ * - maxIterations: evaluate→scout cycles before the loop is nudged to synthesize
+ * - initialQueries: sub-queries the planner generates up front
+ * - maxSources: default browse ceiling when the caller doesn't pin maxSources
+ * - gapPasses: how many times survey/synthesis runs may call gap_analysis to fill holes
+ */
 export const DEPTH_CONFIG = {
-  quick: { maxIterations: 1, initialQueries: 3 },
-  standard: { maxIterations: 3, initialQueries: 5 },
-  deep: { maxIterations: 5, initialQueries: 8 },
+  quick: { maxIterations: 2, initialQueries: 4, maxSources: 20, gapPasses: 0 },
+  standard: { maxIterations: 5, initialQueries: 7, maxSources: 50, gapPasses: 1 },
+  deep: { maxIterations: 10, initialQueries: 12, maxSources: 80, gapPasses: 2 },
 } as const;
 
 /** Content that has been scraped and summarized by the browse tool. */

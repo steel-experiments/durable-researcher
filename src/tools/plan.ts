@@ -5,7 +5,7 @@ import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { completeSimple, getEnvApiKey } from "@mariozechner/pi-ai";
 import { getUtilityModel, getUtilityReasoning } from "../config.js";
-import type { ResearchParams, ResearchPlan } from "../types.js";
+import type { ResearchParams, ResearchPlan, TaskMode } from "../types.js";
 import { DEPTH_CONFIG } from "../types.js";
 import { loadTemplate } from "../prompts.js";
 import type { ToolProgress } from "../event-bus.js";
@@ -15,6 +15,7 @@ const PlanParams = Type.Object({});
 /** Create a plan_research tool that generates sub-queries for the research topic. */
 export function createPlanTool(
   researchParams: ResearchParams,
+  mode: TaskMode,
   progress?: ToolProgress,
 ): AgentTool<typeof PlanParams> {
   const report = progress ?? ((text: string) => console.log(text));
@@ -30,8 +31,12 @@ export function createPlanTool(
     execute: async () => {
       const depth = researchParams.depth ?? "standard";
       const config = DEPTH_CONFIG[depth];
+      // Survey mode needs more facets to enumerate a whole field — floor at 12.
+      const maxQueries = mode === "survey"
+        ? Math.max(config.initialQueries, 12)
+        : config.initialQueries;
 
-      report(`    Generating ${depth} research plan (up to ${config.initialQueries} queries)...`);
+      report(`    Generating ${depth} research plan (up to ${maxQueries} queries)...`);
       const startTime = Date.now();
       const ticker = setInterval(() => {
         const elapsed = Math.round((Date.now() - startTime) / 1000);
@@ -46,7 +51,8 @@ export function createPlanTool(
         plan = await generateResearchPlan(
           researchParams.topic,
           depth,
-          config.initialQueries,
+          maxQueries,
+          mode,
           report,
         );
       } finally {
@@ -86,12 +92,14 @@ async function generateResearchPlan(
   topic: string,
   depth: string,
   maxQueries: number,
+  mode: TaskMode,
   report: (text: string) => void = (t) => console.log(t),
 ): Promise<ResearchPlan> {
   const model = getUtilityModel();
   const systemPrompt = await loadTemplate("plan", {
     maxQueries: String(maxQueries),
     depth,
+    mode,
   });
 
   try {

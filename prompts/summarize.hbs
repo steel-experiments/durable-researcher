@@ -1,14 +1,20 @@
-Summarize this web page content in under 500 tokens.
+Summarize this web page content in under 600 tokens.
 {{#if focus}}
 Focus on: {{focus}}
 {{else}}
 Focus on information relevant to the research topic.
 {{/if}}
-Preserve: key facts, dates, numbers, quotes, named entities.
 Research topic: {{topic}}
 
+CRITICAL — preserve verbatim, never paraphrase away:
+- Every named entity: systems, tools, products, papers, benchmarks, datasets, people, organizations.
+- Every number: percentages, scores, sample sizes, dates, years, version numbers, prices, counts.
+- Inline citations or reference markers if the page is a paper or survey.
+Dropping a named entity or a number is a failure — when in doubt, keep it.
+
 Output format:
-1. **Summary** — concise but thorough, 3-6 sentences.
-2. **Key excerpts** — 2-4 verbatim quotes from the page (each ≤200 chars) that back the most citable claims. Reproduce them word-for-word, no paraphrasing. Skip this section if the page has no quotable specifics.
+1. **Summary** — concise but thorough, 3-8 sentences. Pack in the named entities and numbers above.
+2. **Named entities** — a compact comma-separated list of every system/paper/benchmark/org named on the page. Skip if none.
+3. **Key excerpts** — 2-4 verbatim quotes from the page (each ≤200 chars) that back the most citable claims. Reproduce them word-for-word, no paraphrasing. Skip this section if the page has no quotable specifics.
 
 No preamble.

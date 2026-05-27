@@ -20,6 +20,24 @@ function decisionGuidance(mode: TaskMode): string[] {
       `- Once the answer is locked, write the lookup-mode report (Answer / Supporting Detail / Sources) and stop.`,
     ];
   }
+  if (mode === "survey") {
+    return [
+      `## Decision Guidance (survey mode)`,
+      `Survey-mode completion gating — the deliverable is breadth: many named, cited items.`,
+      ``,
+      `Before declaring sufficiency, count what you have:`,
+      `  • Distinct named systems / tools recorded in notes`,
+      `  • Distinct named benchmarks / datasets recorded in notes`,
+      `  • Distinct named papers / literature items recorded in notes`,
+      ``,
+      `Sufficient ONLY when ALL of these hold:`,
+      `- ≥10 named systems/tools AND ≥10 named benchmarks/papers across your notes`,
+      `- ≥30 total sources scraped`,
+      `- Each major named item has at least one citable source`,
+      ``,
+      `If any threshold is unmet, do NOT synthesize yet — name the specific category that's thin and scout for more items in it. Prefer covering a NEW named entity over re-reading one you already have. Breadth beats depth in survey mode.`,
+    ];
+  }
   if (mode === "extraction") {
     return [
       `## Decision Guidance (extraction mode)`,

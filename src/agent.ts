@@ -30,6 +30,10 @@ import { createEvaluateTool } from "./tools/evaluate.js";
 import { createPlanTool } from "./tools/plan.js";
 import { createPrefetchTool } from "./tools/prefetch.js";
 import { createScoutTool } from "./tools/scout.js";
+import { createGapAnalysisTool } from "./tools/gap-analysis.js";
+import { createFindEntityTool } from "./tools/find-entity.js";
+import { createChaseReferencesTool } from "./tools/chase-references.js";
+import { createReferenceQueue } from "./reference-queue.js";
 import {
   verifyClaims,
   shouldTriggerRewrite,
@@ -365,7 +369,8 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
       }
 
       // 3. Create tools with closures over mutable state
-      const prefetchBudget = Math.floor((params.maxSources ?? 20) / 2);
+      const resolvedMaxSources = params.maxSources ?? depthConfig.maxSources;
+      const prefetchBudget = Math.floor(resolvedMaxSources / 2);
       // BENCH_CACHE_KEY (e.g. `draco:<task_id>`) overrides ctx.taskID so benchmark
       // re-runs share the browse cache across Absurd invocations.
       const taskId = resolveCacheKey(ctx.taskID);
@@ -383,19 +388,34 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
       // TUI is active so those lines don't write straight to stdout and corrupt
       // ink's render. Falls back to plain console.log when no bus is wired.
       const toolProgress = bus ? createToolProgress(bus) : undefined;
+      // Gap-fill loop is only worth its turns for breadth-oriented modes with a budget.
+      const gapPasses = (mode === "survey" || mode === "synthesis") ? depthConfig.gapPasses : 0;
+      // Reference chasing follows paper citation graphs; reserve it for breadth surveys.
+      const referenceChasingEnabled = mode === "survey";
+      // Seed the queue with scrapedUrls so already-visited pages are never re-queued.
+      const referenceQueue = createReferenceQueue(scrapedUrls);
       const tools = [
         (() => {
           const submittedReport: SubmittedReportRef = { value: null };
           return createSubmitReportTool(submittedReport);
         })(),
-        createPlanTool(params, toolProgress),
+        createPlanTool(params, mode, toolProgress),
         createPrefetchTool(steelClient, scrapedUrls, params.topic, prefetchBudget, taskId, toolProgress, urlExcerpts),
-        createScoutTool(steelClient, scrapedUrls, params.topic, taskId, toolProgress, urlExcerpts),
+        createScoutTool(steelClient, scrapedUrls, params.topic, taskId, toolProgress, urlExcerpts, referenceQueue),
         createSearchTool(steelClient, scrapedUrls, params.topic),
-        createBrowseTool(steelClient, scrapedUrls, params.topic, taskId, urlExcerpts),
+        createBrowseTool(steelClient, scrapedUrls, params.topic, taskId, urlExcerpts, referenceQueue),
         createScreenshotTool(steelClient),
         createNoteTool(notes),
         createEvaluateTool(notes, scrapedUrls, mode),
+        ...(gapPasses > 0
+          ? [
+              createGapAnalysisTool({ notes, topic: params.topic, maxCalls: gapPasses, progress: toolProgress }),
+              createFindEntityTool(steelClient, scrapedUrls, params.topic, taskId, toolProgress, urlExcerpts),
+            ]
+          : []),
+        ...(referenceChasingEnabled
+          ? [createChaseReferencesTool(steelClient, scrapedUrls, params.topic, referenceQueue, taskId, toolProgress, urlExcerpts)]
+          : []),
         createUseAdapterTool(),
         createWriteAdapterTool(),
       ];
@@ -405,7 +425,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         topic: params.topic,
         depth,
         mode,
-        maxSources: params.maxSources ?? 20,
+        maxSources: resolvedMaxSources,
         maxIterations: depthConfig.maxIterations,
       });
 
@@ -417,8 +437,13 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
       };
 
       // Track limits for hard enforcement
-      const maxBrowses = params.maxSources ?? 20;
+      const maxBrowses = resolvedMaxSources;
       const maxTurns = depthConfig.maxIterations * 15;
+      // Tool-call ceiling — a runaway-loop safety net that scales with the source
+      // budget (a healthy run makes a few tool calls per source). Warn early; hard-stop
+      // well above any legitimate run so we only catch genuine spirals.
+      const toolCallHardCap = maxBrowses * 5 + 100;
+      const toolCallWarnAt = Math.floor(toolCallHardCap * 0.6);
 
       // Timeout handling: detect approaching deadline and force report
       const taskStartTime = Date.now();
@@ -442,6 +467,9 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
       // Track browses since last evaluate for auto-injection
       let browsesSinceEval = 0;
       const EVAL_INTERVAL = 5;
+      // Total tool calls this run — guards against runaway loops (see toolCallHardCap).
+      let toolCallCount = 0;
+      let toolCallWarned = false;
 
       const config: AgentLoopConfig = {
         model: agentModel,
@@ -450,6 +478,11 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         reasoning: getAgentReasoning(),
         getApiKey: (provider) => getEnvApiKey(provider),
         afterToolCall: async (ctx) => {
+          toolCallCount++;
+          if (!toolCallWarned && toolCallCount >= toolCallWarnAt) {
+            toolCallWarned = true;
+            taskLog(`[BUDGET] ${toolCallCount} tool calls (warn at ${toolCallWarnAt}, hard cap ${toolCallHardCap}) — wrap up soon.`);
+          }
           // Count browses and prefetches; reset on evaluate
           if (ctx.toolCall.name === "browse_url" || ctx.toolCall.name === "prefetch_sources") {
             browsesSinceEval++;
@@ -481,11 +514,13 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
           ).length;
 
           // Hard limits
-          if (scrapedUrls.size >= maxBrowses || turnCount >= maxTurns) {
+          if (scrapedUrls.size >= maxBrowses || turnCount >= maxTurns || toolCallCount >= toolCallHardCap) {
             steeringSent = true;
             const reason = scrapedUrls.size >= maxBrowses
               ? `source limit (${maxBrowses})`
-              : `turn limit (${maxTurns})`;
+              : turnCount >= maxTurns
+                ? `turn limit (${maxTurns})`
+                : `tool-call limit (${toolCallHardCap})`;
             return [{
               role: "user" as const,
               content: `[SYSTEM] You have reached the maximum ${reason}. Stop browsing and searching. Write your final research report NOW using the notes you have collected. Use numeric inline citations like [1] and a numbered Sources section; do not use markdown author links as citations. Do NOT call any tools. Just write the report.`,

@@ -35,4 +35,15 @@ Balance breadth and depth. Cover at least definition, recency, and one of compar
 Go deep. Use all five lenses; weight toward primary sources and criticism for contrarian signal.
 {{/if}}
 
+{{#if (eq mode "survey")}}
+## Survey mode (overrides the lens priority above)
+This is a survey: the deliverable is exhaustive enumeration of a research space, not a focused argument. Generate at least 12 queries that maximize the number of distinct named items you'll discover:
+1. **Enumeration** — "list of <thing>", "survey of <thing>", "all <thing>", "<field> benchmarks", "<field> systems".
+2. **Named entities** — if you already know specific systems / papers / benchmarks in this space, query them by name to find canonical sources.
+3. **Recency** — releases, papers, and results from the last 18 months (include the year).
+4. **Foundational** — seminal / highly-cited works that originated the field.
+5. **Adjacent subfields** — sibling areas that overlap and contribute named items.
+Weight toward enumeration and named-entity queries. Breadth beats depth in survey mode.
+{{/if}}
+
 Output ONLY the JSON object, no other text.

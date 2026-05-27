@@ -1,10 +1,11 @@
 // ABOUTME: Tests for the task-mode classifier — pure parsing + stubbed LLM orchestration.
 // ABOUTME: No real LLM calls; the classifier accepts an injectable classifier function.
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import {
   parseClassification,
   classifyTask,
+  hasSurveySignals,
   TASK_MODES,
   type ModeClassifier,
 } from "../src/classify.js";
@@ -32,8 +33,8 @@ describe("parseClassification", () => {
     expect(parseClassification("I'm not sure")).toBeNull();
   });
 
-  it("exposes all three canonical modes", () => {
-    expect(new Set(TASK_MODES)).toEqual(new Set(["lookup", "extraction", "synthesis"]));
+  it("exposes all four canonical modes", () => {
+    expect(new Set(TASK_MODES)).toEqual(new Set(["lookup", "extraction", "synthesis", "survey"]));
   });
 });
 
@@ -114,6 +115,89 @@ describe("extraction-signal heuristic override", () => {
     const classifier: ModeClassifier = async () => "extraction";
     const mode = await classifyTask({
       topic: "Pull every cash-flow line from CME's 10-Q.",
+      classifier,
+    });
+    expect(mode).toBe("extraction");
+  });
+});
+
+describe("parseClassification recognises survey", () => {
+  it("recognises the survey mode word", () => {
+    expect(parseClassification("survey")).toBe("survey");
+    expect(parseClassification('{"mode": "survey"}')).toBe("survey");
+  });
+});
+
+describe("hasSurveySignals heuristic", () => {
+  it("fires on a survey verb plus two enumeration targets", () => {
+    expect(
+      hasSurveySignals(
+        "Research the state of human-agent steering: identify relevant literature, benchmarks, systems, and metrics.",
+      ),
+    ).toBe(true);
+    expect(hasSurveySignals("Survey of agent benchmarks and evaluation datasets")).toBe(true);
+  });
+
+  it("does not fire without an enumeration target pair", () => {
+    // survey verb but only one target
+    expect(hasSurveySignals("Review the systems we use for billing")).toBe(false);
+    // enumeration targets but no survey verb
+    expect(hasSurveySignals("Which benchmark and dataset should I cite for X?")).toBe(false);
+  });
+
+  it("does not fire on a focused synthesis prompt", () => {
+    expect(
+      hasSurveySignals("Design a benchmark for evaluating whether humans can steer running agents"),
+    ).toBe(false);
+  });
+});
+
+describe("survey-mode gating", () => {
+  const ORIGINAL = process.env.RESEARCHER_SURVEY_MODE_ENABLED;
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.RESEARCHER_SURVEY_MODE_ENABLED;
+    else process.env.RESEARCHER_SURVEY_MODE_ENABLED = ORIGINAL;
+  });
+
+  const surveyTopic =
+    "Research the state of human interaction with long-horizon AI agents: " +
+    "identify relevant literature, benchmarks, systems, and metrics.";
+
+  it("downgrades the LLM's survey verdict to synthesis when the flag is off", async () => {
+    delete process.env.RESEARCHER_SURVEY_MODE_ENABLED;
+    const classifier: ModeClassifier = async () => "survey";
+    const mode = await classifyTask({ topic: surveyTopic, classifier });
+    expect(mode).toBe("synthesis");
+  });
+
+  it("honors the LLM's survey verdict when the flag is on", async () => {
+    process.env.RESEARCHER_SURVEY_MODE_ENABLED = "true";
+    const classifier: ModeClassifier = async () => "survey";
+    const mode = await classifyTask({ topic: surveyTopic, classifier });
+    expect(mode).toBe("survey");
+  });
+
+  it("upgrades synthesis to survey via heuristic when the flag is on", async () => {
+    process.env.RESEARCHER_SURVEY_MODE_ENABLED = "true";
+    const classifier: ModeClassifier = async () => "synthesis";
+    const mode = await classifyTask({ topic: surveyTopic, classifier });
+    expect(mode).toBe("survey");
+  });
+
+  it("does NOT upgrade synthesis to survey when the flag is off", async () => {
+    delete process.env.RESEARCHER_SURVEY_MODE_ENABLED;
+    const classifier: ModeClassifier = async () => "synthesis";
+    const mode = await classifyTask({ topic: surveyTopic, classifier });
+    expect(mode).toBe("synthesis");
+  });
+
+  it("prefers extraction over survey when both could fire", async () => {
+    process.env.RESEARCHER_SURVEY_MODE_ENABLED = "true";
+    const classifier: ModeClassifier = async () => "synthesis";
+    // Has survey signals AND extraction signals; extraction is the narrower intent.
+    const mode = await classifyTask({
+      topic:
+        "Survey the literature and benchmarks, then extract revenue and operating income from Apple's 10-K fiscal 2024.",
       classifier,
     });
     expect(mode).toBe("extraction");
