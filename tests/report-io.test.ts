@@ -107,4 +107,58 @@ describe("saveResearchResult", () => {
     expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
     expect(html).not.toContain("<script>alert(1)</script>");
   });
+
+  it("writes an HTML rendering for non-extraction modes with no recommended views", () => {
+    const result: ResearchResult = {
+      topic: "State of agent steering",
+      report: [
+        "## Executive Summary",
+        "",
+        "Agents are hard to steer [1].",
+        "",
+        "### Sources",
+        "1. https://example.com/paper",
+      ].join("\n"),
+      notes: [],
+      sources: [],
+      messages: [],
+      mode: "survey",
+      explanation: {
+        answer: "Steering is immature.",
+        claims: [],
+        evidence: [],
+        excerpts: [],
+        sources: [],
+        reasoningSteps: [],
+        uncertainties: [],
+        recommendedViews: [],
+      },
+    };
+
+    const saved = saveResearchResult(result);
+
+    expect(saved.markdownPath).toMatch(/\.md$/);
+    expect(saved.htmlPath).toMatch(/\.html$/);
+    const html = readFileSync(saved.htmlPath!, "utf8");
+    expect(html).toContain("<h1>State of agent steering</h1>");
+    expect(html).toContain("Agents are hard to steer");
+    expect(html).toContain("<h2>Report</h2>");
+  });
+
+  it("still writes HTML when there is no explanation model at all", () => {
+    const result: ResearchResult = {
+      topic: "Lookup answer",
+      report: "The answer is 42 [1].",
+      notes: [],
+      sources: [],
+      messages: [],
+      mode: "lookup",
+    };
+
+    const saved = saveResearchResult(result);
+
+    expect(saved.htmlPath).toMatch(/\.html$/);
+    const html = readFileSync(saved.htmlPath!, "utf8");
+    expect(html).toContain("The answer is 42");
+  });
 });

@@ -48,16 +48,14 @@ export type SavedResearchResult = {
   htmlPath?: string;
 };
 
-/** Write Markdown plus any constrained explanation artifacts beside it. */
+/** Write Markdown plus an HTML rendering (and any explanation artifacts) beside it. */
 export function saveResearchResult(result: ResearchResult): SavedResearchResult {
   const base = outputBasePath(result.topic);
   const markdownPath = `${base}.md`;
   writeFileSync(markdownPath, `# ${result.topic}\n\n${result.report}\n`);
 
-  if (!result.explanation?.recommendedViews.length) {
-    return { markdownPath };
-  }
-
+  // Always emit HTML alongside the Markdown. The renderer produces a full report
+  // page for every mode; extraction runs additionally get evidence-table artifacts.
   const htmlPath = `${base}.html`;
   writeFileSync(htmlPath, renderResearchResultHtml(result));
   return { markdownPath, htmlPath };

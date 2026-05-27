@@ -17,7 +17,7 @@ import {
 } from "./config.js";
 import type { ResearchParams, ResearchResult, MessageLogEntry, TaskMode } from "./types.js";
 import { DEPTH_CONFIG } from "./types.js";
-import { classifyTask } from "./classify.js";
+import { classifyTask, isSurveyModeEnabled, hasSurveySignals } from "./classify.js";
 import { createSteelClient } from "./steel-client.js";
 import { createSearchTool } from "./tools/search.js";
 import { createBrowseTool } from "./tools/browse.js";
@@ -304,8 +304,23 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
       const mode: TaskMode = params.mode ?? await ctx.step("classify-mode", () =>
         classifyTask({ topic: params.topic }),
       );
-      taskLog(`[MODE] Task classified as ${mode}.`);
-      bus?.emit({ type: "agent-status", text: `Mode: ${mode}` });
+      // Surface the resolved mode and the survey flag's state up front. This is the
+      // single most useful startup line: it confirms whether survey mode actually
+      // engaged (and whether the worker even sees RESEARCHER_SURVEY_MODE_ENABLED).
+      const surveyFlagOn = isSurveyModeEnabled();
+      const resolvedSourceCeiling = params.maxSources ?? depthConfig.maxSources;
+      taskLog(
+        `[MODE] ${mode} · survey flag ${surveyFlagOn ? "ON" : "off"} · depth ${depth} · sources ${resolvedSourceCeiling}`,
+      );
+      if (!surveyFlagOn && mode !== "survey" && hasSurveySignals(params.topic)) {
+        taskLog(
+          `[MODE] hint: this prompt reads like a survey, but RESEARCHER_SURVEY_MODE_ENABLED is off — running as ${mode}. Set the flag on the same command as 'bun run dev' to enable survey mode.`,
+        );
+      }
+      bus?.emit({
+        type: "agent-status",
+        text: `Mode: ${mode}${surveyFlagOn ? " · survey flag ON" : ""} · depth ${depth} · ${resolvedSourceCeiling} sources`,
+      });
 
       // 1. Replay checkpointed messages
       bus?.emit({ type: "agent-status", text: "Loading checkpoint..." });
