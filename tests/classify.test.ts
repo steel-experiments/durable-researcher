@@ -152,47 +152,33 @@ describe("hasSurveySignals heuristic", () => {
   });
 });
 
-describe("survey-mode gating", () => {
-  const ORIGINAL = process.env.RESEARCHER_SURVEY_MODE_ENABLED;
-  afterEach(() => {
-    if (ORIGINAL === undefined) delete process.env.RESEARCHER_SURVEY_MODE_ENABLED;
-    else process.env.RESEARCHER_SURVEY_MODE_ENABLED = ORIGINAL;
-  });
-
+describe("survey-mode routing", () => {
   const surveyTopic =
     "Research the state of human interaction with long-horizon AI agents: " +
     "identify relevant literature, benchmarks, systems, and metrics.";
 
-  it("downgrades the LLM's survey verdict to synthesis when the flag is off", async () => {
-    delete process.env.RESEARCHER_SURVEY_MODE_ENABLED;
-    const classifier: ModeClassifier = async () => "survey";
-    const mode = await classifyTask({ topic: surveyTopic, classifier });
-    expect(mode).toBe("synthesis");
-  });
-
-  it("honors the LLM's survey verdict when the flag is on", async () => {
-    process.env.RESEARCHER_SURVEY_MODE_ENABLED = "true";
+  it("honors the LLM's survey verdict", async () => {
     const classifier: ModeClassifier = async () => "survey";
     const mode = await classifyTask({ topic: surveyTopic, classifier });
     expect(mode).toBe("survey");
   });
 
-  it("upgrades synthesis to survey via heuristic when the flag is on", async () => {
-    process.env.RESEARCHER_SURVEY_MODE_ENABLED = "true";
+  it("upgrades synthesis to survey via heuristic when the prompt enumerates a research space", async () => {
     const classifier: ModeClassifier = async () => "synthesis";
     const mode = await classifyTask({ topic: surveyTopic, classifier });
     expect(mode).toBe("survey");
   });
 
-  it("does NOT upgrade synthesis to survey when the flag is off", async () => {
-    delete process.env.RESEARCHER_SURVEY_MODE_ENABLED;
+  it("does not upgrade focused synthesis prompts that lack enumeration signals", async () => {
     const classifier: ModeClassifier = async () => "synthesis";
-    const mode = await classifyTask({ topic: surveyTopic, classifier });
+    const mode = await classifyTask({
+      topic: "Compare Postgres and DuckDB for analytics workloads",
+      classifier,
+    });
     expect(mode).toBe("synthesis");
   });
 
   it("prefers extraction over survey when both could fire", async () => {
-    process.env.RESEARCHER_SURVEY_MODE_ENABLED = "true";
     const classifier: ModeClassifier = async () => "synthesis";
     // Has survey signals AND extraction signals; extraction is the narrower intent.
     const mode = await classifyTask({

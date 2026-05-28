@@ -12,14 +12,6 @@ const TASK_MODE_SET = new Set<string>(TASK_MODES);
 
 const CLASSIFY_TIMEOUT_MS = 20_000;
 
-/**
- * Survey mode is gated until it's been validated against real prompts.
- * Set RESEARCHER_SURVEY_MODE_ENABLED=true to let the classifier emit / upgrade to survey.
- */
-export function isSurveyModeEnabled(): boolean {
-  return process.env.RESEARCHER_SURVEY_MODE_ENABLED === "true";
-}
-
 /** Signature for the classifier LLM call. Injectable so tests can avoid real LLM calls. */
 export type ModeClassifier = (topic: string) => Promise<string | null>;
 
@@ -171,14 +163,7 @@ export async function classifyTask(opts: {
   } catch {
     llmMode = null;
   }
-  let baseMode = llmMode ?? "synthesis";
-
-  // Survey mode is gated. When disabled, never let the LLM's survey verdict
-  // through — fall back to synthesis so behavior is unchanged from before.
-  const surveyEnabled = isSurveyModeEnabled();
-  if (baseMode === "survey" && !surveyEnabled) {
-    baseMode = "synthesis";
-  }
+  const baseMode = llmMode ?? "synthesis";
 
   // Heuristic override: if the LLM under-classified to synthesis but the
   // prompt clearly asks for extraction, upgrade. Never override lookup or
@@ -188,9 +173,9 @@ export async function classifyTask(opts: {
   }
 
   // Heuristic override: push synthesis up to survey when the prompt clearly
-  // asks to enumerate a whole research space (gated). Extraction wins over
-  // survey when both fire, since exact-value extraction is the narrower intent.
-  if (baseMode === "synthesis" && surveyEnabled && hasSurveySignals(opts.topic)) {
+  // asks to enumerate a whole research space. Extraction wins over survey
+  // when both fire, since exact-value extraction is the narrower intent.
+  if (baseMode === "synthesis" && hasSurveySignals(opts.topic)) {
     return "survey";
   }
 
