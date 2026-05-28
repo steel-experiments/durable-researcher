@@ -142,8 +142,13 @@ export type ResearchNote = {
   keyExcerpts?: string[];
 };
 
-/** Max verbatim excerpts retained per note. */
-export const MAX_EXCERPTS_PER_NOTE = 4;
+/**
+ * Max verbatim excerpts retained per note (and per URL in the urlExcerpts fallback).
+ * Raised from 4 to 8 so survey/synthesis reports — which often make many fine-grained
+ * claims per source (year, venue, metric, contribution) — have broader excerpt coverage
+ * for the citation verifier to ground against.
+ */
+export const MAX_EXCERPTS_PER_NOTE = 8;
 /** Max characters per excerpt — long enough to carry a useful quote, short enough to stay tight. */
 export const MAX_EXCERPT_LENGTH = 240;
 

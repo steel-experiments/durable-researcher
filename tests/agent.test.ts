@@ -88,6 +88,19 @@ describe("loadTemplate", () => {
     expect(result).toContain("gap_analysis");
   });
 
+  it("requires citing only browsed sources in every mode's prompt", async () => {
+    for (const mode of ["synthesis", "survey", "extraction", "lookup"] as const) {
+      const result = await loadTemplate("system", {
+        topic: "t",
+        depth: "standard",
+        mode,
+        maxSources: 50,
+        maxIterations: 5,
+      });
+      expect(result).toContain("Only cite sources you actually browsed");
+    }
+  });
+
   it("renders the survey-mode plan prompt with the enumeration lens block", async () => {
     const result = await loadTemplate("plan", {
       maxQueries: "12",

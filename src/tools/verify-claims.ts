@@ -436,41 +436,90 @@ export function shouldTriggerRewrite(result: VerificationResult): boolean {
   return result.summary.passRate < VERIFY_PASS_THRESHOLD;
 }
 
+/**
+ * A claim is "ungrounded" when the cited source has no excerpts at all — either it
+ * was never browsed, browsing failed, or the source number is missing from the
+ * Sources section. Ungrounded claims cannot be salvaged by re-wording; the only
+ * correct move is to delete them and remove the dangling Sources entry.
+ *
+ * "Unsupported" claims, in contrast, cite a real browsed source that has excerpts —
+ * the LLM verifier just judged the specific assertion as not backed by those
+ * excerpts. Those can be softened or re-cited.
+ */
+const UNGROUNDED_REASON_MARKERS = [
+  "No excerpts recorded for this source",
+  "Cited source [",
+];
+
+function isUngroundedFailure(c: ClaimVerification): boolean {
+  return UNGROUNDED_REASON_MARKERS.some((marker) => c.reason.includes(marker));
+}
+
 /** Build a steering message that asks the agent to rewrite the report. */
 export function buildRewriteSteering(result: VerificationResult): string {
   const failed = result.claims.filter((c) => !c.supported);
+  const thresholdPct = (VERIFY_PASS_THRESHOLD * 100).toFixed(0);
+
   if (result.summary.total === 0) {
     return [
-      `[SYSTEM] Citation verification: 0/0 claims supported (0%, threshold ${(VERIFY_PASS_THRESHOLD * 100).toFixed(0)}%).`,
+      `[SYSTEM] Citation verification: 0/0 claims supported (0%, threshold ${thresholdPct}%).`,
       ``,
       `No parseable numeric inline citations were found in the report body.`,
       ``,
       `Rewrite the report so every factual claim that depends on evidence uses numeric inline citations such as [1] or [2].`,
       `Do NOT replace numeric citations with markdown author links like [(Author, 2024)](https://example.com).`,
-      `Keep a numbered Sources section where each cited number resolves to a source URL.`,
-      `If a claim cannot be grounded to a numbered source with excerpts, soften it or remove it.`,
+      `Every entry in the Sources section MUST be a URL you actually browsed in this session — if you can't ground a claim to a browsed source, delete the claim.`,
       ``,
       `Keep everything else intact. Do NOT call any tools. Just write the corrected report.`,
     ].join("\n");
   }
+
+  const ungrounded = failed.filter(isUngroundedFailure);
+  const unsupported = failed.filter((c) => !isUngroundedFailure(c));
+  const ungroundedSourceNs = [...new Set(ungrounded.map((c) => c.sourceN))].sort((a, b) => a - b);
+
   const lines = [
-    `[SYSTEM] Citation verification: ${result.summary.supported}/${result.summary.total} claims supported (${(result.summary.passRate * 100).toFixed(0)}%, threshold ${(VERIFY_PASS_THRESHOLD * 100).toFixed(0)}%).`,
+    `[SYSTEM] Citation verification: ${result.summary.supported}/${result.summary.total} claims supported (${(result.summary.passRate * 100).toFixed(0)}%, threshold ${thresholdPct}%).`,
     ``,
-    `The following claims could NOT be supported by their cited sources:`,
+    `MANDATORY rewrite rules — follow each exactly, do not negotiate:`,
     ``,
-    ...failed.slice(0, 10).map((c, i) =>
-      `${i + 1}. Claim cites [${c.sourceN}] (${c.sourceUrl ?? "no URL"}):\n   "${c.claim}"\n   Reason: ${c.reason}`,
-    ),
-    ``,
-    `Rewrite the report. For each failed claim, either:`,
-    `  - Re-cite a source whose excerpts actually support it`,
-    `  - Soften the claim to what the source actually says`,
-    `  - Remove the claim if no source supports it`,
-    ``,
-    `Use numeric inline citations only, such as [1] or [2]. Do NOT use markdown author links as citations.`,
-    `Keep a numbered Sources section where every cited number resolves to a source URL.`,
+  ];
+
+  if (ungroundedSourceNs.length > 0) {
+    lines.push(
+      `Source(s) [${ungroundedSourceNs.join("], [")}] have NO recorded excerpts. These were not browsed (or browsing failed). For each:`,
+      `  1. DELETE every claim that cites them. Do not re-cite, do not soften — DELETE the sentence.`,
+      `  2. REMOVE those entries from the Sources section.`,
+      `  3. Renumber the remaining Sources sequentially (1, 2, 3, …) and update every [n] marker in the body to match.`,
+      ``,
+      `Examples of claims that must be deleted:`,
+      ...ungrounded.slice(0, 6).map((c) => `  • "${c.claim}" (cites [${c.sourceN}])`),
+      ``,
+    );
+  }
+
+  if (unsupported.length > 0) {
+    lines.push(
+      `The following claims cite a browsed source, but the excerpts do not back the specific assertion:`,
+      ``,
+      ...unsupported.slice(0, 10).map((c, i) =>
+        `  ${i + 1}. Cites [${c.sourceN}] (${c.sourceUrl ?? "no URL"}): "${c.claim}"\n     Reason: ${c.reason}`,
+      ),
+      ``,
+      `For each, do EXACTLY ONE of:`,
+      `  - Soften the claim to what the excerpts actually say (do not invent specifics).`,
+      `  - Re-cite a different already-browsed source whose excerpts back it.`,
+      `  - DELETE the claim.`,
+      `Do NOT re-cite the same source unchanged — the verifier will reject it again.`,
+      ``,
+    );
+  }
+
+  lines.push(
+    `Use numeric inline citations only, such as [1] or [2]. Do NOT use markdown author links.`,
+    `Every numbered entry in the Sources section MUST be a URL you actually browsed in this session.`,
     ``,
     `Keep everything else intact. Do NOT call any tools. Just write the corrected report.`,
-  ];
+  );
   return lines.join("\n");
 }

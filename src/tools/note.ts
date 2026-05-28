@@ -26,7 +26,7 @@ const NoteParams = Type.Object({
   keyExcerpts: Type.Optional(
     Type.Array(Type.String(), {
       description:
-        "Up to 4 verbatim quotes from the source(s) supporting this finding (≤240 chars each). Required for high-confidence notes that will be cited in the final report.",
+        "Up to 8 verbatim quotes from the source(s) supporting this finding (≤240 chars each). Required for high-confidence notes that will be cited in the final report. Capture broader coverage when the source will back multiple fine-grained claims (year, venue, metric, specific contribution).",
     }),
   ),
 });

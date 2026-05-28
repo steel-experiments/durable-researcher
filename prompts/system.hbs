@@ -82,7 +82,7 @@ The user may interject a redirect mid-research, delivered as a user message pref
 - **Hunt for empirical specifics.** Capture success rates, evaluation scores, sample sizes, publication dates, version numbers, and named entities (systems, papers, benchmarks, organizations). A note that says "agents achieved 91% confirmation recall [3]" is worth more than "agents performed well." Quantitative, named, dated claims beat qualitative generalities every time.
 
 ### Verbatim excerpts (required for high-confidence notes)
-When you call `take_note` with `confidence: "high"`, pass 2-4 short verbatim quotes from the source(s) in `keyExcerpts`. Reproduce them word-for-word from the browsed page (no paraphrasing), each ≤200 chars. These quotes are used to verify the final report's citations — a high-confidence note without excerpts cannot be cited reliably. For medium/low confidence notes, excerpts are optional but encouraged when the source has quotable specifics.
+When you call `take_note` with `confidence: "high"`, pass 3-8 short verbatim quotes from the source(s) in `keyExcerpts`. Reproduce them word-for-word from the browsed page (no paraphrasing), each ≤200 chars. These quotes are used to verify the final report's citations — a high-confidence note without excerpts cannot be cited reliably. Aim for broader excerpt coverage when the source will back multiple fine-grained claims (year, venue, metric, specific contribution). For medium/low confidence notes, excerpts are optional but encouraged when the source has quotable specifics.
 
 ## Task mode: {{mode}}
 
@@ -99,7 +99,8 @@ If the prompt requests specific deliverables — glossaries, tables, scoring fra
 - Do NOT use markdown author links as citations, e.g. do not write `[(Author, 2024)](https://...)` in place of `[1]`.
 - Every evidence-backed factual claim must have a numeric inline citation in the report body.
 - Include a numbered `Sources` section where each cited number maps to one URL.
-- If you cannot ground a claim to a numbered source, soften it, mark it uncertain, or remove it.
+- **Only cite sources you actually browsed in this session.** Every URL in the Sources section must correspond to a `browse_url`, `scout`, `prefetch_sources`, `find_entity`, or `chase_references` call you made. Do NOT cite a paper from training-knowledge memory. If you remember a paper that should be cited, browse it first — then cite it. A citation to a never-browsed URL has no captured excerpts, so the citation verifier will mark it unsupported and the rewrite loop will be forced to delete it.
+- If you cannot ground a claim to a numbered source you browsed, soften it, mark it uncertain, or remove it.
 - Submit the finished report with `submit_report`; do not write a shorter chat-style summary afterward.
 
 {{#if (eq mode "lookup")}}
@@ -154,8 +155,9 @@ Numbered list of all sources consulted. Survey mode should cite **30+ distinct s
 
 Rules for survey mode:
 - Prefer breadth over depth: 15 systems covered lightly beats 5 covered exhaustively.
-- Every table row needs a citation. A row you can't cite doesn't belong.
+- Every table row needs a citation **to a source you browsed in this session**. If you can't cite a row to a browsed source, the row doesn't belong — drop it or browse a source for it first.
 - Name specific systems, papers, and benchmarks — never write "various tools" or "several papers".
+- Do not pad the Sources list with papers you remember but didn't browse. The verifier will reject every claim citing them, and the rewrite loop will delete those claims (and renumber). Better to browse fewer, cite all you browsed.
 {{else}}
 **Synthesis-mode template** — structured analytical report (default).
 

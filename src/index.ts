@@ -8,6 +8,7 @@ dotenv.config({ override: false });
 
 import { createResearchApp, type ResearchAppOptions } from "./agent.js";
 import type { ResearchParams, ResearchResult } from "./types.js";
+import { DEPTH_CONFIG } from "./types.js";
 import { getMaxDurationSeconds } from "./config.js";
 import { getModel } from "@mariozechner/pi-ai";
 import {
@@ -139,11 +140,12 @@ async function main() {
     ? (args[depthIndex + 1] as "quick" | "standard" | "deep")
     : "standard";
 
-  // Parse --max-sources
+  // Parse --max-sources. Leave undefined when not passed so the depth config drives
+  // the ceiling (quick 20 / standard 50 / deep 80) — an explicit flag overrides it.
   const maxSourcesIndex = args.indexOf("--max-sources");
   const maxSources = maxSourcesIndex >= 0
     ? parseInt(args[maxSourcesIndex + 1], 10)
-    : 20;
+    : undefined;
 
   // TUI is the default for interactive sessions; --no-tui falls back to streamed logs.
   const useTui = !!process.stdin.isTTY && !!process.stdout.isTTY && !args.includes("--no-tui");
@@ -387,7 +389,7 @@ async function main() {
     console.log(`\nDurable Researcher`);
     console.log(`Topic: ${topic}`);
     console.log(`Depth: ${depth}`);
-    console.log(`Max sources: ${maxSources}`);
+    console.log(`Max sources: ${maxSources ?? `${DEPTH_CONFIG[depth].maxSources} (depth default)`}`);
     if (params.clarifications) {
       console.log(`Clarifications: ${params.clarifications.split("\n").length / 3} answers captured`);
     }
@@ -409,7 +411,7 @@ async function main() {
     if (useTui && eventBus && steeringQueue) {
       tuiHandle = runTui({
         topic: liveTopic,
-        maxSources,
+        maxSources: maxSources ?? DEPTH_CONFIG[depth].maxSources,
         modelLabel,
         bus: eventBus,
         steeringQueue,

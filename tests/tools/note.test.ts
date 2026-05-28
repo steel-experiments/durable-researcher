@@ -4,6 +4,7 @@
 import { describe, it, expect } from "vitest";
 import { createNoteTool } from "../../src/tools/note.js";
 import type { ResearchNote } from "../../src/types.js";
+import { MAX_EXCERPTS_PER_NOTE } from "../../src/types.js";
 
 describe("createNoteTool", () => {
   it("appends a note to the notes array", async () => {
@@ -105,7 +106,7 @@ describe("createNoteTool", () => {
     ]);
   });
 
-  it("caps keyExcerpts at 4 and trims each to 240 chars", async () => {
+  it("caps keyExcerpts at MAX_EXCERPTS_PER_NOTE and trims each to 240 chars", async () => {
     const notes: ResearchNote[] = [];
     const tool = createNoteTool(notes);
     const longQuote = "x".repeat(300);
@@ -115,10 +116,11 @@ describe("createNoteTool", () => {
       content: "Content",
       sourceUrls: [],
       confidence: "medium" as const,
-      keyExcerpts: ["e1", "e2", "e3", "e4", "e5", longQuote],
+      keyExcerpts: ["e1", "e2", "e3", "e4", "e5", "e6", "e7", "e8", "e9", "e10", longQuote],
     });
 
-    expect(notes[0].keyExcerpts).toHaveLength(4);
+    expect(notes[0].keyExcerpts).toHaveLength(MAX_EXCERPTS_PER_NOTE);
+    expect(MAX_EXCERPTS_PER_NOTE).toBe(8);
     for (const ex of notes[0].keyExcerpts!) {
       expect(ex.length).toBeLessThanOrEqual(240);
     }

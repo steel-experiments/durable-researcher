@@ -337,6 +337,72 @@ describe("verifyClaims (with stubbed verifier)", () => {
     expect(text).not.toMatch(/fact two/);
   });
 
+  it("buildRewriteSteering treats no-excerpt failures as mandatory deletions", () => {
+    const text = buildRewriteSteering({
+      claims: [
+        {
+          claim: "Voyager achieved X",
+          sourceN: 3,
+          sourceUrl: "https://example.com/voyager",
+          supported: false,
+          reason: "No excerpts recorded for this source — cannot ground the claim",
+        },
+        {
+          claim: "Dangling source",
+          sourceN: 9,
+          sourceUrl: null,
+          supported: false,
+          reason: "Cited source [9] not found in the report's Sources section",
+        },
+      ],
+      summary: { total: 2, supported: 0, unsupported: 2, passRate: 0, status: "failed" },
+    });
+    // Ungrounded: must call out the source numbers and demand DELETE + Sources removal + renumber.
+    expect(text).toContain("[3], [9]");
+    expect(text).toMatch(/DELETE/);
+    expect(text).toMatch(/REMOVE those entries|REMOVE these entries|REMOVE.*Sources section/);
+    expect(text).toMatch(/Renumber/);
+    expect(text).toContain("Voyager achieved X");
+  });
+
+  it("buildRewriteSteering distinguishes unsupported (soften/re-cite) from ungrounded (delete)", () => {
+    const text = buildRewriteSteering({
+      claims: [
+        {
+          claim: "Browsed source claim",
+          sourceN: 1,
+          sourceUrl: "https://a.com",
+          supported: false,
+          reason: "Excerpts mention X but not Y",
+        },
+        {
+          claim: "Phantom source claim",
+          sourceN: 2,
+          sourceUrl: "https://b.com",
+          supported: false,
+          reason: "No excerpts recorded for this source",
+        },
+      ],
+      summary: { total: 2, supported: 0, unsupported: 2, passRate: 0, status: "failed" },
+    });
+    // Unsupported block keeps soften/re-cite/delete options.
+    expect(text).toMatch(/Soften the claim/);
+    expect(text).toMatch(/Re-cite a different/);
+    // Ungrounded block is unambiguous — DELETE only.
+    expect(text).toMatch(/DELETE the sentence/);
+    // Both example claims surface.
+    expect(text).toContain("Browsed source claim");
+    expect(text).toContain("Phantom source claim");
+  });
+
+  it("buildRewriteSteering's zero-claims path demands citing only browsed sources", () => {
+    const text = buildRewriteSteering({
+      claims: [],
+      summary: { total: 0, supported: 0, unsupported: 0, passRate: 0, status: "no_claims" },
+    });
+    expect(text).toContain("Sources section MUST be a URL you actually browsed");
+  });
+
   it("returns no_claims failure when no numeric citations are found", async () => {
     const verifier: ClaimVerifier = async () => ({
       supported: true,

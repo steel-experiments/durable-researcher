@@ -10,6 +10,7 @@ import {
   rankNotes,
 } from "../src/notes-ranker.js";
 import type { ResearchNote } from "../src/types.js";
+import { MAX_EXCERPTS_PER_NOTE } from "../src/types.js";
 
 describe("computeSimilarity", () => {
   it("returns 1.0 for identical strings", () => {
@@ -161,23 +162,24 @@ describe("mergeNotes keyExcerpts", () => {
     expect(merged.keyExcerpts).toContain("Unique B");
   });
 
-  it("caps merged excerpts at 4", () => {
+  it("caps merged excerpts at MAX_EXCERPTS_PER_NOTE", () => {
     const a: ResearchNote = {
       title: "A",
       content: "x".repeat(50),
       sourceUrls: [],
       confidence: "high",
-      keyExcerpts: ["A1", "A2", "A3"],
+      keyExcerpts: ["A1", "A2", "A3", "A4", "A5"],
     };
     const b: ResearchNote = {
       title: "B",
       content: "y".repeat(50),
       sourceUrls: [],
       confidence: "high",
-      keyExcerpts: ["B1", "B2", "B3"],
+      keyExcerpts: ["B1", "B2", "B3", "B4", "B5"],
     };
     const merged = mergeNotes(a, b);
-    expect(merged.keyExcerpts!.length).toBeLessThanOrEqual(4);
+    expect(merged.keyExcerpts!.length).toBeLessThanOrEqual(MAX_EXCERPTS_PER_NOTE);
+    expect(merged.keyExcerpts!.length).toBe(MAX_EXCERPTS_PER_NOTE);
   });
 
   it("handles missing excerpts on one side", () => {
