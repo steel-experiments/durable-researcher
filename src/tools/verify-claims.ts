@@ -357,13 +357,38 @@ export async function verifyClaims(opts: {
   return { claims, summary: computeVerificationSummary(claims) };
 }
 
+/**
+ * Verifier calibration. Prior wording was "Be strict: 'related topic discussed'
+ * is NOT support" — that ran ~30-37% pass rate on survey-density reports because
+ * fine-grained bibliographic claims (X is a Y benchmark from year Z) get rejected
+ * even when the source plainly states all three facts in slightly different
+ * wording. The new wording asks for semantic equivalence with bright-line
+ * rejection cases. Don't flip back to strict without re-running validation.
+ */
 const VERIFY_SYSTEM = [
-  "You verify whether a single claim is supported by verbatim quotes from one source.",
-  "Read the claim and the quotes. Decide:",
-  "  supported=true   if the quotes directly state, imply, or quantify the claim",
-  "  supported=false  if the quotes are silent on the claim, contradict it, or only loosely relate",
-  "Be strict: 'related topic discussed' is NOT support. A claim is supported only if a quote substantiates it.",
-  "Output exactly one JSON object: {\"supported\": boolean, \"reason\": string}. No prose, no preamble.",
+  "You verify whether a single CLAIM is supported by QUOTES from one source.",
+  "",
+  "The claim is SUPPORTED when a reasonable reader of the quotes would agree the source backs it — paraphrase and reordering are fine; what matters is whether the underlying facts overlap.",
+  "",
+  "Examples that ARE supported:",
+  `  • Claim: "OSWorld has 369 tasks." Quote: "OSWorld provides 369 real-world computer tasks across operating systems." → supported (same fact, different framing).`,
+  `  • Claim: "Claude Opus 4.6 leads OSWorld at 72.7%." Quote: "Anthropic's Claude Opus 4.6 leads with 72.7%." → supported (the agent and the score both appear).`,
+  `  • Claim: "τ-bench tests tool-agent-user interaction in customer-service domains." Quote: "τ-bench: a benchmark for tool-agent-user interaction in retail and airline domains." → supported (customer-service is a fair gloss of retail+airline).`,
+  `  • Claim: "AgentBench evaluates LLMs across multiple environments." Quote: "AgentBench is the first multi-dimensional evaluation suite for LLM-as-Agent across 8 distinct environments." → supported (multiple = 8).`,
+  "",
+  "Examples that are NOT supported:",
+  `  • Claim: "The agent achieves 91% accuracy." Quote: "The agent performs well on the benchmark." → not supported (no number).`,
+  `  • Claim: "The paper was published at CHI 2024." Quote: "Recently presented at a workshop." → not supported (specific venue missing).`,
+  `  • Claim: "X is faster than Y." Quote: "X and Y are both web agents." → not supported (no comparison).`,
+  "",
+  "Reject only when one of these holds:",
+  "  (a) The quotes are silent on the claim's specific fact (no factual overlap), OR",
+  "  (b) The quotes contradict the claim, OR",
+  "  (c) The claim adds a specific number, date, name, or attribution the quotes don't contain.",
+  "",
+  "Be reasonable, not pedantic. A claim that captures the substance of a quote in slightly different words is supported.",
+  "",
+  `Output exactly one JSON object: {"supported": boolean, "reason": string}. No prose, no preamble.`,
 ].join("\n");
 
 /** Default verifier — calls the utility LLM with a tight JSON-output prompt. */
