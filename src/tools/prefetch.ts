@@ -5,11 +5,9 @@ import Steel from "steel-sdk";
 import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { multiEngineSearch, filterByRelevance } from "../steel-client.js";
-import { isContentMeaningful, truncateContent } from "../content.js";
-import { fetchBrowseContent, summarizeContent } from "./browse.js";
-import { getCachedBrowse, setCachedBrowse } from "../browse-cache.js";
+import { browseOne } from "./browse.js";
 import type { ToolProgress } from "../event-bus.js";
-import { captureExcerptsForUrl, type UrlExcerptStore } from "../url-excerpts.js";
+import type { UrlExcerptStore } from "../url-excerpts.js";
 
 const PrefetchParams = Type.Object({
   queries: Type.Array(Type.String(), {
@@ -81,9 +79,6 @@ export function createPrefetchTool(
     execute: async (_toolCallId, params) => {
       const { queries } = params;
       const semaphore = createSemaphore(MAX_CONCURRENT_BROWSES);
-      // Keep in sync with browse.ts / scout.ts — short content goes through raw to
-      // preserve specific data, citations, and named entities.
-      const SMART_SUMMARIZE_THRESHOLD = 10000;
 
       // Track budget across all queries
       let totalBrowsed = 0;
@@ -101,47 +96,37 @@ export function createPrefetchTool(
             try {
               if (totalBrowsed >= maxBudget) return;
 
-              let scraped: { content: string; title: string; rawLength: number };
-              const cached = taskId ? await getCachedBrowse(taskId, url).catch(() => null) : null;
-              if (cached) {
-                scraped = { content: cached.content, title: cached.title, rawLength: cached.rawLength };
-              } else {
-                scraped = await fetchBrowseContent(client, url);
-              }
-              scrapedUrls.add(url);
+              const result = await browseOne({
+                client,
+                url,
+                topic,
+                scrapedUrls,
+                taskId,
+                urlExcerpts,
+              });
+
               totalBrowsed++;
               allBrowsedUrls.push(url);
-              report(`    [${totalBrowsed}/${totalQueued}] ${cached ? "Cached" : "Browsed"}: ${scraped.title.slice(0, 60)}`);
+              report(`    [${totalBrowsed}/${totalQueued}] ${result.fromCache ? "Cached" : "Browsed"}: ${result.title.slice(0, 60)}`);
 
-              const meaningful = isContentMeaningful(scraped.content);
-
-              // Skip caching dead pages — see browse.ts for the rationale.
-              if (!cached && taskId && meaningful) {
-                await setCachedBrowse(taskId, url, scraped).catch(() => {});
-              }
-
-              if (!meaningful) {
-                qr.browseResults.push({ query, url, title: scraped.title, summary: "[Insufficient content]", rawLength: scraped.rawLength });
+              if (!result.meaningful) {
+                qr.browseResults.push({
+                  query,
+                  url,
+                  title: result.title,
+                  summary: "[Insufficient content]",
+                  rawLength: Number(result.details.rawLength ?? 0),
+                });
                 return;
               }
 
-              let summary: string;
-              if (scraped.content.length <= SMART_SUMMARIZE_THRESHOLD) {
-                summary = scraped.content;
-              } else {
-                try {
-                  summary = await summarizeContent(scraped.content, topic);
-                } catch {
-                  summary = truncateContent(scraped.content, 4000);
-                }
-              }
-
-              captureExcerptsForUrl(urlExcerpts, url, {
-                summary,
-                content: scraped.content,
+              qr.browseResults.push({
+                query,
+                url,
+                title: result.title,
+                summary: String(result.details.summary ?? ""),
+                rawLength: Number(result.details.rawLength ?? 0),
               });
-
-              qr.browseResults.push({ query, url, title: scraped.title, summary, rawLength: scraped.rawLength });
             } catch (err) {
               qr.errors.push(`Browse failed for ${url}: ${(err as Error).message}`);
             } finally {

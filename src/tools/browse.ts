@@ -66,6 +66,7 @@ export type BrowseOneResult = {
   text: string;
   title: string;
   meaningful: boolean;
+  fromCache: boolean;
   details: Record<string, unknown>;
 };
 
@@ -91,6 +92,7 @@ export async function browseOne(opts: {
   let rawLength: number;
 
   const cached = taskId ? await getCachedBrowse(taskId, url).catch(() => null) : null;
+  const fromCache = cached !== null;
   if (cached) {
     content = cached.content;
     title = cached.title;
@@ -116,6 +118,7 @@ export async function browseOne(opts: {
       text: `Page "${title}" (${url}) had insufficient content (${rawLength} chars raw). The page may require authentication, be paywalled, or contain mostly non-text content.`,
       title,
       meaningful: false,
+      fromCache,
       details: { url, title, rawLength, meaningful: false },
     };
   }
@@ -154,6 +157,7 @@ export async function browseOne(opts: {
     text: `## ${refined.title}\n**Source:** ${refined.url}\n**Raw length:** ${refined.rawLength} chars\n\n${refined.summary}`,
     title,
     meaningful: true,
+    fromCache,
     details: refined as unknown as Record<string, unknown>,
   };
 }

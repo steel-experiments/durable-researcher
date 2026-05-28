@@ -7,9 +7,8 @@ import dotenv from "dotenv";
 dotenv.config({ override: false });
 
 import { createResearchApp, type ResearchAppOptions } from "./agent.js";
-import type { ResearchParams, ResearchResult } from "./types.js";
+import type { ResearchParams } from "./types.js";
 import { DEPTH_CONFIG } from "./types.js";
-import { getMaxDurationSeconds } from "./config.js";
 import { getModel } from "@mariozechner/pi-ai";
 import {
   findRecentTasks,
@@ -19,7 +18,7 @@ import {
 } from "./task-finder.js";
 import { runFollowUp } from "./follow-up.js";
 import { runClarification } from "./clarify.js";
-import { rebuildStateFromMessages, type UsageStats } from "./durable-turns.js";
+import { rebuildStateFromMessages } from "./durable-turns.js";
 import { createResearchEventBus } from "./event-bus.js";
 import { createSteeringQueue } from "./steering-queue.js";
 import { runTui } from "./tui/run-tui.js";
@@ -31,11 +30,18 @@ import {
   formatTask,
   createIsolatedQueueName,
 } from "./cli-help.js";
-import { saveResearchResult, printUsage } from "./report-io.js";
 import { cleanupTasks } from "./task-cleanup.js";
-import { clearStaleLease, defaultWorkerId, reapOrphanedTasksAllQueues } from "./lease.js";
+import { reapOrphanedTasksAllQueues } from "./lease.js";
 import { showVerification } from "./verification-inspector.js";
 import { runCampaignCli } from "./campaign-cli.js";
+import { parseResearchCliArgs, validateResearchCliArgs } from "./cli-args.js";
+import { runResearchWorkerUntilResult } from "./cli-runner.js";
+import {
+  printCompletedResearchResult,
+  printTaskFailure,
+  printUsageIfPresent,
+  type CompletedResearchForCli,
+} from "./cli-output.js";
 
 
 async function main() {
@@ -103,85 +109,41 @@ async function main() {
     // a clearer error if the DB is genuinely down.
   }
 
-  const forceNew = args.includes("--new");
-  const forceExtend = args.includes("--extend");
-  const forceView = args.includes("--view");
-
-  // --resume <task-id>: explicit resume
-  const resumeIndex = args.indexOf("--resume");
+  const cli = parseResearchCliArgs(args);
   let taskID: string | undefined;
   let taskQueue = "default";
   let isResume = false;
 
-  // Parse flags with values
-  const flagsWithValues = new Set([
-    "--depth",
-    "--max-sources",
-    "--resume",
-    "--model",
-    "--show-verification",
-  ]);
-  const skipNext = new Set<number>();
-  args.forEach((a, i) => {
-    if (flagsWithValues.has(a)) skipNext.add(i + 1);
-  });
-  const topic = args.find(
-    (a, i) => !a.startsWith("--") && !skipNext.has(i),
-  );
-
-  if (resumeIndex < 0 && !topic) {
-    console.error("Error: No research topic provided.");
+  const validationError = validateResearchCliArgs(cli);
+  if (validationError) {
+    console.error(`Error: ${validationError}`);
     process.exit(1);
   }
 
-  // Parse --depth
-  const depthIndex = args.indexOf("--depth");
-  const depth = depthIndex >= 0
-    ? (args[depthIndex + 1] as "quick" | "standard" | "deep")
-    : "standard";
-
-  // Parse --max-sources. Leave undefined when not passed so the depth config drives
-  // the ceiling (quick 20 / standard 50 / deep 80) — an explicit flag overrides it.
-  const maxSourcesIndex = args.indexOf("--max-sources");
-  const maxSources = maxSourcesIndex >= 0
-    ? parseInt(args[maxSourcesIndex + 1], 10)
-    : undefined;
+  const { topic, depth, maxSources } = cli;
 
   // TUI is the default for interactive sessions; --no-tui falls back to streamed logs.
-  const useTui = !!process.stdin.isTTY && !!process.stdout.isTTY && !args.includes("--no-tui");
+  const useTui = !!process.stdin.isTTY && !!process.stdout.isTTY && !cli.noTui;
   const eventBus = useTui ? createResearchEventBus() : undefined;
   const steeringQueue = useTui ? createSteeringQueue() : undefined;
 
   // Parse --model (format: provider:modelId, e.g. zai:glm-5.1)
-  const modelIndex = args.indexOf("--model");
   let appOptions: ResearchAppOptions = {
     eventBus,
     steeringQueue,
     quiet: useTui,
   };
   let modelLabel = "default";
-  if (modelIndex >= 0) {
-    const modelStr = args[modelIndex + 1];
-    if (!modelStr || !modelStr.includes(":")) {
-      console.error('Error: --model format is provider:model (e.g. zai:glm-5.1)');
-      process.exit(1);
-    }
-    const [provider, modelId] = modelStr.split(":");
+  if (cli.modelSpec) {
+    const [provider, modelId] = cli.modelSpec.split(":");
     try {
       appOptions.model = getModel(provider as any, modelId as any);
       modelLabel = `${provider}:${modelId}`;
       if (!useTui) console.log(`Using model: ${provider}/${modelId}`);
     } catch {
-      console.error(`Error: Unknown model "${modelStr}".`);
+      console.error(`Error: Unknown model "${cli.modelSpec}".`);
       process.exit(1);
     }
-  }
-
-  if (!["quick", "standard", "deep"].includes(depth)) {
-    console.error(
-      `Error: Invalid depth "${depth}". Use quick, standard, or deep.`,
-    );
-    process.exit(1);
   }
 
   // If no explicit resume, check for existing tasks with same/similar topic
@@ -195,8 +157,8 @@ async function main() {
   let liveTopic = topic ?? "resumed research";
   let app = createResearchApp({ ...appOptions, queueName: taskQueue });
 
-  if (resumeIndex >= 0) {
-    taskID = args[resumeIndex + 1];
+  if (cli.resumeTaskId) {
+    taskID = cli.resumeTaskId;
     if (!taskID) {
       console.error("Error: --resume requires a task ID.");
       process.exit(1);
@@ -216,7 +178,7 @@ async function main() {
     console.log(`\nResuming task: ${taskID}\n`);
   }
 
-  if (!taskID && topic && !forceNew && !forceExtend) {
+  if (!taskID && topic && !cli.forceNew && !cli.forceExtend) {
     const recentTasks = await findRecentTasks();
 
     // Check for completed tasks first
@@ -236,7 +198,7 @@ async function main() {
 
         // Determine action: flag, interactive, or default
         let action: "view" | "extend" | "new";
-        if (forceView) {
+        if (cli.forceView) {
           action = "view";
         } else if (process.stdin.isTTY) {
           action = await askAction();
@@ -331,7 +293,7 @@ async function main() {
   }
 
   // Handle --extend flag directly (without interactive prompt)
-  if (!taskID && topic && forceExtend && !existingResult) {
+  if (!taskID && topic && cli.forceExtend && !existingResult) {
     const recentTasks = await findRecentTasks();
     const completed = recentTasks.filter((t) => t.status === "completed");
     const match = findExactMatch(completed, topic);
@@ -379,7 +341,7 @@ async function main() {
     const params: ResearchParams = { topic, depth, maxSources };
 
     // Run clarification if requested and interactive
-    if (args.includes("--clarify") && process.stdin.isTTY) {
+    if (cli.clarify && process.stdin.isTTY) {
       const clarifications = await runClarification(topic);
       if (clarifications) {
         params.clarifications = clarifications;
@@ -429,166 +391,20 @@ async function main() {
       console.log(`Starting worker...\n`);
     }
 
-    // On resume: if the prior process exited without releasing its lease, the next
-    // worker would otherwise block for up to claimTimeout. Detect a lease held by
-    // a dead PID on this host and clear it before startWorker polls.
-    const workerId = defaultWorkerId();
-    if (isResume) {
-      try {
-        const clear = await clearStaleLease(taskID, taskQueue);
-        if (clear.cleared) {
-          const msg = `Cleared stale lease (holder: ${clear.lease?.claimedBy ?? "?"}, reason: ${clear.reason}).`;
-          if (eventBus) eventBus.emit({ type: "agent-status", text: msg });
-          else console.log(msg);
-        } else if (clear.reason === "holder-alive" && clear.lease?.secondsRemaining) {
-          const msg = `Another worker still holds the lease (${clear.lease.claimedBy}); waiting up to ${clear.lease.secondsRemaining}s for it to expire.`;
-          if (eventBus) eventBus.emit({ type: "agent-status", text: msg });
-          else console.log(msg);
-        } else if (clear.reason === "different-host" && clear.lease?.secondsRemaining) {
-          const msg = `Lease held by another host (${clear.lease.claimedBy}); waiting up to ${clear.lease.secondsRemaining}s for it to expire.`;
-          if (eventBus) eventBus.emit({ type: "agent-status", text: msg });
-          else console.log(msg);
-        }
-      } catch (err) {
-        // Non-fatal — fall through to normal worker claim polling.
-        const msg = `Could not check stale lease: ${(err as Error).message}`;
-        if (eventBus) eventBus.emit({ type: "agent-status", text: msg });
-        else console.warn(msg);
-      }
-    }
-    eventBus?.emit({ type: "agent-status", text: "Starting worker claim..." });
-
-    // Release our own lease on graceful exit so the next resume is immediate.
-    // Idempotent: only fires once even if multiple signals arrive.
-    let releasing = false;
-    const releaseOwnLease = async (): Promise<void> => {
-      if (releasing) return;
-      releasing = true;
-      try {
-        await clearStaleLease(taskID!, taskQueue, {
-          force: true,
-          currentWorkerId: workerId,
-        });
-      } catch {
-        // Best-effort — if release fails, the lease will expire on its own.
-      }
-    };
-
-    // SIGINT/SIGTERM: release the lease and exit without waiting on the in-flight
-    // task. The task is durable; the next resume rebuilds from checkpoints.
-    const onSignal = (signal: NodeJS.Signals) => {
-      // Async release, then exit. Don't await worker.close() — it would block on
-      // the running task.
-      void releaseOwnLease().finally(() => {
-        if (!useTui) console.log(`\nReceived ${signal}. Task ${taskID} can be resumed.`);
-        process.exit(0);
-      });
-    };
-    process.once("SIGINT", onSignal);
-    process.once("SIGTERM", onSignal);
-
-    const worker = await app.startWorker({
-      concurrency: 1,
-      claimTimeout: 600,
-      workerId,
-      onError: (err) => {
-        eventBus?.emit({ type: "task-error", message: err.message });
-        if (!useTui) console.error("Worker error:", err.message);
-      },
-    });
-
-    // In TUI mode: render the TUI and race the task result against the user quitting.
-    let result;
-    if (tuiHandle && eventBus) {
-      const taskPromise = app.awaitTaskResult(taskID, {
-        queue: taskQueue,
-        timeout: getMaxDurationSeconds() + 30,
-      });
-
-      const winner = await Promise.race([
-        taskPromise.then((r) => ({ kind: "task" as const, result: r })),
-        tuiHandle.waitForExit.then(() => ({ kind: "tui-exit" as const })),
-      ]);
-
-      if (winner.kind === "tui-exit") {
-        // Don't kill the task — Absurd checkpoints survive process exit.
-        // Release our own lease first so the next resume claims immediately
-        // instead of waiting up to claimTimeout for the lease to expire.
-        await releaseOwnLease();
-        console.log(
-          `\nQuit requested. Task ${taskID} can be resumed:\n  bun run src/index.ts --resume ${taskID}`,
-        );
-        // Don't await worker.close() — it would block on the in-flight task.
-        // The lease is already released; let process.exit tear down the worker.
-        process.exit(0);
-      }
-
-      result = winner.result;
-      if (result.state === "completed") {
-        eventBus.emit({ type: "task-complete" });
-      } else if (result.state === "failed") {
-        const failureText =
-          typeof result.failure === "string"
-            ? result.failure
-            : result.failure
-            ? JSON.stringify(result.failure)
-            : "task failed";
-        eventBus.emit({ type: "task-error", message: failureText });
-      } else {
-        eventBus.emit({ type: "task-error", message: `Task ${result.state}.` });
-      }
-      await tuiHandle.waitForExit;
-    } else {
-      result = await app.awaitTaskResult(taskID, {
-        queue: taskQueue,
-        timeout: getMaxDurationSeconds() + 30, // extra buffer beyond task max duration
-      });
-    }
-
-    process.removeListener("SIGINT", onSignal);
-    process.removeListener("SIGTERM", onSignal);
+    const result = await runResearchWorkerUntilResult({
+      app,
+      taskID,
+      taskQueue,
+      isResume,
+      useTui,
+      eventBus,
+      tuiHandle,
+    }) as Awaited<ReturnType<typeof app.awaitTaskResult>>;
 
     if (result.state === "completed" && result.result) {
-      const research = result.result as unknown as {
-        topic: string;
-        report: string;
-        sources: { title: string; url: string }[];
-        notes: ResearchNote[];
-        messages: AgentMessage[];
-        explanation?: ResearchResult["explanation"];
-        mode?: ResearchResult["mode"];
-      };
-
-      // Print report if it wasn't already streamed by the logging persister.
-      // On timeout, the report is built from notes and was never streamed.
-      // On resume, the agent produced the report in a previous run.
-      // In TUI mode, the persister is quiet so the report needs to be printed here.
-      // On a normal fresh run with logs, the persister already printed it.
-      if (research.report) {
-        const isPartialReport = research.report.startsWith("[Partial results");
-        if (useTui || isResume || isPartialReport) {
-          console.log("\n" + "=".repeat(80));
-          console.log("RESEARCH REPORT");
-          console.log("=".repeat(80) + "\n");
-          console.log(research.report);
-        }
-        const saved = saveResearchResult(research as ResearchResult);
-        console.log(`\nReport saved to: ${saved.markdownPath}`);
-        if (saved.htmlPath) {
-          console.log(`HTML artifact saved to: ${saved.htmlPath}`);
-        }
-      }
-
-      console.log("-".repeat(80));
-      console.log(`Sources consulted: ${research.sources.length}`);
-
-      // Print usage stats
-      const usage = (app as any).getLastUsage?.() as UsageStats | undefined;
-      if (usage && (usage.inputTokens > 0 || usage.outputTokens > 0)) {
-        printUsage(usage);
-      }
-
-      await worker.close();
+      const research = result.result as unknown as CompletedResearchForCli;
+      printCompletedResearchResult(research, { useTui, isResume });
+      printUsageIfPresent((app as any).getLastUsage?.());
 
       if (extensionInstruction && useTui) {
         const priorUrls = research.sources?.map((s) => s.url) ?? [];
@@ -633,18 +449,9 @@ async function main() {
       await app.close();
       break;
     } else {
-      if (result.state === "failed") {
-        console.error("\nResearch task failed:", result.failure);
-      } else {
-        console.error("\nUnexpected task state:", result.state);
-      }
+      printTaskFailure(result);
+      printUsageIfPresent((app as any).getLastUsage?.());
 
-      const usage = (app as any).getLastUsage?.() as UsageStats | undefined;
-      if (usage && (usage.inputTokens > 0 || usage.outputTokens > 0)) {
-        printUsage(usage);
-      }
-
-      await worker.close();
       await app.close();
       break;
     }

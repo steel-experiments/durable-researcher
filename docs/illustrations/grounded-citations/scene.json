@@ -1,0 +1,33 @@
+{
+  "layout": "split",
+  "ratio": "50:50",
+  "header": {
+    "kicker": "DURABLE RESEARCHER · VERIFY",
+    "title": "Floating citations vs. grounded sources"
+  },
+  "left_label": { "label": "UNGROUNDED CLAIMS", "count": "citations unchecked" },
+  "right_label": { "label": "GROUNDED CITATIONS", "count": "tied to browsed sources" },
+  "left": {
+    "type": "list_panel",
+    "items": [
+      { "accent": "red",   "label": "“…handles 10k requests/sec”", "detail": "[?] no source" },
+      { "accent": "red",   "label": "“…SOC 2 Type II certified”",  "detail": "[?] no source" },
+      { "accent": "amber", "label": "“…most teams choose it”",     "detail": "[?] paraphrased" },
+      { "accent": "red",   "label": "“…licensed under MIT”",       "detail": "[?] no source" }
+    ]
+  },
+  "middle": { "type": "vs_bar", "label": "vs" },
+  "right": {
+    "type": "list_panel",
+    "items": [
+      { "accent": "green", "label": "“…handles 10k requests/sec”", "detail": "→ docs site · “sustained 10k rps”" },
+      { "accent": "green", "label": "“…SOC 2 Type II certified”",  "detail": "→ /trust · audit report" },
+      { "accent": "green", "label": "“…61% of teams choose it”",   "detail": "→ stateof.dev · survey excerpt" },
+      { "accent": "green", "label": "“…licensed under MIT”",       "detail": "→ github.com · LICENSE" }
+    ]
+  },
+  "footer": {
+    "caption": "Example: the verify step rejects any claim it can’t tie to a browsed source.",
+    "watermark": "steel.dev"
+  }
+}

@@ -5,14 +5,10 @@ import Steel from "steel-sdk";
 import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { multiEngineSearch, filterByRelevance } from "../steel-client.js";
-import { isContentMeaningful, truncateContent } from "../content.js";
-import { fetchBrowseContent, summarizeContent } from "./browse.js";
-import { getCachedBrowse, setCachedBrowse } from "../browse-cache.js";
+import { browseOne } from "./browse.js";
 import type { ToolProgress } from "../event-bus.js";
-import { captureExcerptsForUrl, type UrlExcerptStore } from "../url-excerpts.js";
+import type { UrlExcerptStore } from "../url-excerpts.js";
 import {
-  isPaperLikeUrl,
-  extractReferenceCandidates,
   type ReferenceQueue,
 } from "../reference-queue.js";
 
@@ -29,9 +25,6 @@ const ScoutParams = Type.Object({
     }),
   ),
 });
-
-/** Content shorter than this is returned raw — preserves specific data, citations, named entities. */
-const SMART_SUMMARIZE_THRESHOLD = 10000;
 
 /** Default number of pages to browse per scout call. */
 const DEFAULT_MAX_BROWSE = 5;
@@ -96,65 +89,36 @@ export async function searchAndBrowse(opts: {
   await Promise.allSettled(
     toBrowse.map(async (result) => {
       try {
-        let scraped: { content: string; title: string; rawLength: number };
-
-        const cached = taskId ? await getCachedBrowse(taskId, result.url).catch(() => null) : null;
-        if (cached) {
-          scraped = { content: cached.content, title: cached.title, rawLength: cached.rawLength };
-        } else {
-          scraped = await fetchBrowseContent(client, result.url);
-        }
-
-        scrapedUrls.add(result.url);
+        const browsed = await browseOne({
+          client,
+          url: result.url,
+          topic,
+          scrapedUrls,
+          focus,
+          taskId,
+          urlExcerpts,
+          referenceQueue,
+        });
         browsedUrls.push(result.url);
 
-        const meaningful = isContentMeaningful(scraped.content);
-
-        // Skip caching dead pages — see browse.ts for the rationale.
-        if (!cached && taskId && meaningful) {
-          await setCachedBrowse(taskId, result.url, scraped).catch(() => {});
-        }
-
-        if (!meaningful) {
+        if (!browsed.meaningful) {
           browseResults.push({
             url: result.url,
-            title: scraped.title,
+            title: browsed.title,
             content: "[Insufficient content]",
-            rawLength: scraped.rawLength,
+            rawLength: Number(browsed.details.rawLength ?? 0),
           });
           return;
         }
 
-        // Harvest references from primary sources for later chasing.
-        if (referenceQueue && isPaperLikeUrl(result.url)) {
-          referenceQueue.add(extractReferenceCandidates(scraped.content));
-        }
-
-        // Smart summarization: short content raw, long content LLM-summarized
-        let processedContent: string;
-        if (scraped.content.length <= SMART_SUMMARIZE_THRESHOLD) {
-          processedContent = scraped.content;
-        } else {
-          try {
-            processedContent = await summarizeContent(scraped.content, topic, focus);
-          } catch {
-            processedContent = truncateContent(scraped.content, 4000);
-          }
-        }
-
-        captureExcerptsForUrl(urlExcerpts, result.url, {
-          summary: processedContent,
-          content: scraped.content,
-        });
-
         browseResults.push({
           url: result.url,
-          title: scraped.title,
-          content: processedContent,
-          rawLength: scraped.rawLength,
+          title: browsed.title,
+          content: String(browsed.details.summary ?? ""),
+          rawLength: Number(browsed.details.rawLength ?? 0),
         });
 
-        report(`    [${label}] ${cached ? "Cached" : "Browsed"}: ${scraped.title.slice(0, 60)}`);
+        report(`    [${label}] ${browsed.fromCache ? "Cached" : "Browsed"}: ${browsed.title.slice(0, 60)}`);
       } catch (err) {
         errors.push(`Failed: ${result.url} — ${(err as Error).message}`);
       }

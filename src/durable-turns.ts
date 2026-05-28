@@ -3,8 +3,13 @@
 
 import type { TaskContext, StepHandle } from "absurd-sdk";
 import type { AgentMessage, AgentEvent } from "@mariozechner/pi-agent-core";
-import type { MessageLogEntry, ResearchNote } from "./types.js";
+import type { MessageLogEntry } from "./types.js";
 import type { ResearchEventBus } from "./event-bus.js";
+import {
+  createMessageProjector,
+  projectMessage,
+  projectMessages,
+} from "./message-projector.js";
 
 /**
  * Load the message log from checkpointed Absurd steps.
@@ -110,9 +115,7 @@ export function createLoggingPersister(
   const persister = createMessagePersister(ctx, initialHandle);
   const { maxSources, maxTurns, scrapedUrls, usage, eventBus, quiet = false } = options;
   let turnCount = options.initialTurnCount ?? 0;
-  let isStreamingReport = false;
-  const noteCalls = new Map<string, ResearchNote>();
-  const browseCalls = new Map<string, string>();
+  const projector = createMessageProjector({ scrapedUrls });
 
   const log = (...args: Parameters<typeof console.log>) => {
     if (!quiet) console.log(...args);
@@ -220,30 +223,6 @@ export function createLoggingPersister(
           const hasToolCalls = msg.content.some(
             (c: { type: string }) => c.type === "toolCall",
           );
-          if (hasToolCalls) {
-            for (const content of msg.content) {
-              if (content.type !== "toolCall") continue;
-              if (content.name === "take_note") {
-                const args = content.arguments as {
-                  title: string;
-                  content: string;
-                  sourceUrls: string[];
-                  confidence: "high" | "medium" | "low";
-                  keyExcerpts?: string[];
-                };
-                noteCalls.set(content.id, {
-                  title: args.title,
-                  content: args.content,
-                  sourceUrls: args.sourceUrls,
-                  confidence: args.confidence,
-                  ...(args.keyExcerpts?.length ? { keyExcerpts: args.keyExcerpts } : {}),
-                });
-              } else if (content.name === "browse_url") {
-                const args = content.arguments as { url: string };
-                browseCalls.set(content.id, args.url);
-              }
-            }
-          }
           const textParts = msg.content.filter(
             (c): c is { type: "text"; text: string } => c.type === "text" && c.text.length > 0,
           );
@@ -269,14 +248,17 @@ export function createLoggingPersister(
             // Short non-tool text (status updates, etc.)
             log(`\n  [AGENT] ${fullText}`);
           }
-        } else if ("role" in msg && msg.role === "toolResult" && !msg.isError) {
-          if (msg.toolName === "take_note") {
-            const note = noteCalls.get(msg.toolCallId);
-            if (note) eventBus?.emit({ type: "note-added", note, index: noteCalls.size - 1 });
-          } else if (msg.toolName === "browse_url") {
-            const url = browseCalls.get(msg.toolCallId);
-            if (url) eventBus?.emit({ type: "browse-added", url });
-          }
+        }
+        const delta = projectMessage(projector, msg);
+        if (delta.noteAdded) {
+          eventBus?.emit({
+            type: "note-added",
+            note: delta.noteAdded.note,
+            index: delta.noteAdded.index,
+          });
+        }
+        if (delta.browseAdded) {
+          eventBus?.emit({ type: "browse-added", url: delta.browseAdded });
         }
         break;
       }
@@ -392,70 +374,8 @@ function formatToolArgs(toolName: string, args: Record<string, unknown>): string
  * - scrapedUrls: from successful browse_url/prefetch_sources/scout tool executions
  */
 export function rebuildStateFromMessages(messages: AgentMessage[]): {
-  notes: ResearchNote[];
+  notes: import("./types.js").ResearchNote[];
   scrapedUrls: Set<string>;
 } {
-  const notes: ResearchNote[] = [];
-  const scrapedUrls = new Set<string>();
-  const noteCalls = new Map<string, ResearchNote>();
-  const browseCalls = new Map<string, string>();
-
-  for (const msg of messages) {
-    if (!("role" in msg)) continue;
-
-    // Record tool call arguments so successful tool results can be replayed safely.
-    if (msg.role === "assistant") {
-      for (const content of msg.content) {
-        if (content.type !== "toolCall") continue;
-
-        if (content.name === "take_note") {
-          const args = content.arguments as {
-            title: string;
-            content: string;
-            sourceUrls: string[];
-            confidence: "high" | "medium" | "low";
-            keyExcerpts?: string[];
-          };
-          noteCalls.set(content.id, {
-            title: args.title,
-            content: args.content,
-            sourceUrls: args.sourceUrls,
-            confidence: args.confidence,
-            ...(args.keyExcerpts?.length ? { keyExcerpts: args.keyExcerpts } : {}),
-          });
-        } else if (content.name === "browse_url") {
-          const args = content.arguments as { url: string };
-          browseCalls.set(content.id, args.url);
-        }
-      }
-    }
-
-    if (msg.role !== "toolResult" || msg.isError) continue;
-
-    if (msg.toolName === "take_note") {
-      const note = noteCalls.get(msg.toolCallId);
-      if (note) notes.push(note);
-      continue;
-    }
-
-    if (msg.toolName === "browse_url") {
-      const url = browseCalls.get(msg.toolCallId);
-      if (url) scrapedUrls.add(url);
-      continue;
-    }
-
-    // Extract scraped URLs from prefetch_sources and scout tool results.
-    if (msg.toolName === "prefetch_sources" || msg.toolName === "scout") {
-      const details = msg.details as {
-        browsedUrls?: string[];
-      } | undefined;
-      if (details?.browsedUrls) {
-        for (const url of details.browsedUrls) {
-          scrapedUrls.add(url);
-        }
-      }
-    }
-  }
-
-  return { notes, scrapedUrls };
+  return projectMessages(messages);
 }

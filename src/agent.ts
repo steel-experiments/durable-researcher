@@ -19,21 +19,7 @@ import type { ResearchParams, ResearchResult, MessageLogEntry, TaskMode } from "
 import { DEPTH_CONFIG } from "./types.js";
 import { classifyTask } from "./classify.js";
 import { createSteelClient } from "./steel-client.js";
-import { createSearchTool } from "./tools/search.js";
-import { createBrowseTool } from "./tools/browse.js";
-import { createScreenshotTool } from "./tools/screenshot.js";
-import { createNoteTool } from "./tools/note.js";
-import { createWriteAdapterTool } from "./tools/write-adapter.js";
-import { createUseAdapterTool } from "./tools/use-adapter.js";
-import { createSubmitReportTool, type SubmittedReportRef } from "./tools/submit-report.js";
-import { createEvaluateTool } from "./tools/evaluate.js";
-import { createPlanTool } from "./tools/plan.js";
-import { createPrefetchTool } from "./tools/prefetch.js";
-import { createScoutTool } from "./tools/scout.js";
-import { createGapAnalysisTool } from "./tools/gap-analysis.js";
-import { createFindEntityTool } from "./tools/find-entity.js";
-import { createChaseReferencesTool } from "./tools/chase-references.js";
-import { createReferenceQueue } from "./reference-queue.js";
+import { createResearchTools } from "./research-tools.js";
 import {
   verifyClaims,
   shouldTriggerRewrite,
@@ -420,7 +406,6 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
 
       // 3. Create tools with closures over mutable state
       const resolvedMaxSources = params.maxSources ?? depthConfig.maxSources;
-      const prefetchBudget = Math.floor(resolvedMaxSources / 2);
       // BENCH_CACHE_KEY (e.g. `draco:<task_id>`) overrides ctx.taskID so benchmark
       // re-runs share the browse cache across Absurd invocations.
       const taskId = resolveCacheKey(ctx.taskID);
@@ -440,35 +425,18 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
       const toolProgress = bus ? createToolProgress(bus) : undefined;
       // Gap-fill loop is only worth its turns for breadth-oriented modes with a budget.
       const gapPasses = (mode === "survey" || mode === "synthesis") ? depthConfig.gapPasses : 0;
-      // Reference chasing follows paper citation graphs; reserve it for breadth surveys.
-      const referenceChasingEnabled = mode === "survey";
-      // Seed the queue with scrapedUrls so already-visited pages are never re-queued.
-      const referenceQueue = createReferenceQueue(scrapedUrls);
-      const tools = [
-        (() => {
-          const submittedReport: SubmittedReportRef = { value: null };
-          return createSubmitReportTool(submittedReport);
-        })(),
-        createPlanTool(params, mode, toolProgress),
-        createPrefetchTool(steelClient, scrapedUrls, params.topic, prefetchBudget, taskId, toolProgress, urlExcerpts),
-        createScoutTool(steelClient, scrapedUrls, params.topic, taskId, toolProgress, urlExcerpts, referenceQueue),
-        createSearchTool(steelClient, scrapedUrls, params.topic),
-        createBrowseTool(steelClient, scrapedUrls, params.topic, taskId, urlExcerpts, referenceQueue),
-        createScreenshotTool(steelClient),
-        createNoteTool(notes),
-        createEvaluateTool(notes, scrapedUrls, mode),
-        ...(gapPasses > 0
-          ? [
-              createGapAnalysisTool({ notes, topic: params.topic, maxCalls: gapPasses, progress: toolProgress }),
-              createFindEntityTool(steelClient, scrapedUrls, params.topic, taskId, toolProgress, urlExcerpts),
-            ]
-          : []),
-        ...(referenceChasingEnabled
-          ? [createChaseReferencesTool(steelClient, scrapedUrls, params.topic, referenceQueue, taskId, toolProgress, urlExcerpts)]
-          : []),
-        createUseAdapterTool(),
-        createWriteAdapterTool(),
-      ];
+      const tools = createResearchTools({
+        client: steelClient,
+        scrapedUrls,
+        notes,
+        params,
+        mode,
+        maxSources: resolvedMaxSources,
+        gapPasses,
+        taskId,
+        progress: toolProgress,
+        urlExcerpts,
+      });
 
       // 4. Build system prompt from template
       const systemPrompt = await loadTemplate("system", {

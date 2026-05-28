@@ -1,0 +1,22 @@
+{
+  "layout": "single",
+  "header": {
+    "kicker": "DURABLE RESEARCHER · VERIFY",
+    "title": "The verify → rewrite → verify loop"
+  },
+  "main_label": { "label": "REPORT QUALITY LOOP", "count": "5 steps" },
+  "main": {
+    "type": "timeline",
+    "steps": [
+      { "accent": "blue",   "label": "Draft",     "detail": "agent writes the report" },
+      { "accent": "amber",  "label": "Verify",    "detail": "flags claims with no grounded source" },
+      { "accent": "violet", "label": "Rewrite",   "detail": "patches the flagged claims" },
+      { "accent": "green",  "label": "Re-verify", "detail": "now reads the rewritten report, not the stale draft" },
+      { "accent": "green",  "label": "Pass",      "detail": "every claim tied to a browsed source" }
+    ]
+  },
+  "footer": {
+    "caption": "Example: the fix — re-verify reads the rewrite, so the loop actually converges.",
+    "watermark": "steel.dev"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "layout": "single",
+  "header": {
+    "kicker": "DURABLE RESEARCHER · TIMEOUT",
+    "title": "Research depth scales the clock"
+  },
+  "main_label": { "label": "MAX RESEARCH DURATION", "count": "by depth" },
+  "main": {
+    "type": "bar_chart",
+    "bars": [
+      { "accent": "neutral", "label": "quick",    "value": 20, "unit": "min" },
+      { "accent": "blue",    "label": "standard", "value": 40, "unit": "min" },
+      { "accent": "green",   "label": "deep",     "value": 60, "unit": "min" }
+    ]
+  },
+  "footer": {
+    "caption": "Example: a deep run now gets the full hour instead of timing out at 20 min.",
+    "watermark": "steel.dev"
+  }
+}
