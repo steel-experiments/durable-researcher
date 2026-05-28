@@ -11,8 +11,10 @@ import {
   computeVerificationSummary,
   buildRewriteSteering,
   shouldTriggerRewrite,
+  isBetterVerification,
   VERIFY_PASS_THRESHOLD,
   type ClaimVerifier,
+  type VerificationResult,
 } from "../../src/tools/verify-claims.js";
 import type { ResearchNote } from "../../src/types.js";
 
@@ -357,12 +359,13 @@ describe("verifyClaims (with stubbed verifier)", () => {
       ],
       summary: { total: 2, supported: 0, unsupported: 2, passRate: 0, status: "failed" },
     });
-    // Ungrounded: must call out the source numbers and demand DELETE + Sources removal + renumber.
+    // Ungrounded: must call out the source numbers and instruct removal of those entries + renumbering.
     expect(text).toContain("[3], [9]");
-    expect(text).toMatch(/DELETE/);
-    expect(text).toMatch(/REMOVE those entries|REMOVE these entries|REMOVE.*Sources section/);
+    expect(text.toLowerCase()).toMatch(/remove just that sentence|remove .*sources/);
     expect(text).toMatch(/Renumber/);
     expect(text).toContain("Voyager achieved X");
+    // The rewrite must not invite stripping the whole report.
+    expect(text).toMatch(/keep ALL its sections|structure is good|citations intact/i);
   });
 
   it("buildRewriteSteering distinguishes unsupported (soften/re-cite) from ungrounded (delete)", () => {
@@ -388,8 +391,8 @@ describe("verifyClaims (with stubbed verifier)", () => {
     // Unsupported block keeps soften/re-cite/delete options.
     expect(text).toMatch(/Soften the claim/);
     expect(text).toMatch(/Re-cite a different/);
-    // Ungrounded block is unambiguous — DELETE only.
-    expect(text).toMatch(/DELETE the sentence/);
+    // Ungrounded block asks for sentence-level removal OR re-citation, not whole-report stripping.
+    expect(text.toLowerCase()).toMatch(/remove just that sentence|re-cite it/);
     // Both example claims surface.
     expect(text).toContain("Browsed source claim");
     expect(text).toContain("Phantom source claim");
@@ -401,6 +404,34 @@ describe("verifyClaims (with stubbed verifier)", () => {
       summary: { total: 0, supported: 0, unsupported: 0, passRate: 0, status: "no_claims" },
     });
     expect(text).toContain("Sources section MUST be a URL you actually browsed");
+  });
+
+  describe("isBetterVerification", () => {
+    const make = (supported: number, total: number, status: "passed" | "failed" | "no_claims"): VerificationResult => ({
+      claims: [],
+      summary: { supported, total, unsupported: total - supported, passRate: total ? supported / total : 0, status },
+    });
+
+    it("any-claims beats no_claims, even at lower pass rate", () => {
+      const noClaims = make(0, 0, "no_claims");
+      const sparseClaims = make(1, 10, "failed");
+      expect(isBetterVerification(sparseClaims, noClaims)).toBe(true);
+      expect(isBetterVerification(noClaims, sparseClaims)).toBe(false);
+    });
+
+    it("higher supported count wins", () => {
+      const a = make(30, 50, "failed");
+      const b = make(10, 20, "failed");
+      expect(isBetterVerification(a, b)).toBe(true);
+      expect(isBetterVerification(b, a)).toBe(false);
+    });
+
+    it("on equal supported counts, higher pass rate wins", () => {
+      const a = make(10, 20, "failed"); // 50%
+      const b = make(10, 30, "failed"); // 33%
+      expect(isBetterVerification(a, b)).toBe(true);
+      expect(isBetterVerification(b, a)).toBe(false);
+    });
   });
 
   it("returns no_claims failure when no numeric citations are found", async () => {

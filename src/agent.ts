@@ -38,6 +38,7 @@ import {
   verifyClaims,
   shouldTriggerRewrite,
   buildRewriteSteering,
+  isBetterVerification,
   VERIFY_PASS_THRESHOLD,
   type VerificationResult,
 } from "./tools/verify-claims.js";
@@ -151,10 +152,14 @@ export function buildResult(
   verification?: { result: VerificationResult; attempts: number; rewriteTriggered: boolean },
   mode: TaskMode = "synthesis",
   urlTitles: ReadonlyMap<string, string> = new Map(),
+  /**
+   * When the rewrite loop tracked a best-so-far report that beats whatever's
+   * latest in the message log, pass it here so the final result reflects the
+   * best version (not a destructive last rewrite).
+   */
+  reportOverride?: string,
 ): ResearchResult {
-  // Prefer an explicit submit_report payload; otherwise use the final text-only
-  // assistant message as the report.
-  let report = extractFinalReport(messages) ?? "";
+  let report = reportOverride?.trim() || extractFinalReport(messages) || "";
 
   // Fall back to partial report from notes if no assistant report text
   if (!report && notes.length > 0) {
@@ -662,6 +667,9 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
 
       // Track verification state across the run (re-derived from message log on resume).
       let verificationState: { result: VerificationResult; attempts: number; rewriteTriggered: boolean } | undefined;
+      // Set by the rewrite loop's regression guard when a destructive rewrite would
+      // otherwise leave us with a worse final report than an earlier attempt.
+      let bestReportOverride: string | undefined;
 
       // 7. Handle first run vs resume
       const last = context.messages.at(-1);
@@ -797,6 +805,10 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         } else {
           let rewritesSoFar = priorAttempts;
           let currentReport = finalReport;
+          // Track the best (report, result) seen across all attempts so a destructive
+          // rewrite cannot leave us with a worse final report than we started with.
+          let bestReport: string | null = null;
+          let bestResult: VerificationResult | null = null;
 
           while (currentReport) {
             const attemptN = rewritesSoFar + 1;
@@ -811,6 +823,13 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
             const result: VerificationResult = await ctx.step(`verify-claims-attempt-${attemptN}`, () =>
               verifyClaims({ report: currentReport!, notes, urlExcerpts: urlExcerptMap }),
             );
+            // Update the best-so-far before deciding on rewrite. The first
+            // iteration always wins by default; later iterations only replace
+            // it if they're genuinely better.
+            if (!bestResult || isBetterVerification(result, bestResult)) {
+              bestReport = currentReport;
+              bestResult = result;
+            }
             const triggered = shouldTriggerRewrite(result);
             taskLog(
               `[VERIFY] ${result.summary.supported}/${result.summary.total} claims supported (${Math.round(result.summary.passRate * 100)}%).${result.summary.reason ? ` ${result.summary.reason}.` : ""}${triggered ? ` Rewriting (${rewritesSoFar + 1}/${MAX_REWRITES}).` : ""}`,
@@ -871,6 +890,26 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
             }
             currentReport = nextReport;
           }
+
+          // Regression guard: if the loop's latest attempt is worse than the best
+          // we saw earlier, restore the best. Common pattern: original at 30%,
+          // rewrite strips to no_claims, the original wins.
+          if (
+            bestResult &&
+            bestReport &&
+            verificationState &&
+            isBetterVerification(bestResult, verificationState.result)
+          ) {
+            taskLog(
+              `[VERIFY] Restoring best earlier report (${bestResult.summary.supported}/${bestResult.summary.total} supported) — last rewrite regressed.`,
+            );
+            bestReportOverride = bestReport;
+            verificationState = {
+              result: bestResult,
+              attempts: verificationState.attempts,
+              rewriteTriggered: shouldTriggerRewrite(bestResult),
+            };
+          }
         }
       }
 
@@ -883,7 +922,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         () => new Map<string, string>(),
       );
 
-      return buildResult(notes, params.topic, messages, verificationState, mode, urlTitles);
+      return buildResult(notes, params.topic, messages, verificationState, mode, urlTitles, bestReportOverride);
     },
   );
 

@@ -437,6 +437,21 @@ export function shouldTriggerRewrite(result: VerificationResult): boolean {
 }
 
 /**
+ * Strict ordering on verification quality, used by the rewrite loop's regression
+ * guard: a rewrite that ends up "no_claims" (stripped to a meta-acknowledgement)
+ * must lose against any prior attempt that had real claims, even if that prior
+ * attempt's pass rate was poor. Otherwise compare by supported count, then by
+ * pass rate as a tiebreaker.
+ */
+export function isBetterVerification(a: VerificationResult, b: VerificationResult): boolean {
+  const aNoClaims = a.summary.status === "no_claims";
+  const bNoClaims = b.summary.status === "no_claims";
+  if (aNoClaims !== bNoClaims) return !aNoClaims; // a is better iff it has claims and b doesn't
+  if (a.summary.supported !== b.summary.supported) return a.summary.supported > b.summary.supported;
+  return a.summary.passRate > b.summary.passRate;
+}
+
+/**
  * A claim is "ungrounded" when the cited source has no excerpts at all — either it
  * was never browsed, browsing failed, or the source number is missing from the
  * Sources section. Ungrounded claims cannot be salvaged by re-wording; the only
@@ -485,14 +500,19 @@ export function buildRewriteSteering(result: VerificationResult): string {
     ``,
   ];
 
+  lines.push(
+    `The report's structure is good — keep ALL its sections, tables, and well-grounded claims. Only touch the specific claims listed below. Do NOT strip the report to a meta-acknowledgement; produce a full report with citations intact.`,
+    ``,
+  );
+
   if (ungroundedSourceNs.length > 0) {
     lines.push(
-      `Source(s) [${ungroundedSourceNs.join("], [")}] have NO recorded excerpts. These were not browsed (or browsing failed). For each:`,
-      `  1. DELETE every claim that cites them. Do not re-cite, do not soften — DELETE the sentence.`,
-      `  2. REMOVE those entries from the Sources section.`,
+      `Source(s) [${ungroundedSourceNs.join("], [")}] have NO recorded excerpts (not browsed or browsing failed). For each:`,
+      `  1. For every claim citing one of these sources: either remove just that sentence, or re-cite it to a different already-browsed source whose excerpts back it.`,
+      `  2. Remove those entries from the Sources section.`,
       `  3. Renumber the remaining Sources sequentially (1, 2, 3, …) and update every [n] marker in the body to match.`,
       ``,
-      `Examples of claims that must be deleted:`,
+      `Examples of claims to fix (delete the sentence OR re-cite to a browsed source):`,
       ...ungrounded.slice(0, 6).map((c) => `  • "${c.claim}" (cites [${c.sourceN}])`),
       ``,
     );
@@ -509,7 +529,7 @@ export function buildRewriteSteering(result: VerificationResult): string {
       `For each, do EXACTLY ONE of:`,
       `  - Soften the claim to what the excerpts actually say (do not invent specifics).`,
       `  - Re-cite a different already-browsed source whose excerpts back it.`,
-      `  - DELETE the claim.`,
+      `  - Delete just that sentence.`,
       `Do NOT re-cite the same source unchanged — the verifier will reject it again.`,
       ``,
     );
