@@ -49,21 +49,37 @@ export function getUtilityReasoning(): ThinkingLevel | undefined {
   return parseReasoningEffort(process.env.UTILITY_REASONING);
 }
 
-/** Default max task duration in seconds. */
-const DEFAULT_MAX_DURATION_SECONDS = 1200; // 20 minutes
+/**
+ * Per-depth duration ceilings. Deep mode needs more time because it does 4x the
+ * sources of quick mode plus the gap/chase loops; the prior flat 20 min cap was
+ * sized for the old 20-source ceiling and now truncates deep surveys mid-synthesis.
+ */
+const DURATION_BY_DEPTH = {
+  quick: 1200, // 20 minutes
+  standard: 1800, // 30 minutes
+  deep: 3600, // 60 minutes
+} as const;
 
-/** Get the maximum task duration in seconds. */
-export function getMaxDurationSeconds(): number {
+/** Depth label accepted by the duration resolver. Mirrors ResearchParams["depth"]. */
+type DurationDepth = keyof typeof DURATION_BY_DEPTH;
+
+/**
+ * Resolve the max task duration. Precedence: MAX_DURATION env var → per-depth
+ * default → deep default (longest, used when depth isn't known yet — e.g. at
+ * task registration time, where we want Absurd to allow any depth's runtime).
+ */
+export function getMaxDurationSeconds(depth?: DurationDepth): number {
   const envVal = process.env.MAX_DURATION;
   if (envVal) {
     const seconds = parseInt(envVal, 10);
     if (!isNaN(seconds) && seconds > 0) return seconds;
-    console.warn(`Invalid MAX_DURATION "${envVal}" — using default ${DEFAULT_MAX_DURATION_SECONDS}s`);
+    console.warn(`Invalid MAX_DURATION "${envVal}" — falling back to depth default`);
   }
-  return DEFAULT_MAX_DURATION_SECONDS;
+  if (depth && depth in DURATION_BY_DEPTH) return DURATION_BY_DEPTH[depth];
+  return DURATION_BY_DEPTH.deep;
 }
 
 /** Get the maximum task duration in milliseconds. */
-export function getMaxDurationMs(): number {
-  return getMaxDurationSeconds() * 1000;
+export function getMaxDurationMs(depth?: DurationDepth): number {
+  return getMaxDurationSeconds(depth) * 1000;
 }

@@ -229,15 +229,27 @@ describe("max duration config", () => {
     }
   });
 
-  it("uses 20 minutes by default in both seconds and milliseconds", () => {
+  it("defaults to the deep duration when depth is not specified (longest, safe at registration)", () => {
     delete process.env.MAX_DURATION;
-    expect(getMaxDurationSeconds()).toBe(1200);
-    expect(getMaxDurationMs()).toBe(1_200_000);
+    // Deep = 60 min so Absurd's task-registration cancellation accommodates any depth.
+    expect(getMaxDurationSeconds()).toBe(3600);
+    expect(getMaxDurationMs()).toBe(3_600_000);
   });
 
-  it("converts MAX_DURATION from seconds to milliseconds", () => {
+  it("scales the duration by depth: quick 20m, standard 30m, deep 60m", () => {
+    delete process.env.MAX_DURATION;
+    expect(getMaxDurationSeconds("quick")).toBe(1200);
+    expect(getMaxDurationSeconds("standard")).toBe(1800);
+    expect(getMaxDurationSeconds("deep")).toBe(3600);
+    expect(getMaxDurationMs("quick")).toBe(1_200_000);
+    expect(getMaxDurationMs("standard")).toBe(1_800_000);
+    expect(getMaxDurationMs("deep")).toBe(3_600_000);
+  });
+
+  it("MAX_DURATION env override beats depth defaults", () => {
     process.env.MAX_DURATION = "90";
     expect(getMaxDurationSeconds()).toBe(90);
-    expect(getMaxDurationMs()).toBe(90_000);
+    expect(getMaxDurationSeconds("deep")).toBe(90);
+    expect(getMaxDurationMs("standard")).toBe(90_000);
   });
 });

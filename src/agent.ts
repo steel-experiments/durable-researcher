@@ -462,7 +462,10 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
 
       // Timeout handling: detect approaching deadline and force report
       const taskStartTime = Date.now();
-      const maxDuration = getMaxDurationMs();
+      // Depth-aware soft timeout: deep needs more time than quick.
+      // Absurd's hard cancellation (set at registration with the longest depth)
+      // is the backstop; this graceful wrap-up fires earlier for quick/standard.
+      const maxDuration = getMaxDurationMs(depth);
       const TIMEOUT_BUFFER = 60_000;
       const timeoutCheck = createTimeoutSteeringCheck(taskStartTime, maxDuration, TIMEOUT_BUFFER);
 
