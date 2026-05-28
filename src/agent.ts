@@ -728,7 +728,10 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
       const priorAttempts = countRewriteAttempts(context.messages);
       const finalReport = extractFinalReport(context.messages);
       const notesHaveExcerpts = notes.some((n) => n.keyExcerpts && n.keyExcerpts.length > 0);
-      const MAX_REWRITES = 2;
+      // Raised from 2 → 3 after validation run #5 showed monotonic constructive
+      // rewrites (28% → 42% → 67%) hit the cap one claim short of the 70% threshold.
+      // The third attempt had been triggered ("Rewriting (3/2)") but blocked by cap.
+      const MAX_REWRITES = 3;
 
       // On a cold resume of an already-complete task (no fresh agent turn ran in this
       // process), don't initiate new rewrites — only load cached verification state.
