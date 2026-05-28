@@ -181,6 +181,89 @@ describe("buildResult source titles", () => {
     expect(result.report).toBe(submitted);
   });
 
+  it("returns the rewrite's plain-text report when verify-steering was injected after submit_report", () => {
+    // Reproduces the rewrite-loop bug: original submit_report, then rewrite steering,
+    // then a new plain-text report. Old logic returned the OLD submit_report; new
+    // logic returns the rewrite.
+    const original = "# Original\n\nThe agent's first take [1].\n\n## Sources\n1. https://a.com";
+    const rewritten = "# Rewritten\n\nCorrected text without the unsupported claim.\n\n## Sources\n1. https://a.com";
+    const result = buildResult(
+      notes,
+      "topic",
+      [
+        {
+          role: "assistant" as const,
+          content: [
+            {
+              type: "toolCall" as const,
+              id: "call-1",
+              name: "submit_report",
+              arguments: { report: original },
+            },
+          ],
+          timestamp: Date.now(),
+        },
+        {
+          role: "toolResult" as const,
+          toolCallId: "call-1",
+          toolName: "submit_report",
+          content: [{ type: "text" as const, text: "ok" }],
+          isError: false,
+          timestamp: Date.now(),
+        },
+        {
+          // The rewrite-steering injection — must match REWRITE_STEERING_PREFIX.
+          role: "user" as const,
+          content: "[SYSTEM] Citation verification: 5/10 claims supported (50%). Rewrite the report — delete unsupported claims.",
+          timestamp: Date.now(),
+        },
+        {
+          role: "assistant" as const,
+          content: [{ type: "text" as const, text: rewritten }],
+          timestamp: Date.now(),
+        },
+      ],
+      undefined,
+      "synthesis",
+    );
+
+    expect(result.report).toBe(rewritten);
+  });
+
+  it("falls back to the original submit_report when rewrite steering produced no new text", () => {
+    // Steering was injected but the model didn't respond with text — the original
+    // report stands rather than returning null.
+    const original = "# Original\n\nBody [1].\n\n## Sources\n1. https://a.com";
+    const result = buildResult(
+      notes,
+      "topic",
+      [
+        {
+          role: "assistant" as const,
+          content: [
+            {
+              type: "toolCall" as const,
+              id: "call-1",
+              name: "submit_report",
+              arguments: { report: original },
+            },
+          ],
+          timestamp: Date.now(),
+        },
+        {
+          role: "user" as const,
+          content: "[SYSTEM] Citation verification: 3/10 claims supported (30%). Rewrite.",
+          timestamp: Date.now(),
+        },
+        // No assistant response after steering.
+      ],
+      undefined,
+      "synthesis",
+    );
+
+    expect(result.report).toBe(original);
+  });
+
   it("builds an extraction evidence table from notes", () => {
     const result = buildResult(
       [

@@ -209,7 +209,29 @@ export function buildResult(
 }
 
 /** Extract the most recent assistant text-only message (the final report). */
+/**
+ * Find the most recent report in the message log. Precedence:
+ *   1. If a rewrite-steering user message was injected after the last submit_report,
+ *      prefer assistant text that arrived after the steering — a rewrite is always
+ *      delivered as plain text (the steering forbids further tool calls).
+ *   2. Otherwise return the most recent submit_report tool-call payload.
+ *   3. As a last resort, any trailing assistant text.
+ *
+ * The rewrite branch fixes a bug where the rewrite loop saw "no new report":
+ * a successful rewrite arrives as text, but the OLD submit_report was still in
+ * the history, masking the new text and making the diff check always equal.
+ */
 function extractFinalReport(messages: AgentMessage[]): string | null {
+  const rewriteSteeringIndex = findLastRewriteSteeringIndex(messages);
+
+  if (rewriteSteeringIndex >= 0) {
+    for (let i = messages.length - 1; i > rewriteSteeringIndex; i--) {
+      const text = textOnlyAssistantContent(messages[i]);
+      if (text) return text;
+    }
+    // Steering was injected but the model didn't produce text — fall through.
+  }
+
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
     if (!("role" in msg) || msg.role !== "assistant") continue;
@@ -224,17 +246,35 @@ function extractFinalReport(messages: AgentMessage[]): string | null {
   }
 
   for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (!("role" in msg) || msg.role !== "assistant") continue;
-    const hasToolCalls = msg.content.some((c) => c.type === "toolCall");
-    if (hasToolCalls) continue;
-    const text = msg.content
-      .filter((c): c is { type: "text"; text: string } => c.type === "text")
-      .map((c) => c.text)
-      .join("\n");
-    if (text.length > 0) return text;
+    const text = textOnlyAssistantContent(messages[i]);
+    if (text) return text;
   }
   return null;
+}
+
+/** Return assistant text only when the message has no tool calls (i.e. a final answer). */
+function textOnlyAssistantContent(msg: AgentMessage): string | null {
+  if (!("role" in msg) || msg.role !== "assistant") return null;
+  if (msg.content.some((c) => c.type === "toolCall")) return null;
+  const text = msg.content
+    .filter((c): c is { type: "text"; text: string } => c.type === "text")
+    .map((c) => c.text)
+    .join("\n")
+    .trim();
+  return text.length > 0 ? text : null;
+}
+
+/** Find the index of the most recent rewrite-steering user message, or -1. */
+function findLastRewriteSteeringIndex(messages: AgentMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (!("role" in msg) || msg.role !== "user") continue;
+    const content = msg.content;
+    if (typeof content === "string" && content.startsWith(REWRITE_STEERING_PREFIX)) {
+      return i;
+    }
+  }
+  return -1;
 }
 
 const REWRITE_STEERING_PREFIX = "[SYSTEM] Citation verification:";

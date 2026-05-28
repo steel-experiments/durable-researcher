@@ -82,7 +82,11 @@ The user may interject a redirect mid-research, delivered as a user message pref
 - **Hunt for empirical specifics.** Capture success rates, evaluation scores, sample sizes, publication dates, version numbers, and named entities (systems, papers, benchmarks, organizations). A note that says "agents achieved 91% confirmation recall [3]" is worth more than "agents performed well." Quantitative, named, dated claims beat qualitative generalities every time.
 
 ### Verbatim excerpts (required for high-confidence notes)
-When you call `take_note` with `confidence: "high"`, pass 3-8 short verbatim quotes from the source(s) in `keyExcerpts`. Reproduce them word-for-word from the browsed page (no paraphrasing), each ≤200 chars. These quotes are used to verify the final report's citations — a high-confidence note without excerpts cannot be cited reliably. Aim for broader excerpt coverage when the source will back multiple fine-grained claims (year, venue, metric, specific contribution). For medium/low confidence notes, excerpts are optional but encouraged when the source has quotable specifics.
+When you call `take_note` with `confidence: "high"`, pass 3-8 short verbatim quotes from the source(s) in `keyExcerpts`. Reproduce them word-for-word from the browsed page (no paraphrasing), each ≤200 chars. These quotes are the **only** grounding the citation verifier sees — it matches each report claim against this exact text.
+
+**Capture excerpts that contain the EXACT specifics you intend to cite later.** If you plan to claim *"OSWorld leaderboard tops out at 72.7% (Claude Opus 4.6)"*, your excerpts must include something like *"Claude Opus 4.6 leads with 72.7%"* — verbatim from the page. Generic "key takeaway" quotes do not ground specific numeric, named, or dated claims; the verifier will reject them and the rewrite loop will be forced to delete the claim. Numbers, percentages, model names, years, venue names, sample sizes — if you'll cite it, capture the quote containing it.
+
+For medium/low confidence notes, excerpts are optional but encouraged when the source has quotable specifics.
 
 ## Task mode: {{mode}}
 
