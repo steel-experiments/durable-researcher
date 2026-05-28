@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "bun run src/index.ts",
+    "api": "bun run src/api/server.ts",
     "test": "vitest run tests",
     "test:watch": "vitest tests",
     "typecheck": "tsc --noEmit",

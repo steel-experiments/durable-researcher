@@ -72,8 +72,7 @@ bun run dev "quantum computing" --max-sources 10
 ### Long-running campaigns
 
 Campaign mode runs a durable research campaign as a sequence of bounded pulses.
-The CLI remains the primary interface, but the implementation is API-shaped so a
-future background service or dashboard can reuse the same campaign operations.
+The CLI and HTTP API both use the same durable campaign core.
 
 ```bash
 # Run autonomously until the budget is exhausted, the judge says the goal is met,
@@ -101,6 +100,54 @@ This avoids one giant week-long conversation while preserving the user-visible
 behavior of a continuous autonomous run. Finalization compiles a large report
 from the persisted campaign database: pulse syntheses, evidence ledger,
 annotated bibliography, judge history, and usage summary.
+
+## HTTP API
+
+The API exposes a stable `ResearchRun` contract over campaign-backed execution.
+Create requests are asynchronous: the server returns `202 Accepted` with a
+`Location` header, and clients poll the run URL for status.
+
+```bash
+DURABLE_RESEARCHER_API_KEY=secret bun run api
+
+curl -X POST http://localhost:3000/v1/research-runs \
+  -H "Authorization: Bearer secret" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: browser-agents-001" \
+  -d '{"topic":"future of browser agents","depth":"standard","optimizeFor":"latency","harness":{"type":"fixed_team","agents":5},"budgets":{"maxSources":80}}'
+
+curl http://localhost:3000/v1/research-runs/<run-id> \
+  -H "Authorization: Bearer secret"
+```
+
+Core endpoints:
+
+- `POST /v1/research-runs`
+- `GET /v1/research-runs`
+- `GET /v1/research-runs/:id`
+- `GET /v1/research-runs/:id/report`
+- `GET /v1/research-runs/:id/pulses`
+- `GET /v1/research-runs/:id/tasks`
+- `GET /v1/research-runs/:id/artifacts`
+- `GET /v1/research-runs/:id/events`
+- `POST /v1/research-runs/:id/actions/pause`
+- `POST /v1/research-runs/:id/actions/resume`
+- `POST /v1/research-runs/:id/actions/finalize`
+- `POST /v1/research-runs/:id/actions/cancel`
+- `GET /v1/openapi.json`
+
+OpenAPI 3.1 is committed at `docs/api/openapi.json` and served by the API.
+Errors use RFC 9457 problem-details JSON. `Idempotency-Key` is required for
+run creation so client retries do not create duplicate research jobs.
+
+`harness.type` selects the execution strategy:
+
+- `campaign_pulses`: durable long-running campaign pulses (balanced default)
+- `single_agent`: one durable research task for low overhead
+- `fixed_team`: parallel fixed agents plus synthesis for latency-sensitive work
+- `async_subagents`: parallel subagent-style workstreams plus synthesis
+- `orchestrator_blocking_subagents`: quality-first planning, subagents, synthesis
+- `auto`: choose from `optimizeFor` (`quality`, `latency`, `cost`, `balanced`)
 
 ### Working with existing research
 
@@ -175,6 +222,7 @@ Copy `.env.example` to `.env` or export directly — shell env vars take precede
 ```
 src/
 ├── agent.ts           # Absurd task registration + durable agent loop
+├── api/               # Versioned HTTP API, validation, auth, OpenAPI
 ├── bench.ts           # Headless CLI bridge for benchmarking
 ├── browse-cache.ts    # Postgres-backed cache for scraped pages (survives crashes)
 ├── campaign.ts        # Long-running campaign API + pulse orchestration
@@ -189,6 +237,7 @@ src/
 ├── content.ts         # Text cleaning, truncation, quality checks
 ├── prompts.ts         # Handlebars template loader
 ├── index.ts           # CLI entry point
+├── service/           # Stable ResearchRun service boundary
 └── tools/
     ├── plan.ts        # Generate sub-queries + search strategy
     ├── prefetch.ts    # Pipelined parallel search+browse fan-out (concurrency 10)

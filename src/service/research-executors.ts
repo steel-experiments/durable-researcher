@@ -1,0 +1,389 @@
+// ABOUTME: Executor registry for ResearchRun harness strategies.
+// ABOUTME: Implements campaign, single-agent, fixed-team, and subagent-style runs over durable research tasks.
+
+import { createHash } from "node:crypto";
+import { createResearchApp } from "../agent.js";
+import { getMaxDurationSeconds } from "../config.js";
+import {
+  compileCampaignReport,
+  createCampaign,
+  finalizeCampaign,
+  getCampaign,
+  listCampaignPulses,
+  pauseCampaign,
+  runCampaign,
+  usageFromAgentUsage,
+} from "../campaign.js";
+import type { CampaignUsage, ResearchNote, ResearchParams, ResearchResult } from "../types.js";
+import { badRequest } from "./research-errors.js";
+import type { ExecutableHarness } from "./research-harness.js";
+import type { ResearchRun } from "./research-runs.js";
+import {
+  createResearchRunTask,
+  listResearchRunTasks,
+  updateResearchRunTask,
+  type ResearchRunTask,
+} from "./research-tasks.js";
+import { saveResearchArtifact } from "./research-artifacts.js";
+
+export type ExecutorContext = {
+  setRunStatus(status: ResearchRun["status"]): Promise<void>;
+  setRunCampaign(campaignId: string, status: ResearchRun["status"]): Promise<void>;
+};
+
+export type ResearchExecutor = {
+  start(run: ResearchRun, ctx: ExecutorContext): Promise<void>;
+  pause?(run: ResearchRun, ctx: ExecutorContext): Promise<void>;
+  resume?(run: ResearchRun, ctx: ExecutorContext): Promise<void>;
+  finalize?(run: ResearchRun, ctx: ExecutorContext): Promise<string>;
+};
+
+function queueName(runId: string, role: string): string {
+  const hash = createHash("sha1").update(`${runId}:${role}`).digest("hex").slice(0, 12);
+  return `run_${hash}_${role.replace(/[^a-z0-9]+/gi, "_").slice(0, 24)}`;
+}
+
+function taskTokenLimit(harness: ExecutableHarness | undefined, role: "agent" | "subagent" | "synthesis"): number | undefined {
+  if (!harness) return undefined;
+  if (role === "synthesis") return harness.type === "fixed_team" || harness.type === "async_subagents" || harness.type === "orchestrator_blocking_subagents"
+    ? harness.totalTokenLimit
+    : undefined;
+  if (harness.type === "fixed_team") return harness.perAgentTokenLimit;
+  if (harness.type === "async_subagents" || harness.type === "orchestrator_blocking_subagents") return harness.perSubagentTokenLimit;
+  return undefined;
+}
+
+async function runResearchTask(input: {
+  run: ResearchRun;
+  harnessType: string;
+  role: string;
+  objective: string;
+  params: ResearchParams;
+}): Promise<{ task: ResearchRunTask; result: ResearchResult; usage: CampaignUsage }> {
+  const task = await createResearchRunTask({
+    runId: input.run.id,
+    role: input.role,
+    harnessType: input.harnessType,
+    objective: input.objective,
+  });
+  const q = queueName(input.run.id, input.role);
+  const app = createResearchApp({ queueName: q, quiet: true });
+  try {
+    await app.createQueue();
+    const spawned = await app.spawn("research", input.params);
+    await updateResearchRunTask(task.id, {
+      status: "running",
+      taskId: spawned.taskID,
+      queueName: q,
+      startedAt: new Date(),
+    });
+    const worker = await app.startWorker({ concurrency: 1, claimTimeout: 600 });
+    let state;
+    try {
+      state = await app.awaitTaskResult(spawned.taskID, {
+        queue: q,
+        timeout: getMaxDurationSeconds(input.params.depth) + 30,
+      });
+    } finally {
+      await worker.close();
+    }
+    if (state.state !== "completed" || !state.result) {
+      await updateResearchRunTask(task.id, { status: "failed", endedAt: new Date() });
+      const failure = state.state === "failed" ? state.failure : state.state;
+      throw new Error(`Research task failed: ${JSON.stringify(failure)}`);
+    }
+    const result = state.result as unknown as ResearchResult;
+    const usage = usageFromAgentUsage((app as any).getLastUsage?.(), result.sources?.length ?? 0);
+    await updateResearchRunTask(task.id, {
+      status: "completed",
+      result,
+      usage,
+      endedAt: new Date(),
+    });
+    await saveResearchArtifact({
+      runId: input.run.id,
+      kind: `${input.role}-report`,
+      contentType: "text/markdown",
+      content: result.report,
+      metadata: { taskId: spawned.taskID, harnessType: input.harnessType },
+    });
+    return { task, result, usage };
+  } catch (err) {
+    await updateResearchRunTask(task.id, { status: "failed", endedAt: new Date() }).catch(() => undefined);
+    throw err;
+  } finally {
+    await app.close();
+  }
+}
+
+function mergeSources(results: ResearchResult[]): { title: string; url: string }[] {
+  const byUrl = new Map<string, { title: string; url: string }>();
+  for (const result of results) {
+    for (const source of result.sources ?? []) {
+      if (!byUrl.has(source.url)) byUrl.set(source.url, source);
+    }
+  }
+  return [...byUrl.values()];
+}
+
+function mergeNotes(results: ResearchResult[]): ResearchNote[] {
+  return results.flatMap((result) => result.notes ?? []);
+}
+
+function teamObjectives(topic: string, count: number): string[] {
+  const base = [
+    `Find primary sources, official documentation, papers, filings, and original data for: ${topic}`,
+    `Find benchmarks, metrics, quantitative comparisons, and empirical evidence for: ${topic}`,
+    `Find criticism, limitations, counterarguments, failures, and negative evidence for: ${topic}`,
+    `Build a timeline, key actors map, and dependency graph for: ${topic}`,
+    `Synthesize practical implications, tradeoffs, and decision criteria for: ${topic}`,
+  ];
+  return Array.from({ length: count }, (_, i) => base[i] ?? `Investigate independent angle ${i + 1} for: ${topic}`);
+}
+
+function synthPrompt(topic: string, results: ResearchResult[], harnessType: string): string {
+  return [
+    `Synthesize the final answer for a ${harnessType} research run.`,
+    `Topic: ${topic}`,
+    "Use only the provided prior notes and source URLs. Preserve numeric citations and include a numbered Sources section.",
+    "",
+    "Agent reports:",
+    ...results.map((result, index) => [
+      `## Agent ${index + 1}`,
+      result.report,
+    ].join("\n")),
+  ].join("\n");
+}
+
+async function synthesizeTeam(run: ResearchRun, harnessType: string, results: ResearchResult[]): Promise<ResearchResult> {
+  const sources = mergeSources(results);
+  const notes = mergeNotes(results);
+  const synthesis = await runResearchTask({
+    run,
+    harnessType,
+    role: "synthesis",
+    objective: `Synthesize final report for ${run.topic}`,
+    params: {
+      topic: run.topic,
+      depth: run.params.depth,
+      maxSources: sources.length,
+      priorNotes: notes,
+      priorUrls: sources.map((s) => s.url),
+      mode: run.params.mode,
+      clarifications: run.params.clarify,
+      maxTokens: taskTokenLimit(run.params.selectedHarness, "synthesis"),
+      extensionInstruction: synthPrompt(run.topic, results, harnessType),
+    },
+  });
+  await saveResearchArtifact({
+    runId: run.id,
+    kind: "final-report",
+    contentType: "text/markdown",
+    content: synthesis.result.report,
+    metadata: { harnessType, sourceReports: results.length },
+  });
+  return synthesis.result;
+}
+
+async function runTeam(run: ResearchRun, harnessType: string, objectives: string[]): Promise<void> {
+  const tasks = await Promise.all(objectives.map((objective, index) =>
+    runResearchTask({
+      run,
+      harnessType,
+      role: `agent-${index + 1}`,
+      objective,
+      params: {
+        topic: run.topic,
+        depth: run.params.depth,
+        mode: run.params.mode,
+        clarifications: run.params.clarify,
+        maxSources: run.params.budgets.maxSources,
+        maxTokens: taskTokenLimit(run.params.selectedHarness, harnessType === "fixed_team" ? "agent" : "subagent"),
+        extensionInstruction: objective,
+      },
+    })
+  ));
+  await synthesizeTeam(run, harnessType, tasks.map((task) => task.result));
+}
+
+export function createCampaignPulsesExecutor(): ResearchExecutor {
+  return {
+    async start(run, ctx) {
+      let campaignId = run.campaignId;
+      if (!campaignId) {
+        const campaign = await createCampaign({
+          topic: run.topic,
+          depth: run.params.depth,
+          pulseDepth: run.params.pulseDepth ?? run.params.depth,
+          pulseMaxSources: run.params.pulseMaxSources,
+          mode: run.params.mode,
+          clarify: run.params.clarify,
+          budgets: run.params.budgets,
+          stopWhenGoalMet: run.params.stopWhenGoalMet ?? true,
+          stopWhenExhaustedSources: run.params.stopWhenExhaustedSources ?? true,
+        });
+        campaignId = campaign.id;
+        await ctx.setRunCampaign(campaign.id, "running");
+      }
+      const campaign = await runCampaign(campaignId, { quiet: true });
+      await ctx.setRunStatus(campaign.status);
+      if (campaign.finalReport) {
+        await saveResearchArtifact({
+          runId: run.id,
+          kind: "final-report",
+          contentType: "text/markdown",
+          content: campaign.finalReport,
+          metadata: { campaignId },
+        });
+      }
+    },
+    async pause(run, ctx) {
+      if (!run.campaignId) throw badRequest("Research run is not linked to a campaign yet");
+      await pauseCampaign(run.campaignId);
+      await ctx.setRunStatus("paused");
+    },
+    async resume(run, ctx) {
+      await ctx.setRunStatus("running");
+      await this.start(run, ctx);
+    },
+    async finalize(run, ctx) {
+      if (!run.campaignId) throw badRequest("Research run is not linked to a campaign yet");
+      const report = await finalizeCampaign(run.campaignId, "manual finalization requested");
+      await ctx.setRunStatus("completed");
+      await saveResearchArtifact({
+        runId: run.id,
+        kind: "final-report",
+        contentType: "text/markdown",
+        content: report,
+        metadata: { campaignId: run.campaignId },
+      });
+      return report;
+    },
+  };
+}
+
+export function createSingleAgentExecutor(): ResearchExecutor {
+  return {
+    async start(run, ctx) {
+      await runResearchTask({
+        run,
+        harnessType: "single_agent",
+        role: "single-agent",
+        objective: run.topic,
+        params: {
+          topic: run.topic,
+          depth: run.params.depth,
+          maxSources: run.params.budgets.maxSources,
+          maxTokens: run.params.selectedHarness?.type === "single_agent"
+            ? run.params.budgets.maxTokens
+            : undefined,
+          mode: run.params.mode,
+          clarifications: run.params.clarify,
+        },
+      }).then(async ({ result }) => {
+        await saveResearchArtifact({
+          runId: run.id,
+          kind: "final-report",
+          contentType: "text/markdown",
+          content: result.report,
+          metadata: { harnessType: "single_agent" },
+        });
+      });
+      await ctx.setRunStatus("completed");
+    },
+  };
+}
+
+export function createFixedTeamExecutor(): ResearchExecutor {
+  return {
+    async start(run, ctx) {
+      const harness = run.params.selectedHarness;
+      const agents = harness?.type === "fixed_team" ? harness.agents : 5;
+      await runTeam(run, "fixed_team", teamObjectives(run.topic, agents));
+      await ctx.setRunStatus("completed");
+    },
+  };
+}
+
+export function createAsyncSubagentsExecutor(): ResearchExecutor {
+  return {
+    async start(run, ctx) {
+      const harness = run.params.selectedHarness;
+      const count = harness?.type === "async_subagents" ? harness.maxSubagents : 5;
+      const objectives = teamObjectives(run.topic, count).map((objective, index) =>
+        `Async subagent ${index + 1}: ${objective}. Work independently; the orchestrator will merge your findings.`
+      );
+      await runTeam(run, "async_subagents", objectives);
+      await ctx.setRunStatus("completed");
+    },
+  };
+}
+
+export function createBlockingSubagentsExecutor(): ResearchExecutor {
+  return {
+    async start(run, ctx) {
+      const harness = run.params.selectedHarness;
+      const count = harness?.type === "orchestrator_blocking_subagents" ? harness.maxSubagents : 5;
+      const plan = await runResearchTask({
+        run,
+        harnessType: "orchestrator_blocking_subagents",
+        role: "orchestrator-plan",
+        objective: `Plan quality-first subagent research for ${run.topic}`,
+        params: {
+          topic: run.topic,
+          depth: "quick",
+          mode: run.params.mode,
+          clarifications: run.params.clarify,
+          extensionInstruction: "Create a concise research plan identifying independent subagent workstreams. Do not write the final report yet.",
+        },
+      });
+      const objectives = teamObjectives(run.topic, count).map((objective, index) =>
+        `Blocking subagent ${index + 1}: ${objective}. Use this orchestrator context:\n${plan.result.report}`
+      );
+      await runTeam(run, "orchestrator_blocking_subagents", objectives);
+      await ctx.setRunStatus("completed");
+    },
+  };
+}
+
+export function executorForHarness(harness: ExecutableHarness): ResearchExecutor {
+  switch (harness.type) {
+    case "campaign_pulses":
+      return createCampaignPulsesExecutor();
+    case "single_agent":
+      return createSingleAgentExecutor();
+    case "fixed_team":
+      return createFixedTeamExecutor();
+    case "async_subagents":
+      return createAsyncSubagentsExecutor();
+    case "orchestrator_blocking_subagents":
+      return createBlockingSubagentsExecutor();
+  }
+}
+
+export async function campaignPulsesAsTasks(run: ResearchRun): Promise<ResearchRunTask[]> {
+  if (!run.campaignId) return [];
+  const campaign = await getCampaign(run.campaignId);
+  if (!campaign) return [];
+  const pulses = await listCampaignPulses(run.campaignId);
+  return pulses.map((pulse) => ({
+    id: `campaign_pulse_${pulse.id}`,
+    runId: run.id,
+    role: `pulse-${pulse.pulseIndex + 1}`,
+    harnessType: "campaign_pulses",
+    taskId: pulse.taskId,
+    queueName: pulse.queueName,
+    status: pulse.status,
+    objective: pulse.objective,
+    result: pulse.result,
+    usage: pulse.usage,
+    startedAt: pulse.startedAt,
+    endedAt: pulse.endedAt,
+    createdAt: pulse.startedAt,
+  }));
+}
+
+export async function latestTaskReport(run: ResearchRun): Promise<string | null> {
+  const tasks = await listResearchRunTasks(run.id);
+  return [...tasks].reverse().find((task) => task.result?.report)?.result?.report ?? null;
+}

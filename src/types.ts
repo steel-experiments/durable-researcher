@@ -14,6 +14,8 @@ export type ResearchParams = {
   topic: string;
   depth?: "quick" | "standard" | "deep";
   maxSources?: number;
+  /** Optional token ceiling for this individual research task. */
+  maxTokens?: number;
   /** User's clarifying answers to narrow research scope. */
   clarifications?: string;
   /** Prior research notes to extend (from a completed run). */

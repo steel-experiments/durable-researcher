@@ -491,6 +491,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
       // Total tool calls this run — guards against runaway loops (see toolCallHardCap).
       let toolCallCount = 0;
       let toolCallWarned = false;
+      const maxTokens = params.maxTokens;
 
       const config: AgentLoopConfig = {
         model: agentModel,
@@ -535,13 +536,21 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
           ).length;
 
           // Hard limits
-          if (scrapedUrls.size >= maxBrowses || turnCount >= maxTurns || toolCallCount >= toolCallHardCap) {
+          const usedTokens = usage.inputTokens + usage.outputTokens + usage.cacheReadTokens;
+          if (
+            scrapedUrls.size >= maxBrowses ||
+            turnCount >= maxTurns ||
+            toolCallCount >= toolCallHardCap ||
+            (maxTokens !== undefined && usedTokens >= maxTokens)
+          ) {
             steeringSent = true;
             const reason = scrapedUrls.size >= maxBrowses
               ? `source limit (${maxBrowses})`
               : turnCount >= maxTurns
                 ? `turn limit (${maxTurns})`
-                : `tool-call limit (${toolCallHardCap})`;
+                : toolCallCount >= toolCallHardCap
+                  ? `tool-call limit (${toolCallHardCap})`
+                  : `token limit (${maxTokens})`;
             return [{
               role: "user" as const,
               content: `[SYSTEM] You have reached the maximum ${reason}. Stop browsing and searching. Write your final research report NOW using the notes you have collected. Use numeric inline citations like [1] and a numbered Sources section; do not use markdown author links as citations. Do NOT call any tools. Just write the report.`,
