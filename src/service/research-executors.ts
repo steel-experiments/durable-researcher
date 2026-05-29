@@ -25,6 +25,7 @@ import {
   type ResearchRunTask,
 } from "./research-tasks.js";
 import { saveResearchArtifact } from "./research-artifacts.js";
+import { mergeSurveyReports } from "../survey-merge.js";
 
 export type ExecutorContext = {
   setRunStatus(status: ResearchRun["status"]): Promise<void>;
@@ -158,6 +159,38 @@ function synthPrompt(topic: string, results: ResearchResult[], harnessType: stri
 async function synthesizeTeam(run: ResearchRun, harnessType: string, results: ResearchResult[]): Promise<ResearchResult> {
   const sources = mergeSources(results);
   const notes = mergeNotes(results);
+
+  // Merge the subagents' reports DETERMINISTICALLY when they're survey-shaped. The
+  // free-form LLM synthesis below collapsed four good 21-25KB survey reports into a
+  // 258-char meta-acknowledgement; survey reports are table-structured, so union +
+  // citation-remap preserves every subagent's work at zero token cost.
+  //
+  // We detect survey shape from the REPORTS, not run.params.mode — the run-level mode
+  // is often unset (null) while the subagents independently classify as survey and emit
+  // the tables. mergeSurveyReports reports how many table rows it found; if it found any,
+  // the reports were genuinely survey-shaped and the merge is valid. Otherwise fall back.
+  const merge = mergeSurveyReports(
+    results.map((result, index) => ({ label: `Subagent ${index + 1}`, report: result.report ?? "" })),
+  );
+  if (merge.stats.systems + merge.stats.benchmarks + merge.stats.literature > 0) {
+    await saveResearchArtifact({
+      runId: run.id,
+      kind: "final-report",
+      contentType: "text/markdown",
+      content: merge.markdown,
+      metadata: { harnessType, sourceReports: results.length, merge: "deterministic", stats: merge.stats },
+    });
+    return {
+      topic: run.topic,
+      report: merge.markdown,
+      notes,
+      sources,
+      messages: [],
+      mode: "survey",
+    };
+  }
+  // Reports weren't table-structured — use LLM synthesis.
+
   const synthesis = await runResearchTask({
     run,
     harnessType,
@@ -180,7 +213,7 @@ async function synthesizeTeam(run: ResearchRun, harnessType: string, results: Re
     kind: "final-report",
     contentType: "text/markdown",
     content: synthesis.result.report,
-    metadata: { harnessType, sourceReports: results.length },
+    metadata: { harnessType, sourceReports: results.length, merge: "llm" },
   });
   return synthesis.result;
 }
