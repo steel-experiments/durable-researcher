@@ -25,7 +25,8 @@ import {
   type ResearchRunTask,
 } from "./research-tasks.js";
 import { saveResearchArtifact } from "./research-artifacts.js";
-import { mergeSurveyReports } from "../survey-merge.js";
+import { mergeSurveyParts, assembleSurvey } from "../survey-merge.js";
+import { refineSurveyProse } from "../survey-prose.js";
 
 export type ExecutorContext = {
   setRunStatus(status: ResearchRun["status"]): Promise<void>;
@@ -169,25 +170,35 @@ async function synthesizeTeam(run: ResearchRun, harnessType: string, results: Re
   // is often unset (null) while the subagents independently classify as survey and emit
   // the tables. mergeSurveyReports reports how many table rows it found; if it found any,
   // the reports were genuinely survey-shaped and the merge is valid. Otherwise fall back.
-  const merge = mergeSurveyReports(
+  const parts = mergeSurveyParts(
     results.map((result, index) => ({ label: `Subagent ${index + 1}`, report: result.report ?? "" })),
   );
-  if (merge.stats.systems + merge.stats.benchmarks + merge.stats.literature > 0) {
+  if (parts.stats.systems + parts.stats.benchmarks + parts.stats.literature > 0) {
+    // Tables + sources are always deterministic. The prose sections (Cross-Cutting,
+    // Gaps) get a constrained LLM pass that unifies the per-subagent concatenation into
+    // one coherent section; it can't touch tables/sources and falls back to the concat
+    // if it collapses or fails. So the worst case is the proven deterministic merge.
+    let proseOverride: Record<string, string> = {};
+    try {
+      proseOverride = await refineSurveyProse(parts);
+    } catch {
+      // Keep deterministic concat for all prose.
+    }
+    const markdown = assembleSurvey(parts, proseOverride);
     await saveResearchArtifact({
       runId: run.id,
       kind: "final-report",
       contentType: "text/markdown",
-      content: merge.markdown,
-      metadata: { harnessType, sourceReports: results.length, merge: "deterministic", stats: merge.stats },
+      content: markdown,
+      metadata: {
+        harnessType,
+        sourceReports: results.length,
+        merge: "deterministic",
+        proseRefined: Object.keys(proseOverride),
+        stats: parts.stats,
+      },
     });
-    return {
-      topic: run.topic,
-      report: merge.markdown,
-      notes,
-      sources,
-      messages: [],
-      mode: "survey",
-    };
+    return { topic: run.topic, report: markdown, notes, sources, messages: [], mode: "survey" };
   }
   // Reports weren't table-structured — use LLM synthesis.
 

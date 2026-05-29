@@ -168,7 +168,7 @@ function mergeTable(
   sectionName: string,
   reports: ParsedReport[],
   rewrite: (text: string, r: ParsedReport) => string,
-): { markdown: string; rows: number } | null {
+): { markdown: string; rows: number; entityNames: string[] } | null {
   const merged = new Map<string, string[]>();
   let header: string[] | null = null;
   for (const r of reports) {
@@ -202,7 +202,9 @@ function mergeTable(
     "",
     `*${rows.length} distinct entries merged from ${reports.length} subagent reports.*`,
   ].join("\n");
-  return { markdown, rows: rows.length };
+  // First cell is the entity name; strip markdown bold/code for a clean context list.
+  const entityNames = rows.map((cells) => cells[0].replace(/[*`]/g, "").trim()).filter(Boolean);
+  return { markdown, rows: rows.length, entityNames };
 }
 
 function concatProse(
@@ -219,41 +221,90 @@ function concatProse(
   return blocks.length ? [`## ${sectionName}`, "", ...blocks].join("\n\n") : null;
 }
 
+/** Structured intermediate from a survey merge — lets callers refine prose before assembly. */
+export type SurveyMergeParts = {
+  title: string;
+  executiveSummary: string;
+  /** Rendered table markdown blocks, in survey order. */
+  tables: { section: string; markdown: string }[];
+  /** Concatenated prose per section, citations already remapped to the global list. */
+  prose: { section: string; body: string }[];
+  /** Distinct entity names across all tables — context for a prose synthesizer. */
+  entities: string[];
+  /** Global sources, in citation order. */
+  sources: string[];
+  stats: SurveyMergeStats;
+};
+
 /**
- * Merge survey-mode subagent reports into one report via deterministic table union +
- * citation remap. Prose sections are concatenated with attribution (callers may replace
- * them with a constrained LLM pass). Returns merged markdown + coverage stats.
+ * Parse + union survey reports into a structured intermediate (tables, prose, sources,
+ * stats) WITHOUT rendering the final document. Deterministic and pure — no LLM. Callers
+ * can refine the prose sections, then call assembleSurvey().
  */
-export function mergeSurveyReports(inputs: SurveyReportInput[]): SurveyMergeResult {
+export function mergeSurveyParts(inputs: SurveyReportInput[]): SurveyMergeParts {
   const reports = inputs.map(parseReport);
   const { globalOrder, rewrite } = buildCitationRemapper(reports);
 
   const execCandidates = reports
     .map((r) => ({ r, body: r.sections.get("Executive Summary") ?? "" }))
     .sort((a, b) => b.body.length - a.body.length);
-  const execBody = execCandidates[0]?.body ? rewrite(execCandidates[0].body, execCandidates[0].r) : "";
+  const executiveSummary = execCandidates[0]?.body ? rewrite(execCandidates[0].body, execCandidates[0].r) : "";
 
   const title = reports.find((r) => r.title)?.title ?? "Survey";
-  const parts: string[] = [`# ${title}`, "", "## Executive Summary", "", execBody];
-
   const stats: SurveyMergeStats = { systems: 0, benchmarks: 0, literature: 0, sources: globalOrder.length };
   const statKeys: (keyof SurveyMergeStats)[] = ["systems", "benchmarks", "literature"];
 
+  const tables: { section: string; markdown: string }[] = [];
+  const entities = new Set<string>();
   SURVEY_TABLE_SECTIONS.forEach((section, i) => {
     const merged = mergeTable(section, reports, rewrite);
     if (merged) {
-      parts.push("", merged.markdown);
+      tables.push({ section, markdown: merged.markdown });
       stats[statKeys[i]] = merged.rows;
+      for (const name of merged.entityNames) entities.add(name);
     }
   });
 
+  const prose: { section: string; body: string }[] = [];
   for (const section of PROSE_SECTIONS) {
     const merged = concatProse(section, reports, rewrite);
-    if (merged) parts.push("", merged);
+    if (merged) prose.push({ section, body: merged });
   }
 
-  parts.push("", "## Sources", "");
-  globalOrder.forEach((url, i) => parts.push(`${i + 1}. ${url}`));
+  return { title, executiveSummary, tables, prose, entities: [...entities], sources: globalOrder, stats };
+}
 
-  return { markdown: parts.join("\n") + "\n", stats };
+/**
+ * Render a survey document from merged parts. `proseOverride` maps a section name to
+ * replacement prose (used by a constrained LLM pass); sections without an override keep
+ * their deterministic concatenation. Tables and sources are always deterministic.
+ */
+export function assembleSurvey(
+  parts: SurveyMergeParts,
+  proseOverride: Record<string, string> = {},
+): string {
+  const out: string[] = [`# ${parts.title}`, "", "## Executive Summary", "", parts.executiveSummary];
+  for (const t of parts.tables) out.push("", t.markdown);
+  for (const p of parts.prose) {
+    const override = proseOverride[p.section];
+    if (override?.trim()) {
+      out.push("", `## ${p.section}`, "", override.trim());
+    } else {
+      out.push("", p.body);
+    }
+  }
+  out.push("", "## Sources", "");
+  parts.sources.forEach((url, i) => out.push(`${i + 1}. ${url}`));
+  return out.join("\n") + "\n";
+}
+
+/**
+ * Merge survey-mode subagent reports into one report via deterministic table union +
+ * citation remap. Prose sections are concatenated with attribution (callers may replace
+ * them with a constrained LLM pass via mergeSurveyParts/assembleSurvey). Returns merged
+ * markdown + coverage stats.
+ */
+export function mergeSurveyReports(inputs: SurveyReportInput[]): SurveyMergeResult {
+  const parts = mergeSurveyParts(inputs);
+  return { markdown: assembleSurvey(parts), stats: parts.stats };
 }
