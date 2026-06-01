@@ -84,6 +84,7 @@ export function createPrefetchTool(
       let totalBrowsed = 0;
       let totalQueued = 0;
       const allBrowsedUrls: string[] = [];
+      const meaningfulBrowsedUrls: string[] = [];
       const browsingUrls = new Set<string>();
       const queryResults: QueryResult[] = [];
       const browsePromises: Promise<void>[] = [];
@@ -106,10 +107,10 @@ export function createPrefetchTool(
               });
 
               totalBrowsed++;
-              allBrowsedUrls.push(url);
               report(`    [${totalBrowsed}/${totalQueued}] ${result.fromCache ? "Cached" : "Browsed"}: ${result.title.slice(0, 60)}`);
 
               if (!result.meaningful) {
+                allBrowsedUrls.push(url);
                 qr.browseResults.push({
                   query,
                   url,
@@ -120,6 +121,8 @@ export function createPrefetchTool(
                 return;
               }
 
+              allBrowsedUrls.push(url);
+              meaningfulBrowsedUrls.push(url);
               qr.browseResults.push({
                 query,
                 url,
@@ -220,6 +223,7 @@ export function createPrefetchTool(
           searchedQueries: queries.length,
           browsedCount: totalBrowsed,
           browsedUrls: allBrowsedUrls,
+          meaningfulBrowsedUrls,
           queryResults: queryResults.map((qr) => ({
             query: qr.query,
             searchResultCount: qr.searchResultCount,

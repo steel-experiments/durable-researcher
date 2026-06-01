@@ -73,7 +73,9 @@ describe("formatVerificationCheckpoint", () => {
   });
 });
 
-describe("loadVerificationCheckpoints (integration)", () => {
+const describeDb = process.env.RUN_DB_TESTS === "1" ? describe : describe.skip;
+
+describeDb("loadVerificationCheckpoints (integration)", () => {
   let createdQueue = false;
   const taskId = "00000000-0000-0000-0000-00000000beef";
 

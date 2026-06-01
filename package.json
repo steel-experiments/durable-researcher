@@ -7,6 +7,7 @@
     "dev": "bun run src/index.ts",
     "api": "bun run src/api/server.ts",
     "test": "vitest run tests",
+    "test:integration": "RUN_DB_TESTS=1 vitest run tests/browse-cache.test.ts tests/lease.test.ts tests/verification-inspector.test.ts",
     "test:watch": "vitest tests",
     "typecheck": "tsc --noEmit",
     "db:up": "docker compose up -d",
@@ -14,8 +15,8 @@
     "db:init": "bash scripts/db-init.sh"
   },
   "dependencies": {
-    "@mariozechner/pi-agent-core": "*",
-    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-agent-core": "^0.65.2",
+    "@mariozechner/pi-ai": "^0.65.2",
     "@pydantic/monty": "^0.0.17",
     "@types/pdf-parse": "^1.1.5",
     "@types/react": "^19.2.15",

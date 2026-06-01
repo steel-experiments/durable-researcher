@@ -103,8 +103,6 @@ export async function browseOne(opts: {
     title = scraped.title;
     rawLength = scraped.rawLength;
   }
-  scrapedUrls.add(url);
-
   const meaningful = isContentMeaningful(content);
 
   // Only cache meaningful content. Caching dead pages (bot blocks, paywalls,
@@ -122,6 +120,8 @@ export async function browseOne(opts: {
       details: { url, title, rawLength, meaningful: false },
     };
   }
+
+  scrapedUrls.add(url);
 
   // Harvest references from primary sources so chase_references can follow the citation graph.
   if (referenceQueue && isPaperLikeUrl(url)) {

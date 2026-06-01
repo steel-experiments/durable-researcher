@@ -5,8 +5,8 @@
     "": {
       "name": "durable-researcher",
       "dependencies": {
-        "@mariozechner/pi-agent-core": "*",
-        "@mariozechner/pi-ai": "*",
+        "@mariozechner/pi-agent-core": "^0.65.2",
+        "@mariozechner/pi-ai": "^0.65.2",
         "@pydantic/monty": "^0.0.17",
         "@types/pdf-parse": "^1.1.5",
         "@types/react": "^19.2.15",

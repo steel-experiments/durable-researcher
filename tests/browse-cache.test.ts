@@ -37,7 +37,9 @@ function meaningfulContent(): { title: string; content: string; rawLength: numbe
   return { title: "Test page", content, rawLength: content.length };
 }
 
-describe("browse-cache integration", () => {
+const describeDb = process.env.RUN_DB_TESTS === "1" ? describe : describe.skip;
+
+describeDb("browse-cache integration", () => {
   beforeAll(async () => {
     // Ensure the table exists by triggering a benign read.
     await getCachedBrowse(TEST_TASK_ID, "https://example.com/__init__").catch(() => null);

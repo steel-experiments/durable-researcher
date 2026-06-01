@@ -236,6 +236,48 @@ describe("createLoggingPersister event emission", () => {
     );
   });
 
+  it("does not emit browse-added for thin browse_url results", async () => {
+    const { ctx } = createCtxStub();
+    const bus = createResearchEventBus();
+    const received: ResearchEvent[] = [];
+    bus.subscribe((e) => received.push(e));
+
+    const opts = { ...makeOpts(), eventBus: bus, quiet: true };
+    const persister = createLoggingPersister(ctx as any, { id: "h" } as any, opts);
+
+    const assistantMsg: AssistantMessage = {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "tc-1",
+          name: "browse_url",
+          arguments: { url: "https://example.com/login" },
+        },
+      ],
+      api: "anthropic-messages",
+      provider: "anthropic",
+      model: "test",
+      usage: { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+      stopReason: "toolUse",
+      timestamp: Date.now(),
+    };
+    await persister({ type: "message_end", message: assistantMsg } as AgentEvent);
+
+    const toolResult: ToolResultMessage = {
+      role: "toolResult",
+      toolCallId: "tc-1",
+      toolName: "browse_url",
+      content: [{ type: "text", text: "Login | Sign up" }],
+      details: { meaningful: false },
+      isError: false,
+      timestamp: Date.now(),
+    };
+    await persister({ type: "message_end", message: toolResult } as AgentEvent);
+
+    expect(received.filter((e) => e.type === "browse-added")).toHaveLength(0);
+  });
+
   it("emits report-text on terminal assistant message (no tool calls, long text)", async () => {
     const { ctx } = createCtxStub();
     const bus = createResearchEventBus();

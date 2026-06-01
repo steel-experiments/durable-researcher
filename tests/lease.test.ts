@@ -61,6 +61,8 @@ describe("defaultWorkerId", () => {
   });
 });
 
+const describeDb = process.env.RUN_DB_TESTS === "1" ? describe : describe.skip;
+
 /**
  * Live-DB integration: spins up a dedicated queue, inserts a fake orphaned task that
  * looks like a dead worker died mid-run, and verifies the reaper marks it as failed.
@@ -68,7 +70,7 @@ describe("defaultWorkerId", () => {
  * Uses absurd.create_queue + raw SQL inserts to avoid pulling in the full Absurd SDK
  * for what's really a per-row state-transition test.
  */
-describe("reapOrphanedTasks (integration)", () => {
+describeDb("reapOrphanedTasks (integration)", () => {
   const queue = `cli_test_reap_${Math.floor(Date.now() / 1000)}`;
   let createdQueue = false;
 

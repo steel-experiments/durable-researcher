@@ -211,6 +211,45 @@ describe("rebuildStateFromMessages", () => {
     expect(scrapedUrls.has("https://example.com/page2")).toBe(true);
   });
 
+  it("does not count thin browse_url results as scraped sources", () => {
+    const messages: AgentMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "tc-1",
+            name: "browse_url",
+            arguments: { url: "https://example.com/login" },
+          },
+        ],
+        api: "anthropic-messages",
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        usage: {
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+        },
+        stopReason: "toolUse",
+        timestamp: Date.now(),
+      } satisfies AssistantMessage,
+      {
+        role: "toolResult",
+        toolCallId: "tc-1",
+        toolName: "browse_url",
+        content: [{ type: "text", text: "Login | Sign up" }],
+        details: { url: "https://example.com/login", meaningful: false },
+        isError: false,
+        timestamp: Date.now(),
+      } satisfies ToolResultMessage,
+    ];
+
+    const { scrapedUrls } = rebuildStateFromMessages(messages);
+    expect(scrapedUrls.size).toBe(0);
+  });
+
   it("extracts scraped URLs from prefetch_sources tool results", () => {
     const messages: AgentMessage[] = [
       {
@@ -257,6 +296,26 @@ describe("rebuildStateFromMessages", () => {
     expect(scrapedUrls.has("https://example.com/page1")).toBe(true);
     expect(scrapedUrls.has("https://example.com/page2")).toBe(true);
     expect(scrapedUrls.has("https://other.com/article")).toBe(true);
+  });
+
+  it("uses meaningful prefetch URLs when present", () => {
+    const messages: AgentMessage[] = [
+      {
+        role: "toolResult",
+        toolCallId: "tc-1",
+        toolName: "prefetch_sources",
+        content: [{ type: "text", text: "Prefetch results..." }],
+        details: {
+          browsedUrls: ["https://example.com/login", "https://example.com/report"],
+          meaningfulBrowsedUrls: ["https://example.com/report"],
+        },
+        isError: false,
+        timestamp: Date.now(),
+      } satisfies ToolResultMessage,
+    ];
+
+    const { scrapedUrls } = rebuildStateFromMessages(messages);
+    expect([...scrapedUrls]).toEqual(["https://example.com/report"]);
   });
 
   it("handles mixed messages with notes and browses", () => {

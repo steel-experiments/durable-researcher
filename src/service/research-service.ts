@@ -324,6 +324,18 @@ export function createResearchService() {
     return run;
   }
 
+  async function recordRunStartFailure(id: string, ownerId = "default", err: unknown): Promise<void> {
+    await getRun(id, ownerId);
+    const error = err instanceof Error
+      ? { name: err.name, message: err.message }
+      : { message: String(err) };
+    await recordResearchEvent({
+      runId: id,
+      type: "run.start_failed",
+      payload: { error },
+    });
+  }
+
   async function pauseRun(id: string, ownerId = "default"): Promise<ResearchRun> {
     const run = await getRun(id, ownerId);
     const executor = executorForHarness(run.params.selectedHarness!);
@@ -379,6 +391,7 @@ export function createResearchService() {
     listEvents,
     getReport,
     startRun,
+    recordRunStartFailure,
     pauseRun,
     resumeRun,
     finalizeRun,

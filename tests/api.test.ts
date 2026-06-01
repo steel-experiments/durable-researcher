@@ -132,6 +132,34 @@ describe("API routes", () => {
     expect(fake.startRun).toHaveBeenCalledWith("run_123", "default");
   });
 
+  it("records background start failures instead of swallowing them silently", async () => {
+    process.env.DURABLE_RESEARCHER_API_KEY = "secret";
+    const startError = new Error("worker boot failed");
+    const fake = service({
+      startRun: vi.fn(async () => {
+        throw startError;
+      }),
+      recordRunStartFailure: vi.fn(async () => undefined),
+    } as Partial<ResearchService>);
+
+    const response = await createApiHandler(fake)(
+      new Request("http://localhost/v1/research-runs", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer secret",
+          "Content-Type": "application/json",
+          "Idempotency-Key": "idem-key-start-fail",
+        },
+        body: JSON.stringify({ topic: "browser agents", depth: "quick" }),
+      }),
+    );
+
+    await Promise.resolve();
+
+    expect(response.status).toBe(202);
+    expect(fake.recordRunStartFailure).toHaveBeenCalledWith("run_123", "default", startError);
+  });
+
   it("requires idempotency key when creating runs", async () => {
     const response = await createApiHandler(service())(
       new Request("http://localhost/v1/research-runs", {

@@ -58,14 +58,20 @@ export function projectMessage(
   if (msg.toolName === "browse_url") {
     const url = projector.browseCalls.get(msg.toolCallId);
     if (!url) return {};
+    const details = msg.details as { meaningful?: boolean } | undefined;
+    if (details?.meaningful === false) return {};
     projector.scrapedUrls.add(url);
     return { browseAdded: url };
   }
 
   if (msg.toolName === "prefetch_sources" || msg.toolName === "scout") {
-    const details = msg.details as { browsedUrls?: string[] } | undefined;
-    if (details?.browsedUrls) {
-      for (const url of details.browsedUrls) projector.scrapedUrls.add(url);
+    const details = msg.details as {
+      browsedUrls?: string[];
+      meaningfulBrowsedUrls?: string[];
+    } | undefined;
+    const urls = details?.meaningfulBrowsedUrls ?? details?.browsedUrls;
+    if (urls) {
+      for (const url of urls) projector.scrapedUrls.add(url);
     }
   }
 

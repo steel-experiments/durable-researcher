@@ -70,7 +70,9 @@ export function createApiHandler(service: ResearchService = createResearchServic
             idempotencyKey: requireIdempotencyKey(request),
           });
           const responseRun = researchRunToResponse(run);
-          void service.startRun(run.id, principal.ownerId).catch(() => undefined);
+          void service.startRun(run.id, principal.ownerId).catch((err) => {
+            service.recordRunStartFailure?.(run.id, principal.ownerId, err).catch(() => undefined);
+          });
           return acceptedRunResponse(responseRun);
         }
         if (request.method === "GET") {

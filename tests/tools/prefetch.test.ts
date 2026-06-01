@@ -63,7 +63,7 @@ describe("createPrefetchTool", () => {
     });
 
     mockScrape.mockImplementation(async (_client, url) => ({
-      content: `Content from ${url} with enough words to be meaningful and pass content checks easily for testing purposes`,
+      content: `Content from ${url} ${Array.from({ length: 60 }, (_, i) => `distinct${i}`).join(" ")}`,
       title: `Page at ${url}`,
       rawLength: 5000,
     }));
