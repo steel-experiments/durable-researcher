@@ -29,6 +29,7 @@ import { mergeSurveyParts, assembleSurvey } from "../survey-merge.js";
 import { refineSurveyProse } from "../survey-prose.js";
 
 export type ExecutorContext = {
+  signal: AbortSignal;
   setRunStatus(status: ResearchRun["status"]): Promise<void>;
   setRunCampaign(campaignId: string, status: ResearchRun["status"]): Promise<void>;
 };
@@ -61,7 +62,9 @@ async function runResearchTask(input: {
   role: string;
   objective: string;
   params: ResearchParams;
+  signal?: AbortSignal;
 }): Promise<{ task: ResearchRunTask; result: ResearchResult; usage: CampaignUsage }> {
+  throwIfAborted(input.signal);
   const task = await createResearchRunTask({
     runId: input.run.id,
     role: input.role,
@@ -79,13 +82,21 @@ async function runResearchTask(input: {
       queueName: q,
       startedAt: new Date(),
     });
-    const worker = await app.startWorker({ concurrency: 1, claimTimeout: 600 });
+    // Claim timeout MUST cover the task's full max runtime. A research task runs up to
+    // getMaxDurationSeconds(depth) (standard 30m / deep 60m); the prior hardcoded 600s
+    // (10m) meant any subagent running past 10m had its claim expire, and past 20m Absurd
+    // TERMINATED the worker process — crashing the whole API server mid-run.
+    const taskMaxSeconds = getMaxDurationSeconds(input.params.depth);
+    const worker = await app.startWorker({ concurrency: 1, claimTimeout: taskMaxSeconds + 120 });
     let state;
     try {
-      state = await app.awaitTaskResult(spawned.taskID, {
-        queue: q,
-        timeout: getMaxDurationSeconds(input.params.depth) + 30,
-      });
+      state = await raceAbort(
+        app.awaitTaskResult(spawned.taskID, {
+          queue: q,
+          timeout: taskMaxSeconds + 30,
+        }),
+        input.signal,
+      );
     } finally {
       await worker.close();
     }
@@ -111,11 +122,38 @@ async function runResearchTask(input: {
     });
     return { task, result, usage };
   } catch (err) {
-    await updateResearchRunTask(task.id, { status: "failed", endedAt: new Date() }).catch(() => undefined);
+    const status = isAbortError(err) ? "cancelled" : "failed";
+    await updateResearchRunTask(task.id, { status, endedAt: new Date() }).catch(() => undefined);
     throw err;
   } finally {
     await app.close();
   }
+}
+
+function abortError(): Error {
+  const err = new Error("Research run stopped");
+  err.name = "AbortError";
+  return err;
+}
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === "AbortError";
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortError();
+}
+
+function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  throwIfAborted(signal);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortError());
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => {
+      signal.removeEventListener("abort", onAbort);
+    });
+  });
 }
 
 function mergeSources(results: ResearchResult[]): { title: string; url: string }[] {
@@ -157,7 +195,12 @@ function synthPrompt(topic: string, results: ResearchResult[], harnessType: stri
   ].join("\n");
 }
 
-async function synthesizeTeam(run: ResearchRun, harnessType: string, results: ResearchResult[]): Promise<ResearchResult> {
+async function synthesizeTeam(
+  run: ResearchRun,
+  harnessType: string,
+  results: ResearchResult[],
+  signal?: AbortSignal,
+): Promise<ResearchResult> {
   const sources = mergeSources(results);
   const notes = mergeNotes(results);
 
@@ -207,6 +250,7 @@ async function synthesizeTeam(run: ResearchRun, harnessType: string, results: Re
     harnessType,
     role: "synthesis",
     objective: `Synthesize final report for ${run.topic}`,
+    signal,
     params: {
       topic: run.topic,
       depth: run.params.depth,
@@ -229,13 +273,19 @@ async function synthesizeTeam(run: ResearchRun, harnessType: string, results: Re
   return synthesis.result;
 }
 
-async function runTeam(run: ResearchRun, harnessType: string, objectives: string[]): Promise<void> {
+async function runTeam(
+  run: ResearchRun,
+  harnessType: string,
+  objectives: string[],
+  signal?: AbortSignal,
+): Promise<void> {
   const tasks = await Promise.all(objectives.map((objective, index) =>
     runResearchTask({
       run,
       harnessType,
       role: `agent-${index + 1}`,
       objective,
+      signal,
       params: {
         topic: run.topic,
         depth: run.params.depth,
@@ -247,7 +297,7 @@ async function runTeam(run: ResearchRun, harnessType: string, objectives: string
       },
     })
   ));
-  await synthesizeTeam(run, harnessType, tasks.map((task) => task.result));
+  await synthesizeTeam(run, harnessType, tasks.map((task) => task.result), signal);
 }
 
 export function createCampaignPulsesExecutor(): ResearchExecutor {
@@ -269,7 +319,7 @@ export function createCampaignPulsesExecutor(): ResearchExecutor {
         campaignId = campaign.id;
         await ctx.setRunCampaign(campaign.id, "running");
       }
-      const campaign = await runCampaign(campaignId, { quiet: true });
+      const campaign = await runCampaign(campaignId, { quiet: true, signal: ctx.signal });
       await ctx.setRunStatus(campaign.status);
       if (campaign.finalReport) {
         await saveResearchArtifact({
@@ -314,6 +364,7 @@ export function createSingleAgentExecutor(): ResearchExecutor {
         harnessType: "single_agent",
         role: "single-agent",
         objective: run.topic,
+        signal: ctx.signal,
         params: {
           topic: run.topic,
           depth: run.params.depth,
@@ -343,7 +394,7 @@ export function createFixedTeamExecutor(): ResearchExecutor {
     async start(run, ctx) {
       const harness = run.params.selectedHarness;
       const agents = harness?.type === "fixed_team" ? harness.agents : 5;
-      await runTeam(run, "fixed_team", teamObjectives(run.topic, agents));
+      await runTeam(run, "fixed_team", teamObjectives(run.topic, agents), ctx.signal);
       await ctx.setRunStatus("completed");
     },
   };
@@ -357,7 +408,7 @@ export function createAsyncSubagentsExecutor(): ResearchExecutor {
       const objectives = teamObjectives(run.topic, count).map((objective, index) =>
         `Async subagent ${index + 1}: ${objective}. Work independently; the orchestrator will merge your findings.`
       );
-      await runTeam(run, "async_subagents", objectives);
+      await runTeam(run, "async_subagents", objectives, ctx.signal);
       await ctx.setRunStatus("completed");
     },
   };
@@ -373,6 +424,7 @@ export function createBlockingSubagentsExecutor(): ResearchExecutor {
         harnessType: "orchestrator_blocking_subagents",
         role: "orchestrator-plan",
         objective: `Plan quality-first subagent research for ${run.topic}`,
+        signal: ctx.signal,
         params: {
           topic: run.topic,
           depth: "quick",
@@ -384,7 +436,7 @@ export function createBlockingSubagentsExecutor(): ResearchExecutor {
       const objectives = teamObjectives(run.topic, count).map((objective, index) =>
         `Blocking subagent ${index + 1}: ${objective}. Use this orchestrator context:\n${plan.result.report}`
       );
-      await runTeam(run, "orchestrator_blocking_subagents", objectives);
+      await runTeam(run, "orchestrator_blocking_subagents", objectives, ctx.signal);
       await ctx.setRunStatus("completed");
     },
   };

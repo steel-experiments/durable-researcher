@@ -51,9 +51,11 @@ export async function runResearchWorkerUntilResult(opts: RunResearchWorkerOption
   process.once("SIGINT", onSignal);
   process.once("SIGTERM", onSignal);
 
+  // Claim timeout must cover the task's full max runtime (deep = 60m), else a long
+  // un-checkpointed stretch lets the claim expire and Absurd terminates the worker.
   const worker = await app.startWorker({
     concurrency: 1,
-    claimTimeout: 600,
+    claimTimeout: getMaxDurationSeconds() + 120,
     workerId,
     onError: (err) => {
       eventBus?.emit({ type: "task-error", message: err.message });

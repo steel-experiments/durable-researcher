@@ -68,12 +68,12 @@ async function main() {
 
   const worker = await app.startWorker({
     concurrency: 1,
-    claimTimeout: 600,
+    claimTimeout: getMaxDurationSeconds(depth) + 120,
     onError: (err: Error) => console.error("Worker error:", err.message),
   });
 
   const result = await app.awaitTaskResult(taskID, {
-    timeout: getMaxDurationSeconds() + 30,
+    timeout: getMaxDurationSeconds(depth) + 30,
   });
 
   if (result.state === "completed" && result.result) {

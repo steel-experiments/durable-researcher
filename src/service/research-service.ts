@@ -52,7 +52,13 @@ export type CreateResearchRunInput = {
 
 export type ResearchService = ReturnType<typeof createResearchService>;
 
-const activeRuns = new Map<string, Promise<void>>();
+type ActiveRun = {
+  promise: Promise<void>;
+  abortController: AbortController;
+};
+
+const STOPPED_STATUSES = new Set<ResearchRunStatus>(["paused", "cancelled"]);
+const activeRuns = new Map<string, ActiveRun>();
 
 async function ensureResearchRunSchema(): Promise<void> {
   if (schemaReady) return;
@@ -102,7 +108,11 @@ function rowToRun(
 ): ResearchRun {
   const params = normalizeRunParams(row.params);
   const campaignStatus = campaign ? statusFromCampaignStatus(campaign.status) : null;
-  const status = row.status === "queued" || (row.status === "running" && campaignStatus === "paused")
+  const status = row.status === "queued" ||
+    row.status === "paused" ||
+    row.status === "cancelled" ||
+    row.status === "failed" ||
+    (row.status === "running" && campaignStatus === "paused")
     ? row.status
     : campaignStatus ?? row.status;
   return {
@@ -152,22 +162,39 @@ async function taskUsageForRun(runId: string): Promise<CampaignUsage> {
   );
 }
 
-async function setRunCampaign(runId: string, campaignId: string, status: ResearchRunStatus): Promise<void> {
-  await getDbPool().query(
+async function setRunCampaign(runId: string, ownerId: string, campaignId: string, status: ResearchRunStatus): Promise<void> {
+  const result = await getDbPool().query(
     `UPDATE research_runs
         SET campaign_id = $2, status = $3, updated_at = now()
-      WHERE id = $1`,
-    [runId, campaignId, status],
+      WHERE id = $1 AND owner_id = $4
+      RETURNING id`,
+    [runId, campaignId, status, ownerId],
   );
+  if (!result.rows[0]) return;
   await recordResearchEvent({ runId, type: "run.campaign_linked", payload: { campaignId, status } });
 }
 
-async function setRunStatus(runId: string, status: ResearchRunStatus): Promise<void> {
-  await getDbPool().query(
-    `UPDATE research_runs SET status = $2, updated_at = now() WHERE id = $1`,
-    [runId, status],
+async function setRunStatus(
+  runId: string,
+  ownerId: string,
+  status: ResearchRunStatus,
+  opts: { preserveStopped?: boolean } = {},
+): Promise<boolean> {
+  const result = await getDbPool().query(
+    `UPDATE research_runs
+        SET status = $2, updated_at = now()
+      WHERE id = $1
+        AND owner_id = $3
+        AND (
+          $4::boolean = false
+          OR status NOT IN ('paused', 'cancelled')
+        )
+      RETURNING id`,
+    [runId, status, ownerId, opts.preserveStopped ?? false],
   );
+  if (!result.rows[0]) return false;
   await recordResearchEvent({ runId, type: `run.${status}`, payload: { status } });
+  return true;
 }
 
 export function createResearchService() {
@@ -267,25 +294,33 @@ export function createResearchService() {
 
   async function startRun(id: string, ownerId = "default"): Promise<ResearchRun> {
     const run = await getRun(id, ownerId);
-    if (activeRuns.has(id)) return run;
-    await setRunStatus(id, "running");
+    const active = activeRuns.get(id);
+    if (active) {
+      if (!active.abortController.signal.aborted) return run;
+      await active.promise.catch(() => undefined);
+    }
+    await setRunStatus(id, ownerId, "running");
     const executor = executorForHarness(run.params.selectedHarness!);
+    const abortController = new AbortController();
     const promise = executor.start(run, {
-      setRunStatus: (status) => setRunStatus(id, status),
-      setRunCampaign: (campaignId, status) => setRunCampaign(id, campaignId, status),
+      signal: abortController.signal,
+      setRunStatus: (status) => setRunStatus(id, ownerId, status, { preserveStopped: true }).then(() => undefined),
+      setRunCampaign: (campaignId, status) => setRunCampaign(id, ownerId, campaignId, status),
     })
       .then(async () => {
         const current = await getRun(id, ownerId);
-        if (current.status === "running") await setRunStatus(id, "completed");
+        if (current.status === "running") await setRunStatus(id, ownerId, "completed", { preserveStopped: true });
       })
       .catch(async (err) => {
-        await setRunStatus(id, "failed");
+        const current = await getRun(id, ownerId).catch(() => null);
+        if (abortController.signal.aborted || (current && STOPPED_STATUSES.has(current.status))) return;
+        await setRunStatus(id, ownerId, "failed", { preserveStopped: true });
         throw err;
       })
       .finally(() => {
         activeRuns.delete(id);
       });
-    activeRuns.set(id, promise);
+    activeRuns.set(id, { promise, abortController });
     return run;
   }
 
@@ -294,17 +329,20 @@ export function createResearchService() {
     const executor = executorForHarness(run.params.selectedHarness!);
     if (executor.pause) {
       await executor.pause(run, {
-        setRunStatus: (status) => setRunStatus(id, status),
-        setRunCampaign: (campaignId, status) => setRunCampaign(id, campaignId, status),
+        signal: activeRuns.get(id)?.abortController.signal ?? new AbortController().signal,
+        setRunStatus: (status) => setRunStatus(id, ownerId, status, { preserveStopped: true }).then(() => undefined),
+        setRunCampaign: (campaignId, status) => setRunCampaign(id, ownerId, campaignId, status),
       });
     } else {
-      await setRunStatus(id, "paused");
+      await setRunStatus(id, ownerId, "paused");
     }
+    activeRuns.get(id)?.abortController.abort();
     return getRun(id, ownerId);
   }
 
   async function resumeRun(id: string, ownerId = "default"): Promise<ResearchRun> {
-    await setRunStatus(id, "running");
+    await getRun(id, ownerId);
+    await setRunStatus(id, ownerId, "running");
     const resumed = await getRun(id, ownerId);
     void startRun(id, ownerId).catch(() => undefined);
     return resumed;
@@ -315,17 +353,19 @@ export function createResearchService() {
     const executor = executorForHarness(run.params.selectedHarness!);
     const report = executor.finalize
       ? await executor.finalize(run, {
-          setRunStatus: (status) => setRunStatus(id, status),
-          setRunCampaign: (campaignId, status) => setRunCampaign(id, campaignId, status),
+          signal: activeRuns.get(id)?.abortController.signal ?? new AbortController().signal,
+          setRunStatus: (status) => setRunStatus(id, ownerId, status, { preserveStopped: true }).then(() => undefined),
+          setRunCampaign: (campaignId, status) => setRunCampaign(id, ownerId, campaignId, status),
         })
       : (await getReport(id, ownerId)).report ?? "";
-    await setRunStatus(id, "completed");
+    await setRunStatus(id, ownerId, "completed", { preserveStopped: true });
     return { run: await getRun(id, ownerId), report };
   }
 
   async function cancelRun(id: string, ownerId = "default"): Promise<ResearchRun> {
     await getRun(id, ownerId);
-    await setRunStatus(id, "cancelled");
+    await setRunStatus(id, ownerId, "cancelled");
+    activeRuns.get(id)?.abortController.abort();
     return getRun(id, ownerId);
   }
 

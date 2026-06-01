@@ -3,6 +3,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { createResearchApp } from "./agent.js";
+import { getMaxDurationSeconds } from "./config.js";
 import { getDbPool } from "./db-pool.js";
 import {
   DEFAULT_PULSE_MAX_SOURCES,
@@ -531,7 +532,7 @@ function makePulseObjective(campaign: CampaignRecord, priorDecision: CampaignDec
 
 export async function runCampaign(
   campaignId: string,
-  opts: { maxPulses?: number; quiet?: boolean } = {},
+  opts: { maxPulses?: number; quiet?: boolean; signal?: AbortSignal } = {},
 ): Promise<CampaignRecord> {
   await ensureCampaignSchema();
   let campaign = await getCampaign(campaignId);
@@ -548,7 +549,9 @@ export async function runCampaign(
   let pulsesRun = 0;
 
   while (pulsesRun < maxPulses) {
+    throwIfCampaignAborted(opts.signal);
     campaign = (await getCampaign(campaignId))!;
+    if (campaign.status === "paused") return campaign;
     const stopReason = budgetStopReason(campaign);
     if (stopReason) {
       await finalizeCampaign(campaignId, stopReason);
@@ -598,15 +601,22 @@ export async function runCampaign(
       };
       const spawned = await app.spawn("research", params);
       await completePulse(pulse.id, { status: "running", taskId: spawned.taskID, queueName });
-      const worker = await app.startWorker({ concurrency: 1, claimTimeout: 600 });
+      // Claim timeout must cover the pulse's full runtime (see research-executors.ts).
+      const worker = await app.startWorker({
+        concurrency: 1,
+        claimTimeout: getMaxDurationSeconds(params.depth) + 120,
+      });
       let resultState;
       try {
-        resultState = await app.awaitTaskResult(spawned.taskID, {
-          queue: queueName,
-          timeout: campaign.deadlineAt
-            ? Math.max(60, Math.ceil((campaign.deadlineAt.getTime() - Date.now()) / 1000) + 30)
-            : 24 * 60 * 60,
-        });
+        resultState = await raceCampaignAbort(
+          app.awaitTaskResult(spawned.taskID, {
+            queue: queueName,
+            timeout: campaign.deadlineAt
+              ? Math.max(60, Math.ceil((campaign.deadlineAt.getTime() - Date.now()) / 1000) + 30)
+              : 24 * 60 * 60,
+          }),
+          opts.signal,
+        );
       } finally {
         await worker.close();
       }
@@ -655,6 +665,7 @@ export async function runCampaign(
         return (await getCampaign(campaignId))!;
       }
     } catch (err) {
+      if (isCampaignAbortError(err)) throw err;
       await completePulse(pulse.id, { status: "failed" });
       await setCampaignStatus(campaignId, "failed", (err as Error).message);
       throw err;
@@ -669,6 +680,32 @@ export async function runCampaign(
 export async function pauseCampaign(campaignId: string): Promise<void> {
   await ensureCampaignSchema();
   await setCampaignStatus(campaignId, "paused");
+}
+
+function campaignAbortError(): Error {
+  const err = new Error("Research campaign stopped");
+  err.name = "AbortError";
+  return err;
+}
+
+function isCampaignAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === "AbortError";
+}
+
+function throwIfCampaignAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw campaignAbortError();
+}
+
+function raceCampaignAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  throwIfCampaignAborted(signal);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(campaignAbortError());
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => {
+      signal.removeEventListener("abort", onAbort);
+    });
+  });
 }
 
 export async function compileCampaignReport(campaignId: string): Promise<string> {
