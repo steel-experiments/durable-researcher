@@ -6,3 +6,4 @@ output/
 absurdctl
 .adapters/
 .claude/
+.DS_Store

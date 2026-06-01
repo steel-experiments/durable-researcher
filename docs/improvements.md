@@ -23,9 +23,9 @@ This pattern suggests the system is already a capable synthesis engine, but not 
 
 Examples from local eval artifacts:
 
-- Strong `researchrubrics` performance on startup ideation in [`eval/responses/researchrubrics/6847465956a0f6376a605433.md`](/home/agent/durable-researcher/eval/responses/researchrubrics/6847465956a0f6376a605433.md)
-- Strong `draco` performance on tax-planning synthesis in [`eval/responses/draco/f004b46b-c0e7-4e86-a072-c7491328d538.md`](/home/agent/durable-researcher/eval/responses/draco/f004b46b-c0e7-4e86-a072-c7491328d538.md)
-- Strong `draco` performance on low-connectivity telehealth design in [`eval/responses/draco/868f0410-07c9-4609-a7f6-2ad72d678006.md`](/home/agent/durable-researcher/eval/responses/draco/868f0410-07c9-4609-a7f6-2ad72d678006.md)
+- Strong `researchrubrics` performance on startup ideation in [`eval/responses/researchrubrics/6847465956a0f6376a605433.md`](../eval/responses/researchrubrics/6847465956a0f6376a605433.md)
+- Strong `draco` performance on tax-planning synthesis in [`eval/responses/draco/f004b46b-c0e7-4e86-a072-c7491328d538.md`](../eval/responses/draco/f004b46b-c0e7-4e86-a072-c7491328d538.md)
+- Strong `draco` performance on low-connectivity telehealth design in [`eval/responses/draco/868f0410-07c9-4609-a7f6-2ad72d678006.md`](../eval/responses/draco/868f0410-07c9-4609-a7f6-2ad72d678006.md)
 
 ## Where The Strategy Breaks
 
@@ -35,7 +35,7 @@ The system often behaves like a careful analyst when the task actually wants one
 
 Example:
 
-- [`eval/responses/draco/b3d9ac35-7d3f-4fd5-925e-bbaa40c0de51.md`](/home/agent/durable-researcher/eval/responses/draco/b3d9ac35-7d3f-4fd5-925e-bbaa40c0de51.md)
+- [`eval/responses/draco/b3d9ac35-7d3f-4fd5-925e-bbaa40c0de51.md`](../eval/responses/draco/b3d9ac35-7d3f-4fd5-925e-bbaa40c0de51.md)
 
 Observed failure mode:
 
@@ -49,9 +49,9 @@ The current search/browse/note loop is much better at understanding topics than 
 
 Examples:
 
-- [`eval/responses/draco/72e81ce6-8d1f-4143-90d5-d25d7a212c85.md`](/home/agent/durable-researcher/eval/responses/draco/72e81ce6-8d1f-4143-90d5-d25d7a212c85.md)
-- [`eval/responses/draco/3a8db70a-d906-4bde-bf87-c0c74504409a.md`](/home/agent/durable-researcher/eval/responses/draco/3a8db70a-d906-4bde-bf87-c0c74504409a.md)
-- [`eval/responses/researchrubrics/6847465956a0f6376a60543e.md`](/home/agent/durable-researcher/eval/responses/researchrubrics/6847465956a0f6376a60543e.md)
+- [`eval/responses/draco/72e81ce6-8d1f-4143-90d5-d25d7a212c85.md`](../eval/responses/draco/72e81ce6-8d1f-4143-90d5-d25d7a212c85.md)
+- [`eval/responses/draco/3a8db70a-d906-4bde-bf87-c0c74504409a.md`](../eval/responses/draco/3a8db70a-d906-4bde-bf87-c0c74504409a.md)
+- [`eval/responses/researchrubrics/6847465956a0f6376a60543e.md`](../eval/responses/researchrubrics/6847465956a0f6376a60543e.md)
 
 Observed failure mode:
 

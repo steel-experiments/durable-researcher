@@ -16,8 +16,8 @@ The current system already tracks token usage for LLM calls, but it does not con
 
 What exists now:
 
-- per-run token usage aggregation in [`src/durable-turns.ts`](/home/agent/durable-researcher/src/durable-turns.ts)
-- CLI printing of token counts in [`src/index.ts`](/home/agent/durable-researcher/src/index.ts)
+- per-run token usage aggregation in [`src/durable-turns.ts`](../../src/durable-turns.ts)
+- CLI printing of token counts in [`src/index.ts`](../../src/index.ts)
 - judge-side cost estimation in the eval harness, but only for benchmark judging, not for main research runs
 
 What does not exist yet:
@@ -42,7 +42,7 @@ This separation is the key to keeping the system future-proof.
 
 Add a new module, for example:
 
-- [`src/costs.ts`](/home/agent/durable-researcher/src/costs.ts)
+- [`src/costs.ts`](../../src/costs.ts)
 
 Responsibilities:
 
@@ -107,7 +107,7 @@ Why:
 
 Create a pricing catalog file, for example:
 
-- [`config/pricing.json`](/home/agent/durable-researcher/config/pricing.json)
+- [`config/pricing.json`](../../config/pricing.json)
 
 Structure should be versioned and provider-specific.
 
