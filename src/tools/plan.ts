@@ -61,23 +61,8 @@ export function createPlanTool(
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       report(`    Plan ready (${elapsed}s): ${plan.subQueries.length} queries, strategy: ${plan.searchStrategy}`);
 
-      const formatted = [
-        `## Research Plan`,
-        ``,
-        `**Strategy:** ${plan.searchStrategy}`,
-        `**Estimated steps:** ${plan.estimatedSteps}`,
-        ``,
-        `### Strategic Approach`,
-        plan.strategicPlan,
-        ``,
-        `### Search Queries (${plan.subQueries.length})`,
-        ...plan.subQueries.map((q, i) => `${i + 1}. ${q}`),
-        ``,
-        `Execute these queries using web_search, then browse the most promising results.`,
-      ];
-
       return {
-        content: [{ type: "text" as const, text: formatted.join("\n") }],
+        content: [{ type: "text" as const, text: formatPlan(plan).join("\n") }],
         details: plan,
       };
     },
@@ -141,8 +126,43 @@ async function generateResearchPlan(
   }
 }
 
+/** Render a plan as the markdown block shown to the agent. */
+export function formatPlan(plan: ResearchPlan): string[] {
+  const lines = [
+    `## Research Plan`,
+    ``,
+    `**Strategy:** ${plan.searchStrategy}`,
+    `**Estimated steps:** ${plan.estimatedSteps}`,
+    ``,
+  ];
+
+  // Surface the lateral reasoning so the agent searches the decoded readings,
+  // not just the user's literal words. Omitted entirely when the planner found
+  // nothing oblique, so plain topics stay uncluttered.
+  if (plan.interpretations && plan.interpretations.length > 0) {
+    lines.push(`### Interpretations`);
+    for (const i of plan.interpretations) {
+      const tag = i.device ? `${i.reading} / ${i.device}` : i.reading;
+      const target = i.queriesTarget ? ` — search: ${i.queriesTarget}` : "";
+      lines.push(`- **${tag}:** ${i.meaning}${target}`);
+    }
+    lines.push(``);
+  }
+
+  lines.push(
+    `### Strategic Approach`,
+    plan.strategicPlan,
+    ``,
+    `### Search Queries (${plan.subQueries.length})`,
+    ...plan.subQueries.map((q, i) => `${i + 1}. ${q}`),
+    ``,
+    `Execute these queries using web_search, then browse the most promising results.`,
+  );
+  return lines;
+}
+
 /** Parse the LLM's plan response into a structured ResearchPlan. */
-function parsePlanResponse(
+export function parsePlanResponse(
   text: string,
   topic: string,
   maxQueries: number,
@@ -153,6 +173,9 @@ function parsePlanResponse(
     try {
       const parsed = JSON.parse(jsonMatch[0]);
       return {
+        interpretations: Array.isArray(parsed.interpretations)
+          ? parsed.interpretations
+          : undefined,
         strategicPlan: parsed.strategicPlan ?? parsed.plan ?? text,
         subQueries: Array.isArray(parsed.subQueries ?? parsed.queries)
           ? (parsed.subQueries ?? parsed.queries).slice(0, maxQueries)

@@ -122,6 +122,22 @@ describe("system.hbs template", () => {
     expect(rendered).toContain("Do NOT use markdown author links");
   });
 
+  it("carries lateral / fallible-clue guidance into the agent loop, not just planning", async () => {
+    const rendered = await loadTemplate("system", {
+      topic: "x",
+      depth: "standard",
+      mode: "lookup",
+      maxSources: 20,
+      maxIterations: 3,
+    });
+    const lowered = rendered.toLowerCase();
+    // The agent must keep decoding indirect phrasing while it scouts follow-up queries.
+    expect(lowered).toContain("lateral");
+    expect(lowered).toMatch(/homophone|indirect reference|decode/);
+    // And treat the user's stated details as fallible, not hard constraints.
+    expect(lowered).toMatch(/wrong|mistaken|approximate|fallible|soft clue/);
+  });
+
   it("renders the lookup-mode shape when mode=lookup", async () => {
     const rendered = await loadTemplate("system", {
       topic: "x",
