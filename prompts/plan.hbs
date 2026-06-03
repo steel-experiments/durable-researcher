@@ -4,7 +4,7 @@ Your output MUST be valid JSON with this exact structure:
 {
   "interpretations": [
     { "reading": "literal", "meaning": "what the words say at face value", "queriesTarget": "what to search for this reading" },
-    { "reading": "lateral", "device": "homophone|pun|anagram|paraphrase|reference|descriptor", "meaning": "the decoded meaning", "queriesTarget": "what to search for this reading" }
+    { "reading": "lateral", "device": "homophone|pun|anagram|paraphrase|reference|descriptor|association", "meaning": "the decoded meaning", "queriesTarget": "what to search for this reading" }
   ],
   "strategicPlan": "A 2-3 sentence description of the research approach and key areas to investigate",
   "subQueries": ["query1", "query2", ...],
@@ -31,6 +31,16 @@ with lateral thinking:
 - A **description standing in for a proper noun** (e.g. "the oldest stadium in
   Boston" → resolve the stadium, then search its events).
 - A cultural, film, or brand reference hiding inside ordinary words.
+
+The user is fallible. Their details may be wrong, approximate, or remembered
+imprecisely, and some words may be loose **associations** they jotted from
+memory rather than exact facts. Treat each stated detail as a **soft clue, not a
+hard constraint**: judge which details are the strongest, most identifying ones
+and which are weak or possibly mistaken. Before searching, **infer what each
+clue points AT** — the entities, names, events, or phrases it associates with —
+and search those inferred associations, not only the user's literal words. If a
+query combining every detail returns nothing, relax or drop the least-reliable
+detail and search by the strongest signal alone.
 
 Record the literal reading AND the 1–3 strongest lateral readings in
 `interpretations`. Then generate queries that test EACH surviving reading — do
