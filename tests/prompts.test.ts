@@ -50,6 +50,17 @@ describe("plan.hbs template", () => {
     expect(lowered).toMatch(/soft clue|hard constraint|relax|drop the least/);
   });
 
+  it("primes a needle prior and domain anchoring before searching", async () => {
+    const rendered = await loadTemplate("plan", { maxQueries: "5", depth: "standard" });
+    const lowered = rendered.toLowerCase();
+    // Needle prior: a hard question whose literal reading is trivial is a likely red herring.
+    expect(lowered).toContain("red herring");
+    expect(lowered).toMatch(/hard|obscure/);
+    // Domain anchoring: reason about the category and how such things are usually named.
+    expect(lowered).toMatch(/category|kind of/);
+    expect(lowered).toMatch(/named after|naming convention|usually named/);
+  });
+
   it("guards against inventing wordplay where the phrasing is straightforward", async () => {
     const rendered = await loadTemplate("plan", { maxQueries: "5", depth: "standard" });
     const lowered = rendered.toLowerCase();

@@ -42,6 +42,17 @@ and search those inferred associations, not only the user's literal words. If a
 query combining every detail returns nothing, relax or drop the least-reliable
 detail and search by the strongest signal alone.
 
+**Needle prior:** if a question is framed as hard or obscure yet its literal
+phrasing would be trivial to search, treat the surface reading as a likely
+**red herring** — weight the lateral readings higher, not lower. An easy
+question rarely gets asked this way.
+
+**Domain anchoring:** reason about the *category* before the words. What kind of
+entity is this, and how are things in that category usually named — after a
+sponsor, founder, place, brand, or event? Use that naming convention to turn a
+vague clue into a concrete search target (e.g. "what is this race called" →
+"what sponsor or brand is it named after").
+
 Record the literal reading AND the 1–3 strongest lateral readings in
 `interpretations`. Then generate queries that test EACH surviving reading — do
 not assume the literal reading is correct when the phrasing signals indirection.
