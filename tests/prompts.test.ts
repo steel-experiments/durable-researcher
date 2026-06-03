@@ -38,6 +38,18 @@ describe("plan.hbs template", () => {
     expect(lowered).toMatch(/literal[\s\S]*lateral|lateral[\s\S]*literal/);
   });
 
+  it("treats user-stated details as fallible clues and infers associations before searching", async () => {
+    const rendered = await loadTemplate("plan", { maxQueries: "5", depth: "standard" });
+    const lowered = rendered.toLowerCase();
+    // The user may be wrong, imprecise, or jotting loose associations from memory.
+    expect(lowered).toMatch(/wrong|mistaken|approximate|imprecise/);
+    expect(lowered).toContain("association");
+    // The planner should infer what the clues point at before searching, and relax
+    // unreliable details rather than treating every word as a hard constraint.
+    expect(lowered).toContain("infer");
+    expect(lowered).toMatch(/soft clue|hard constraint|relax|drop the least/);
+  });
+
   it("guards against inventing wordplay where the phrasing is straightforward", async () => {
     const rendered = await loadTemplate("plan", { maxQueries: "5", depth: "standard" });
     const lowered = rendered.toLowerCase();
