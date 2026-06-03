@@ -11,6 +11,15 @@ export const VERIFY_PASS_THRESHOLD = 0.7;
 /** Max claims verified in parallel. */
 export const VERIFY_CONCURRENCY = 4;
 
+/**
+ * Width of the borderline band above the pass threshold within which the adversarial
+ * refuter pass runs. Re-testing supported claims only matters when a few flipped votes
+ * would change the pass/fail decision — i.e. when the pass rate sits in
+ * [threshold, threshold + band]. Outside that band the report already clearly passes or
+ * fails, so spending refuter tokens cannot change the outcome.
+ */
+export const REFUTE_BAND = 0.1;
+
 /** Timeout in ms for a single claim-verification LLM call. */
 const VERIFY_TIMEOUT_MS = 30_000;
 
@@ -286,6 +295,15 @@ export async function verifyClaims(opts: {
   report: string;
   notes: ResearchNote[];
   verifier?: ClaimVerifier;
+  /**
+   * Adversarial second-pass verifier, prompted to disprove a claim. When provided and the
+   * first-pass result is borderline-passing (see REFUTE_BAND), each currently-supported
+   * claim is re-tested; a claim survives only if the refuter also fails to refute it. This
+   * counters the verifier's self-preferential leniency at the decision boundary.
+   */
+  refuter?: ClaimVerifier;
+  /** Override the borderline band width for the refuter pass. Defaults to REFUTE_BAND. */
+  refuteBand?: number;
   concurrency?: number;
   signal?: AbortSignal;
   /**
@@ -350,6 +368,44 @@ export async function verifyClaims(opts: {
         sourceUrl: null,
         supported: false,
         reason: "Substantive report section has no numeric inline citations",
+      });
+    }
+  }
+
+  // Adversarial refuter pass — only when the result is borderline-passing, so the extra
+  // calls land exactly where a flipped vote changes the pass/fail decision.
+  if (opts.refuter) {
+    const band = opts.refuteBand ?? REFUTE_BAND;
+    const pre = computeVerificationSummary(claims);
+    if (
+      pre.status !== "no_claims" &&
+      pre.passRate >= VERIFY_PASS_THRESHOLD &&
+      pre.passRate <= VERIFY_PASS_THRESHOLD + band
+    ) {
+      const supported = claims
+        .map((claim, index) => ({ claim, index }))
+        .filter(({ claim }) => claim.supported && claim.sourceUrl);
+      const verdicts = await pMap(supported, concurrency, async ({ claim }) => {
+        opts.signal?.throwIfAborted();
+        const excerpts = effectiveExcerptsForSource(opts.notes, claim.sourceUrl!, opts.urlExcerpts);
+        if (excerpts.length === 0) return null;
+        try {
+          return await opts.refuter!({ claim: claim.claim, excerpts, sourceUrl: claim.sourceUrl! });
+        } catch {
+          // Refuter infra error (timeout/parse) is our failure, not evidence against the
+          // claim — leave the first-pass verdict intact rather than flip on our own noise.
+          return null;
+        }
+      });
+      supported.forEach(({ index }, k) => {
+        const verdict = verdicts[k];
+        if (verdict && !verdict.supported) {
+          claims[index] = {
+            ...claims[index],
+            supported: false,
+            reason: `Refuted on adversarial re-check: ${verdict.reason}`,
+          };
+        }
       });
     }
   }
@@ -432,6 +488,70 @@ export const defaultClaimVerifier: ClaimVerifier = async ({
       .join("\n");
     const parsed = parseJsonVerdict(text);
     return parsed ?? { supported: false, reason: "Could not parse verifier output" };
+  } finally {
+    clearTimeout(timerId);
+  }
+};
+
+/**
+ * Refuter calibration. Same evidence rules as VERIFY_SYSTEM, but framed adversarially:
+ * the model's job is to find a reason the quotes do NOT back the claim. It only confirms
+ * support when it genuinely cannot. This is the skeptic half of the two-judge pass and
+ * deliberately leans toward {supported:false} when the quotes are ambiguous.
+ */
+const REFUTE_SYSTEM = [
+  "You are a skeptical fact-checker trying to DISPROVE that a CLAIM is backed by QUOTES from one source.",
+  "",
+  "Find any legitimate reason the quotes fail to support the claim. Return {\"supported\": false} when:",
+  "  (a) The quotes are silent on the claim's specific fact (no factual overlap), OR",
+  "  (b) The quotes contradict the claim, OR",
+  "  (c) The claim adds a specific number, date, name, or attribution the quotes don't contain, OR",
+  "  (d) The connection requires a non-obvious inferential leap the quotes don't make.",
+  "",
+  "Only return {\"supported\": true} when the quotes unambiguously back the claim's specific facts and you",
+  "genuinely cannot refute it. Paraphrase and reordering are fine; fabricated specifics are not.",
+  "When the evidence is ambiguous, prefer {\"supported\": false}.",
+  "",
+  `Output exactly one JSON object: {"supported": boolean, "reason": string}. No prose, no preamble.`,
+].join("\n");
+
+/** Default refuter — same plumbing as the verifier, adversarial system prompt. */
+export const defaultClaimRefuter: ClaimVerifier = async ({ claim, excerpts, sourceUrl }) => {
+  const model = getUtilityModel();
+  const userPrompt = [
+    `Claim: ${claim}`,
+    "",
+    `Source: ${sourceUrl}`,
+    "Verbatim quotes from the source:",
+    ...excerpts.map((e, i) => `  ${i + 1}. "${e}"`),
+    "",
+    "Output JSON only.",
+  ].join("\n");
+
+  const controller = new AbortController();
+  const timerId = setTimeout(() => controller.abort(), VERIFY_TIMEOUT_MS);
+  try {
+    const message = await completeSimple(
+      model,
+      {
+        systemPrompt: REFUTE_SYSTEM,
+        messages: [
+          { role: "user" as const, content: userPrompt, timestamp: Date.now() },
+        ],
+      },
+      {
+        maxTokens: 256,
+        apiKey: getEnvApiKey(model.provider),
+        reasoning: getUtilityReasoning(),
+        signal: controller.signal,
+      },
+    );
+    const text = message.content
+      .filter((c): c is { type: "text"; text: string } => c.type === "text")
+      .map((c) => c.text)
+      .join("\n");
+    const parsed = parseJsonVerdict(text);
+    return parsed ?? { supported: true, reason: "Could not parse refuter output — kept claim" };
   } finally {
     clearTimeout(timerId);
   }

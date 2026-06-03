@@ -34,6 +34,12 @@ export type ResearchToolOptions = {
   taskId: string;
   progress?: ToolProgress;
   urlExcerpts: UrlExcerptStore;
+  /**
+   * Whether to expose the code-adapter tools. Defaults to true. When false (e.g. for
+   * fan-out subagents that browse untrusted pages), write_adapter/use_adapter are
+   * withheld so page content cannot escalate into code execution.
+   */
+  allowAdapters?: boolean;
 };
 
 export function createResearchTools(opts: ResearchToolOptions): AgentTool<any>[] {
@@ -49,6 +55,7 @@ export function createResearchTools(opts: ResearchToolOptions): AgentTool<any>[]
     progress,
     urlExcerpts,
   } = opts;
+  const allowAdapters = opts.allowAdapters !== false;
   const prefetchBudget = Math.floor(maxSources / 2);
   const referenceChasingEnabled = mode === "survey";
   const referenceQueue = createReferenceQueue(scrapedUrls);
@@ -83,7 +90,8 @@ export function createResearchTools(opts: ResearchToolOptions): AgentTool<any>[]
           ),
         ]
       : []),
-    createUseAdapterTool(),
-    createWriteAdapterTool(),
+    ...(allowAdapters
+      ? [createUseAdapterTool(), createWriteAdapterTool()]
+      : []),
   ];
 }

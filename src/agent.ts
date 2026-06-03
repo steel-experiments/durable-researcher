@@ -22,6 +22,7 @@ import { createSteelClient } from "./steel-client.js";
 import { createResearchTools } from "./research-tools.js";
 import {
   verifyClaims,
+  defaultClaimRefuter,
   shouldTriggerRewrite,
   buildRewriteSteering,
   isBetterVerification,
@@ -436,6 +437,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         taskId,
         progress: toolProgress,
         urlExcerpts,
+        allowAdapters: params.allowAdapters,
       });
 
       // 4. Build system prompt from template
@@ -764,7 +766,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
           for (let attemptN = priorAttempts + 1; attemptN >= 1; attemptN--) {
             try {
               const cached = await ctx.step(`verify-claims-attempt-${attemptN}`, () =>
-                verifyClaims({ report: finalReport, notes, urlExcerpts: urlExcerptMap }),
+                verifyClaims({ report: finalReport, notes, urlExcerpts: urlExcerptMap, refuter: defaultClaimRefuter }),
               );
               verificationState = {
                 result: cached,
@@ -798,7 +800,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
             bus?.emit({ type: "agent-status", text: `Verifying citations (attempt ${attemptN})...` });
 
             const result: VerificationResult = await ctx.step(`verify-claims-attempt-${attemptN}`, () =>
-              verifyClaims({ report: currentReport!, notes, urlExcerpts: urlExcerptMap }),
+              verifyClaims({ report: currentReport!, notes, urlExcerpts: urlExcerptMap, refuter: defaultClaimRefuter }),
             );
             // Update the best-so-far before deciding on rewrite. The first
             // iteration always wins by default; later iterations only replace

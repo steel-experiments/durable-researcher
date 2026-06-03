@@ -26,6 +26,12 @@ export type ResearchParams = {
   extensionInstruction?: string;
   /** Override the auto-classified task mode. */
   mode?: TaskMode;
+  /**
+   * Whether this task may write and run code adapters. Defaults to true. Set false to
+   * quarantine agents that read untrusted web content: a browsing agent with no
+   * adapter tools cannot be steered by page content into generating/executing code.
+   */
+  allowAdapters?: boolean;
 };
 
 /** Long-running campaign status. Campaigns orchestrate many bounded research pulses. */

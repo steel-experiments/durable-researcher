@@ -27,6 +27,8 @@ import {
 import { saveResearchArtifact } from "./research-artifacts.js";
 import { mergeSurveyParts, assembleSurvey } from "../survey-merge.js";
 import { refineSurveyProse } from "../survey-prose.js";
+import { parseWorkstreams } from "./workstreams.js";
+import { critiqueCompleteness } from "./completeness-critic.js";
 
 export type ExecutorContext = {
   signal: AbortSignal;
@@ -294,10 +296,34 @@ async function runTeam(
         maxSources: run.params.budgets.maxSources,
         maxTokens: taskTokenLimit(run.params.selectedHarness, harnessType === "fixed_team" ? "agent" : "subagent"),
         extensionInstruction: objective,
+        // Quarantine: fan-out subagents read untrusted web content, so they must not
+        // hold the code-adapter tools. The synthesis step works only from their notes.
+        allowAdapters: false,
       },
     })
   ));
-  await synthesizeTeam(run, harnessType, tasks.map((task) => task.result), signal);
+  const synthesized = await synthesizeTeam(run, harnessType, tasks.map((task) => task.result), signal);
+
+  // Completeness critic: one pass over the synthesized report to name coverage gaps the
+  // fan-out missed. Recorded as an artifact only — it never blocks or rewrites here.
+  const critique = await critiqueCompleteness({
+    topic: run.topic,
+    report: synthesized.report ?? "",
+    objectives,
+  }).catch(() => null);
+  if (critique) {
+    await saveResearchArtifact({
+      runId: run.id,
+      kind: "completeness-critique",
+      contentType: "application/json",
+      content: JSON.stringify(critique, null, 2),
+      metadata: {
+        harnessType,
+        coverageComplete: critique.coverageComplete,
+        gapCount: critique.gaps.length,
+      },
+    }).catch(() => undefined);
+  }
 }
 
 export function createCampaignPulsesExecutor(): ResearchExecutor {
@@ -430,12 +456,23 @@ export function createBlockingSubagentsExecutor(): ResearchExecutor {
           depth: "quick",
           mode: run.params.mode,
           clarifications: run.params.clarify,
-          extensionInstruction: "Create a concise research plan identifying independent subagent workstreams. Do not write the final report yet.",
+          extensionInstruction: [
+            `Create a concise research plan identifying up to ${count} independent subagent workstreams.`,
+            `Output each workstream on its own line beginning with "WORKSTREAM: " followed by a specific,`,
+            `self-contained research objective tailored to this topic. Make the workstreams genuinely`,
+            `non-overlapping so subagents do not duplicate each other's work.`,
+            `Do not write the final report yet.`,
+          ].join(" "),
         },
       });
-      const objectives = teamObjectives(run.topic, count).map((objective, index) =>
-        `Blocking subagent ${index + 1}: ${objective}. Use this orchestrator context:\n${plan.result.report}`
-      );
+      // Let the orchestrator's decomposition drive the fan-out. Fall back to the generic
+      // angle list only when the plan didn't yield at least two usable workstreams.
+      const planned = parseWorkstreams(plan.result.report ?? "", count);
+      const objectives = planned.length >= 2
+        ? planned.map((objective, index) =>
+            `Blocking subagent ${index + 1}: ${objective}\n\nUse this orchestrator context:\n${plan.result.report}`)
+        : teamObjectives(run.topic, count).map((objective, index) =>
+            `Blocking subagent ${index + 1}: ${objective}. Use this orchestrator context:\n${plan.result.report}`);
       await runTeam(run, "orchestrator_blocking_subagents", objectives, ctx.signal);
       await ctx.setRunStatus("completed");
     },
