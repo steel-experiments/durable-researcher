@@ -131,6 +131,18 @@ export async function findTaskById(
   return undefined;
 }
 
+/**
+ * Whether a task still has work the worker can execute on resume.
+ * Completed and cancelled tasks are terminal. A failed task that has used up
+ * its retry attempts is also a corpse — resuming it just replays the stored
+ * final-attempt error instead of doing new work, so treat it as non-resumable.
+ */
+export function isResumable(task: ExistingTask): boolean {
+  if (task.status === "completed" || task.status === "cancelled") return false;
+  if (task.status === "failed" && task.attempt >= task.maxAttempts) return false;
+  return true;
+}
+
 /** Find an exact topic match among recent tasks. */
 export function findExactMatch(
   tasks: ExistingTask[],

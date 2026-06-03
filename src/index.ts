@@ -14,6 +14,7 @@ import {
   findRecentTasks,
   findExactMatch,
   findSimilarTask,
+  isResumable,
   findTaskById,
 } from "./task-finder.js";
 import { runFollowUp } from "./follow-up.js";
@@ -255,9 +256,7 @@ async function main() {
 
     // Check for in-progress tasks
     if (!taskID && !existingResult) {
-      const resumable = recentTasks.filter(
-        (t) => t.status !== "completed" && t.status !== "cancelled",
-      );
+      const resumable = recentTasks.filter(isResumable);
       if (resumable.length > 0) {
         const exact = findExactMatch(resumable, topic);
         if (exact) {

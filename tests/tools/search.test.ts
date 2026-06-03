@@ -3,8 +3,17 @@
 
 import { describe, it, expect } from "vitest";
 import { extractSearchResults, scoreRelevance, filterByRelevance } from "../../src/steel-client.js";
+import { createSearchTool } from "../../src/tools/search.js";
 import type { ScrapeResponse } from "steel-sdk/resources/top-level.js";
+import type Steel from "steel-sdk";
 import type { SearchResult } from "../../src/types.js";
+
+/** Minimal fake Steel client: every scrape returns the same canned link list. */
+function fakeSteel(links: { text: string; url: string }[]): Steel {
+  return {
+    scrape: async () => ({ content: {}, links, metadata: { statusCode: 200 } }),
+  } as unknown as Steel;
+}
 
 describe("extractSearchResults", () => {
   it("extracts results from structured links", () => {
@@ -242,5 +251,34 @@ describe("filterByRelevance", () => {
     const filtered = filterByRelevance(results, "OpenAI");
     expect(filtered).toHaveLength(1);
     expect(filtered[0].url).toBe("https://openai.com/blog");
+  });
+});
+
+describe("web_search relevance gate by mode", () => {
+  const topic = "AI agent automation web infrastructure";
+  // One on-topic result (matches the topic on ≥2 keywords) plus one result that
+  // matches the agent's short decoded query on only a SINGLE keyword. The single-
+  // keyword match scores 0 under the ≥2-keyword gate — the exact way the gate
+  // drops a correct page for a precise needle query.
+  const links = [
+    { text: "On-topic agent infrastructure guide", url: "https://a.com/agents" },
+    { text: "Larkspur trivia page", url: "https://b.com/answer" },
+  ];
+
+  it("drops single-keyword matches in synthesis mode (relevance gate active)", async () => {
+    const tool = createSearchTool(fakeSteel(links), new Set(), topic, "synthesis");
+    const out = await tool.execute("call-1", { query: "Larkspur festival name" });
+    expect(out.details?.freshResults).toBe(1);
+    expect(out.content[0].text).toContain("https://a.com/agents");
+    expect(out.content[0].text).not.toContain("https://b.com/answer");
+  });
+
+  it("keeps the agent's deliberately-decoded results in lookup mode (gate loosened)", async () => {
+    const tool = createSearchTool(fakeSteel(links), new Set(), topic, "lookup");
+    const out = await tool.execute("call-1", { query: "Larkspur festival name" });
+    // In lookup mode we trust the agent's precise query and do not gate against the
+    // literal topic, so the single-keyword-match result survives for the agent to browse.
+    expect(out.details?.freshResults).toBe(2);
+    expect(out.content[0].text).toContain("https://b.com/answer");
   });
 });
