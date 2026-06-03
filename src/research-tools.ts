@@ -66,7 +66,7 @@ export function createResearchTools(opts: ResearchToolOptions): AgentTool<any>[]
     createPlanTool(params, mode, progress),
     createPrefetchTool(client, scrapedUrls, params.topic, prefetchBudget, taskId, progress, urlExcerpts),
     createScoutTool(client, scrapedUrls, params.topic, taskId, progress, urlExcerpts, referenceQueue),
-    createSearchTool(client, scrapedUrls, params.topic),
+    createSearchTool(client, scrapedUrls, params.topic, mode),
     createBrowseTool(client, scrapedUrls, params.topic, taskId, urlExcerpts, referenceQueue),
     createScreenshotTool(client),
     createNoteTool(notes),

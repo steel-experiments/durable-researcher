@@ -6,6 +6,7 @@ import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { multiEngineSearch, filterByRelevance } from "../steel-client.js";
 import { searchEdgar } from "../edgar.js";
+import type { TaskMode } from "../types.js";
 
 const SearchParams = Type.Object({
   query: Type.String({ description: "The search query to execute" }),
@@ -25,6 +26,7 @@ export function createSearchTool(
   client: Steel,
   scrapedUrls: Set<string>,
   researchTopic?: string,
+  mode?: TaskMode,
 ): AgentTool<typeof SearchParams> {
   return {
     name: "web_search",
@@ -41,7 +43,12 @@ export function createSearchTool(
       // the query is relevant even if it doesn't match the broad topic.
       // EDGAR results are already from a topic-targeted index, so skip the
       // keyword filter (filing titles rarely overlap lexically with topics).
-      const relevant = (researchTopic && source !== "edgar")
+      // Lookup mode also skips the gate: a needle query is precise and often
+      // shares only one keyword with the answer page, which the ≥2-keyword
+      // gate would score 0 and drop. Trust the agent's query and return the
+      // raw engine ranking instead.
+      const skipFilter = source === "edgar" || mode === "lookup";
+      const relevant = (researchTopic && !skipFilter)
         ? filterByRelevance(rawResults, researchTopic, 0.2, params.query)
         : rawResults;
 

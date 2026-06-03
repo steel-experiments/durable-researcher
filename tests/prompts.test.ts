@@ -24,6 +24,32 @@ describe("plan.hbs template", () => {
     const rendered = await loadTemplate("plan", { maxQueries: "3", depth: "deep" });
     expect(rendered.toLowerCase()).toContain("deep");
   });
+
+  it("instructs the planner to interpret oblique phrasing with lateral thinking before searching", async () => {
+    const rendered = await loadTemplate("plan", { maxQueries: "5", depth: "standard" });
+    const lowered = rendered.toLowerCase();
+    // The lateral-interpretation step must be present and generic (renders for any mode).
+    expect(lowered).toContain("lateral");
+    expect(lowered).toContain("indirect reference");
+    expect(lowered).toContain("homophone");
+    // It must force the model to record interpretations before queries.
+    expect(lowered).toContain("interpretations");
+    // It must cover queries for both the literal and the lateral readings.
+    expect(lowered).toMatch(/literal[\s\S]*lateral|lateral[\s\S]*literal/);
+  });
+
+  it("guards against inventing wordplay where the phrasing is straightforward", async () => {
+    const rendered = await loadTemplate("plan", { maxQueries: "5", depth: "standard" });
+    const lowered = rendered.toLowerCase();
+    // The "solve but don't optimize for them" guardrail: do not hallucinate puns on plain topics.
+    expect(lowered).toMatch(/do not invent|nothing is oblique|single literal interpretation/);
+  });
+
+  it("does not reference the bubble-gum needle task in the prompt", async () => {
+    const rendered = await loadTemplate("plan", { maxQueries: "5", depth: "standard" });
+    expect(rendered.toLowerCase()).not.toContain("bubble gum");
+    expect(rendered.toLowerCase()).not.toContain("bubba gump");
+  });
 });
 
 describe("summarize.hbs template", () => {
