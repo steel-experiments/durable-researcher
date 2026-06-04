@@ -616,6 +616,58 @@ function isUngroundedFailure(c: ClaimVerification): boolean {
 }
 
 /** Build a steering message that asks the agent to rewrite the report. */
+/** Bold edit-verb prefix the model uses when it narrates its rewrite inline. */
+const CHANGELOG_LINE =
+  /^\s*(?:[-*+]\s*)?\*\*(removed|deleted|softened|re-?cited|recited|changed|renumbered|updated|replaced|kept|fixed|corrected)\b/i;
+
+/** Leading preamble the model sometimes emits before the actual report. */
+const PREAMBLE_LINE =
+  /^\s*(here is|here's|below is|i (have|'ve)\b|i made|as requested|the corrected report)/i;
+
+/** Header of a trailing "changes made" / changelog section to drop wholesale. */
+const CHANGELOG_HEADER =
+  /^\s*#{0,6}\s*\**\s*(summary of changes|changes made|change ?log|edits made|revisions?|changes:)\b/i;
+
+/**
+ * Strip rewrite self-narration the model leaks into a corrected report. The
+ * rewrite loop asks the model to fix specific claims; weaker models narrate the
+ * edits ("**Removed** the claim that…", "**Softened**…", a "Changes made" list)
+ * directly into the report body. Those lines carry [n] markers, so the claim
+ * verifier parses them as report claims and they fail (the cited source was just
+ * deleted) — tanking a perfectly good report's score to 0%. Remove them so both
+ * re-verification and the stored report see only the actual report.
+ */
+export function stripRewriteArtifacts(report: string): string {
+  const lines = report.split("\n");
+  const kept: string[] = [];
+  let inChangelogSection = false;
+
+  for (const line of lines) {
+    if (CHANGELOG_HEADER.test(line)) {
+      inChangelogSection = true;
+      continue;
+    }
+    if (inChangelogSection) {
+      // A changelog section runs until the next heading or a blank-then-content
+      // boundary; a new markdown heading ends it.
+      if (/^\s*#{1,6}\s/.test(line)) {
+        inChangelogSection = false;
+        kept.push(line);
+      }
+      continue;
+    }
+    if (CHANGELOG_LINE.test(line)) continue;
+    kept.push(line);
+  }
+
+  // Drop leading preamble + blank lines until the first real content line.
+  while (kept.length > 0 && (kept[0].trim() === "" || PREAMBLE_LINE.test(kept[0]))) {
+    kept.shift();
+  }
+
+  return kept.join("\n").trim();
+}
+
 export function buildRewriteSteering(result: VerificationResult): string {
   const failed = result.claims.filter((c) => !c.supported);
   const thresholdPct = (VERIFY_PASS_THRESHOLD * 100).toFixed(0);
@@ -631,6 +683,7 @@ export function buildRewriteSteering(result: VerificationResult): string {
       `Every entry in the Sources section MUST be a URL you actually browsed in this session — if you can't ground a claim to a browsed source, delete the claim.`,
       ``,
       `Keep everything else intact. Do NOT call any tools. Just write the corrected report.`,
+    `Output ONLY the corrected report itself — no preamble, no summary of changes, and no "Removed/Softened/Re-cited…" notes describing your edits. Apply the edits silently.`,
     ].join("\n");
   }
 
@@ -685,6 +738,7 @@ export function buildRewriteSteering(result: VerificationResult): string {
     `Every numbered entry in the Sources section MUST be a URL you actually browsed in this session.`,
     ``,
     `Keep everything else intact. Do NOT call any tools. Just write the corrected report.`,
+    `Output ONLY the corrected report itself — no preamble, no summary of changes, and no "Removed/Softened/Re-cited…" notes describing your edits. Apply the edits silently.`,
   );
   return lines.join("\n");
 }

@@ -25,6 +25,7 @@ import {
   defaultClaimRefuter,
   shouldTriggerRewrite,
   buildRewriteSteering,
+  stripRewriteArtifacts,
   isBetterVerification,
   VERIFY_PASS_THRESHOLD,
   type VerificationResult,
@@ -219,7 +220,9 @@ function extractFinalReport(messages: AgentMessage[]): string | null {
   if (rewriteSteeringIndex >= 0) {
     for (let i = messages.length - 1; i > rewriteSteeringIndex; i--) {
       const text = textOnlyAssistantContent(messages[i]);
-      if (text) return text;
+      // A rewrite can leak edit-narration into the body; strip it before this
+      // text is re-verified or stored as the final report.
+      if (text) return stripRewriteArtifacts(text);
     }
     // Steering was injected but the model didn't produce text — fall through.
   }
