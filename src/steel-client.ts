@@ -405,6 +405,73 @@ export function filterByRelevance(
     .map((s) => s.result);
 }
 
+/** Stopwords ignored when matching a query's content words against a result. */
+const REFLECTION_STOPWORDS = new Set([
+  "the", "and", "for", "with", "its", "was", "were", "has", "had", "that",
+  "what", "who", "when", "where", "which", "name", "old", "are", "this",
+]);
+
+/** Title-suffix tells of query-reflection SEO farms (crossword solvers, 3D-model
+ *  scrapers, job aggregators, book/product search pages that echo any query). */
+const REFLECTION_TITLE_PATTERNS = [
+  /crossword clue/i,
+  /\b3d models?\b/i,
+  /\bbook results?\b/i,
+  /new releases and popular books/i,
+  /\bjobs? in\b/i,
+  /walmart business/i,
+];
+
+/** Content words (lowercased, ≥3 chars, non-stopword) of a string. */
+function contentWords(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !REFLECTION_STOPWORDS.has(w));
+}
+
+/**
+ * Detect SEO query-reflection spam: pages that template the verbatim search
+ * query into their URL or title and exist for no query in particular. The
+ * defining tell is the query stuffed into the URL — a legitimate page rarely
+ * encodes 4+ of the query's content words in its path. A short curated set of
+ * title suffixes catches the worst farms on queries too short to trip that.
+ */
+export function isQueryReflectionSpam(result: SearchResult, query: string): boolean {
+  const qWords = Array.from(new Set(contentWords(query)));
+  if (qWords.length === 0) return false;
+
+  // Decode percent/plus/dash-encoded query terms so they become matchable text.
+  let urlText = result.url;
+  try {
+    urlText = decodeURIComponent(result.url);
+  } catch {
+    // Keep the raw URL if it isn't valid percent-encoding.
+  }
+  urlText = urlText.toLowerCase().replace(/[^a-z0-9]+/g, " ");
+
+  const inUrl = qWords.filter((w) => urlText.includes(w)).length;
+  if (inUrl >= 4 && inUrl / qWords.length >= 0.6) return true;
+
+  // Boilerplate-title farms — only when the title is echoing THIS query.
+  const title = result.title ?? "";
+  const inTitle = qWords.filter((w) => title.toLowerCase().includes(w)).length;
+  if (inTitle >= 2 && REFLECTION_TITLE_PATTERNS.some((re) => re.test(title))) {
+    return true;
+  }
+
+  return false;
+}
+
+/** Drop query-reflection spam from a result set. */
+export function filterReflectionSpam(
+  results: SearchResult[],
+  query: string,
+): SearchResult[] {
+  return results.filter((r) => !isQueryReflectionSpam(r, query));
+}
+
 /** Try multiple search engines in order, returning results from the first success. */
 export async function multiEngineSearch(
   client: Steel,
@@ -418,7 +485,8 @@ export async function multiEngineSearch(
         format: ["markdown"],
       });
 
-      const results = extractSearchResults(response);
+      // Strip SEO query-reflection spam before relevance/dedup downstream.
+      const results = filterReflectionSpam(extractSearchResults(response), query);
       if (results.length > 0) {
         return results;
       }

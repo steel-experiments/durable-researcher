@@ -2,7 +2,7 @@
 // ABOUTME: Tests extraction of search results from Steel scrape responses.
 
 import { describe, it, expect } from "vitest";
-import { extractSearchResults, scoreRelevance, filterByRelevance } from "../../src/steel-client.js";
+import { extractSearchResults, scoreRelevance, filterByRelevance, isQueryReflectionSpam } from "../../src/steel-client.js";
 import { createSearchTool } from "../../src/tools/search.js";
 import type { ScrapeResponse } from "steel-sdk/resources/top-level.js";
 import type Steel from "steel-sdk";
@@ -251,6 +251,78 @@ describe("filterByRelevance", () => {
     const filtered = filterByRelevance(results, "OpenAI");
     expect(filtered).toHaveLength(1);
     expect(filtered[0].url).toBe("https://openai.com/blog");
+  });
+});
+
+describe("isQueryReflectionSpam", () => {
+  // Real query and SERP junk observed on the bubble-gum lookup run: SEO farms
+  // that template the verbatim query into their URL/title for any input.
+  const query = `"bubble gum" 5K race "Great America"`;
+
+  const spam: SearchResult[] = [
+    {
+      title: `5K race "bubble gum" great america theme park california Crossword Clue ...`,
+      url: `https://www.wordplays.com/crossword-solver/5K-race-"bubble-gum"-great-america-theme-park-california`,
+      snippet: "Answers for 5K race bubble gum great america theme park california crossword clue",
+    },
+    {
+      title: `"great america theme park bubble gum 5k" 3D Models to Print - yeggi`,
+      url: "https://www.yeggi.com/q/great+america+theme+park+bubble+gum+5k/2/",
+      snippet: "10000+ printable 3D Models",
+    },
+    {
+      title: `"Great America" "Bubble Gum" "5K" - Walmart Business`,
+      url: "https://business.walmart.com/search?query=%22Great%20America%22%20%22Bubble%20Gum%22%20%225K%22",
+      snippet: "Dubble Bubble Bubblegum",
+    },
+    {
+      title: `"bubble gum" 5K Great America Santa Clara race results Book Results ...`,
+      url: "https://www.simonandschuster.com/search/books/Series/Ntt-bubble+gum+5K+Great+America+Santa+Clara+race+results",
+      snippet: "New releases and popular books",
+    },
+  ];
+
+  const legit: SearchResult[] = [
+    {
+      title: "Run & Ride California's Great America",
+      url: "https://runsignup.com/Race/CA/SantaClara/RunRideCaliforniasGreatAmerica",
+      snippet: "A 5K through the park during WinterFest",
+    },
+    {
+      title: "California's Great America",
+      url: "https://en.wikipedia.org/wiki/California's_Great_America",
+      snippet: "A theme park in Santa Clara",
+    },
+    {
+      title: "Bubble Run - San Jose, CA",
+      url: "https://runnersplan.com/races/bubble-run-san-jose-ca-10142023",
+      snippet: "A foam-themed 5K fun run",
+    },
+  ];
+
+  it("flags SEO query-reflection spam that stuffs the query into the URL", () => {
+    for (const r of spam) {
+      expect(isQueryReflectionSpam(r, query), r.url).toBe(true);
+    }
+  });
+
+  it("does not flag legitimate results that genuinely match the query", () => {
+    for (const r of legit) {
+      expect(isQueryReflectionSpam(r, query), r.url).toBe(false);
+    }
+  });
+
+  it("flags boilerplate-title farms even on a short query", () => {
+    const r: SearchResult = {
+      title: "bubble gum race Crossword Clue - wordplays.com",
+      url: "https://www.wordplays.com/crossword-solver/bubble-gum-race",
+      snippet: "",
+    };
+    expect(isQueryReflectionSpam(r, "bubble gum race")).toBe(true);
+  });
+
+  it("returns false for an empty query", () => {
+    expect(isQueryReflectionSpam(legit[0], "")).toBe(false);
   });
 });
 
