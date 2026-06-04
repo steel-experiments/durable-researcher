@@ -20,6 +20,23 @@ export const VERIFY_CONCURRENCY = 4;
  */
 export const REFUTE_BAND = 0.1;
 
+/**
+ * Number of independent skeptic votes cast per supported claim during the borderline
+ * refuter pass. A single LLM verdict is noisy; majority-of-N is far more stable, and we
+ * already gate this pass to the narrow band where a flipped vote changes the pass/fail
+ * decision, so the marginal cost lands exactly where it matters.
+ */
+export const REFUTER_VOTES = 3;
+
+/**
+ * Valid dissenting votes needed to flip a supported claim to unsupported. A claim is
+ * only flipped when at least this many of its votes actually adjudicated AND dissented —
+ * abstentions (errors/timeouts/unparseable output) never count toward the quorum, so an
+ * unadjudicated claim keeps its first-pass verdict rather than failing open in either
+ * direction.
+ */
+export const REFUTATIONS_REQUIRED = 2;
+
 /** Timeout in ms for a single claim-verification LLM call. */
 const VERIFY_TIMEOUT_MS = 30_000;
 
@@ -64,6 +81,21 @@ export type ClaimVerifier = (input: {
   excerpts: string[];
   sourceUrl: string;
 }) => Promise<{ supported: boolean; reason: string }>;
+
+/**
+ * Signature for the external-contradiction checker. Searches for evidence that
+ * disputes a claim already supported by its cited excerpts. Returns `contradicted`
+ * only when a credible external source clearly undermines the claim.
+ */
+export type ContradictionChecker = (input: {
+  claim: string;
+  sourceUrl: string;
+}) => Promise<{
+  contradicted: boolean;
+  evidence: string;
+  /** Optional: a URL for the contradicting source to surface in the reason. */
+  counterSource?: string;
+}>;
 
 const SOURCES_HEADING_RE = /^#{1,3}\s*Sources\b/im;
 const NEXT_HEADING_RE = /^#{1,3}\s+\S/m;
@@ -290,6 +322,27 @@ async function pMap<T, R>(
   return results;
 }
 
+/**
+ * Detect whether a claim is "strong" — i.e. carries a specific fact (number, year,
+ * version, or multi-word proper noun) that can be externally contradicted. Vague
+ * qualitative claims ("works well", "widely adopted") are weak and skip the expensive
+ * contradiction check.
+ */
+export function isStrongClaim(claim: string): boolean {
+  // Strip citation markers like [1], [2, 3] before checking — otherwise the bracketed
+  // numbers would be misinterpreted as quantitative data points.
+  const stripped = claim.replace(/\[\d+(?:,\s*\d+)*\]/g, "");
+  // Numbers and percentages: "92%", "1.5x", "3.0"
+  if (/\d+%|\b\d+(\.\d+)?\b(\s*(times?|x|×))?\b/i.test(stripped)) return true;
+  // Years (1900-2099 range) and date-like patterns: "in 2024", "published 2023"
+  if (/\b(19|20)\d{2}\b/.test(stripped)) return true;
+  // Versions: "v3.0", "version 2.1", "ver 1"
+  if (/\b[vv]ersion?\s*\d+(\.\d+)?/i.test(stripped)) return true;
+  // Multi-word proper nouns (2+ consecutive Capitalized Words): "Claude Opus", "GPT-4"
+  if (/\b[A-Z][a-z]+(\s+[A-Z][a-z]+)+/.test(stripped)) return true;
+  return false;
+}
+
 /** Verify all citations in a report against the notes' key excerpts. */
 export async function verifyClaims(opts: {
   report: string;
@@ -302,8 +355,20 @@ export async function verifyClaims(opts: {
    * counters the verifier's self-preferential leniency at the decision boundary.
    */
   refuter?: ClaimVerifier;
+  /**
+   * External-contradiction checker that searches for evidence disputing a claim.
+   * Only runs for strong, supported claims in the borderline band (see REFUTE_BAND) —
+   * weak or already-failed claims skip it. A claim is flipped to unsupported only when
+   * the checker returns `contradicted: true` with credible counter-evidence. Errors
+   * abstain (do not flip the claim).
+   */
+  contradictionChecker?: ContradictionChecker;
   /** Override the borderline band width for the refuter pass. Defaults to REFUTE_BAND. */
   refuteBand?: number;
+  /** Votes cast per supported claim in the refuter pass. Defaults to REFUTER_VOTES. */
+  refuterVotes?: number;
+  /** Valid dissents needed to flip a claim. Defaults to REFUTATIONS_REQUIRED. */
+  refutationsRequired?: number;
   concurrency?: number;
   signal?: AbortSignal;
   /**
@@ -373,7 +438,12 @@ export async function verifyClaims(opts: {
   }
 
   // Adversarial refuter pass — only when the result is borderline-passing, so the extra
-  // calls land exactly where a flipped vote changes the pass/fail decision.
+  // calls land exactly where a flipped vote changes the pass/fail decision. Each supported
+  // claim is re-tested by `refuterVotes` independent skeptics; it is flipped to unsupported
+  // only when a quorum (`refutationsRequired`) of VALID votes dissents. A vote that errors,
+  // aborts, or can't be parsed is an abstention — it neither flips the claim nor counts
+  // toward the quorum (an infra failure is our noise, not evidence), and a claim with too
+  // few valid votes to reach quorum keeps its first-pass verdict.
   if (opts.refuter) {
     const band = opts.refuteBand ?? REFUTE_BAND;
     const pre = computeVerificationSummary(claims);
@@ -382,10 +452,16 @@ export async function verifyClaims(opts: {
       pre.passRate >= VERIFY_PASS_THRESHOLD &&
       pre.passRate <= VERIFY_PASS_THRESHOLD + band
     ) {
+      const votesPerClaim = opts.refuterVotes ?? REFUTER_VOTES;
+      const refutationsRequired = opts.refutationsRequired ?? REFUTATIONS_REQUIRED;
       const supported = claims
         .map((claim, index) => ({ claim, index }))
         .filter(({ claim }) => claim.supported && claim.sourceUrl);
-      const verdicts = await pMap(supported, concurrency, async ({ claim }) => {
+      // Flatten (claim × vote) into one ballot list so every vote shares the concurrency pool.
+      const ballots = supported.flatMap(({ claim, index }) =>
+        Array.from({ length: votesPerClaim }, () => ({ claim, index })),
+      );
+      const cast = await pMap(ballots, concurrency, async ({ claim }) => {
         opts.signal?.throwIfAborted();
         const excerpts = effectiveExcerptsForSource(opts.notes, claim.sourceUrl!, opts.urlExcerpts);
         if (excerpts.length === 0) return null;
@@ -393,20 +469,70 @@ export async function verifyClaims(opts: {
           return await opts.refuter!({ claim: claim.claim, excerpts, sourceUrl: claim.sourceUrl! });
         } catch {
           // Refuter infra error (timeout/parse) is our failure, not evidence against the
-          // claim — leave the first-pass verdict intact rather than flip on our own noise.
+          // claim — abstain rather than flip on our own noise.
           return null;
         }
       });
-      supported.forEach(({ index }, k) => {
-        const verdict = verdicts[k];
-        if (verdict && !verdict.supported) {
+      // Tally each claim's valid votes and dissents back by index.
+      const tally = new Map<number, { valid: number; refutations: number }>();
+      ballots.forEach(({ index }, k) => {
+        const verdict = cast[k];
+        const t = tally.get(index) ?? { valid: 0, refutations: 0 };
+        if (verdict) {
+          t.valid++;
+          if (!verdict.supported) t.refutations++;
+        }
+        tally.set(index, t);
+      });
+      for (const [index, t] of tally) {
+        if (t.valid >= refutationsRequired && t.refutations >= refutationsRequired) {
           claims[index] = {
             ...claims[index],
             supported: false,
-            reason: `Refuted on adversarial re-check: ${verdict.reason}`,
+            reason: `Refuted on adversarial re-check (${t.refutations}/${t.valid} skeptics dissented)`,
           };
         }
-      });
+      }
+    }
+  }
+
+  // External-contradiction check — only for strong, supported claims in the borderline band.
+  // A claim is flipped only when a credible external source directly contradicts it; infra
+  // errors abstain. This catches "the source itself is wrong" bugs that excerpt-grounding misses.
+  if (opts.contradictionChecker) {
+    const band = opts.refuteBand ?? REFUTE_BAND;
+    const post = computeVerificationSummary(claims);
+    if (
+      post.status !== "no_claims" &&
+      post.passRate >= VERIFY_PASS_THRESHOLD &&
+      post.passRate <= VERIFY_PASS_THRESHOLD + band
+    ) {
+      const strongSupported = claims
+        .map((claim, index) => ({ claim, index }))
+        .filter(({ claim }) => claim.supported && claim.sourceUrl && isStrongClaim(claim.claim));
+      if (strongSupported.length > 0) {
+        const checks = await pMap(strongSupported, concurrency, async ({ claim }) => {
+          opts.signal?.throwIfAborted();
+          try {
+            return await opts.contradictionChecker!({ claim: claim.claim, sourceUrl: claim.sourceUrl! });
+          } catch {
+            // Checker infra error (search timeout/parse) is our failure, not evidence against
+            // the claim — abstain rather than flip on our own noise.
+            return null;
+          }
+        });
+        strongSupported.forEach(({ index }, k) => {
+          const check = checks[k];
+          if (check && check.contradicted) {
+            const counterPart = check.counterSource ? ` (counter: ${check.counterSource})` : "";
+            claims[index] = {
+              ...claims[index],
+              supported: false,
+              reason: `Contradicted by external evidence: ${check.evidence}${counterPart}`,
+            };
+          }
+        });
+      }
     }
   }
 
@@ -551,7 +677,12 @@ export const defaultClaimRefuter: ClaimVerifier = async ({ claim, excerpts, sour
       .map((c) => c.text)
       .join("\n");
     const parsed = parseJsonVerdict(text);
-    return parsed ?? { supported: true, reason: "Could not parse refuter output — kept claim" };
+    // Abstain (the caller treats a throw as a non-vote) rather than fabricate a
+    // confirmatory verdict — an unparseable response is our noise, not evidence the
+    // claim stands. A fake {supported:true} here would silently fail open in the
+    // refuter's tally.
+    if (!parsed) throw new Error("Could not parse refuter output");
+    return parsed;
   } finally {
     clearTimeout(timerId);
   }

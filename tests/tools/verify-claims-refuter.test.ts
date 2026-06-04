@@ -80,4 +80,86 @@ describe("verifyClaims adversarial refuter pass", () => {
     expect(result.summary.supported).toBe(3);
     expect(result.summary.passRate).toBeCloseTo(0.75, 5);
   });
+
+  it("re-tests each supported claim with multiple independent votes", async () => {
+    const calls = new Map<string, number>();
+    const refuter: ClaimVerifier = async ({ sourceUrl }) => {
+      calls.set(sourceUrl, (calls.get(sourceUrl) ?? 0) + 1);
+      return { supported: true, reason: "stands" };
+    };
+    await verifyClaims({ report: REPORT, notes: NOTES, verifier: borderlineVerifier, refuter });
+    // a/b/c were supported in the first pass → each gets the full vote count.
+    expect(calls.get("https://a.com")).toBe(3);
+    expect(calls.get("https://b.com")).toBe(3);
+    expect(calls.get("https://c.com")).toBe(3);
+    // d was already unsupported, so it is never re-tested.
+    expect(calls.get("https://d.com")).toBeUndefined();
+  });
+
+  it("requires a quorum of refuting votes — a lone dissent does not flip", async () => {
+    const calls = new Map<string, number>();
+    const refuter: ClaimVerifier = async ({ sourceUrl }) => {
+      const n = (calls.get(sourceUrl) ?? 0) + 1;
+      calls.set(sourceUrl, n);
+      // Only the first vote on a.com dissents; 1 of 3 is below the 2-vote quorum.
+      if (sourceUrl === "https://a.com" && n === 1) {
+        return { supported: false, reason: "lone dissent" };
+      }
+      return { supported: true, reason: "stands" };
+    };
+    const result = await verifyClaims({ report: REPORT, notes: NOTES, verifier: borderlineVerifier, refuter });
+    expect(result.summary.supported).toBe(3);
+    expect(result.claims.find((c) => c.sourceN === 1)?.supported).toBe(true);
+  });
+
+  it("flips when a quorum (2 of 3) of skeptics dissents", async () => {
+    const calls = new Map<string, number>();
+    const refuter: ClaimVerifier = async ({ sourceUrl }) => {
+      const n = (calls.get(sourceUrl) ?? 0) + 1;
+      calls.set(sourceUrl, n);
+      // a.com: votes 1 and 2 dissent, vote 3 supports → 2/3 meets the quorum.
+      if (sourceUrl === "https://a.com") return { supported: n > 2, reason: n > 2 ? "stands" : "dissent" };
+      return { supported: true, reason: "stands" };
+    };
+    const result = await verifyClaims({ report: REPORT, notes: NOTES, verifier: borderlineVerifier, refuter });
+    expect(result.summary.supported).toBe(2);
+    const flipped = result.claims.find((c) => c.sourceN === 1);
+    expect(flipped?.supported).toBe(false);
+    expect(flipped?.reason).toMatch(/refut/i);
+  });
+
+  it("treats refuter errors as abstentions that cannot form a quorum", async () => {
+    const calls = new Map<string, number>();
+    const refuter: ClaimVerifier = async ({ sourceUrl }) => {
+      const n = (calls.get(sourceUrl) ?? 0) + 1;
+      calls.set(sourceUrl, n);
+      if (sourceUrl === "https://a.com") {
+        if (n === 1) return { supported: false, reason: "real dissent" };
+        throw new Error("refuter timeout"); // votes 2 and 3 abstain
+      }
+      return { supported: true, reason: "stands" };
+    };
+    const result = await verifyClaims({ report: REPORT, notes: NOTES, verifier: borderlineVerifier, refuter });
+    // [1] has 1 valid refutation + 2 abstentions → below the 2-vote quorum → kept.
+    expect(result.summary.supported).toBe(3);
+    expect(result.claims.find((c) => c.sourceN === 1)?.supported).toBe(true);
+  });
+
+  it("respects an overridden vote count and quorum", async () => {
+    // refuterVotes:1 / refutationsRequired:1 reproduces the old single-refuter pass.
+    const refuter: ClaimVerifier = async ({ sourceUrl }) =>
+      sourceUrl === "https://a.com"
+        ? { supported: false, reason: "no" }
+        : { supported: true, reason: "ok" };
+    const result = await verifyClaims({
+      report: REPORT,
+      notes: NOTES,
+      verifier: borderlineVerifier,
+      refuter,
+      refuterVotes: 1,
+      refutationsRequired: 1,
+    });
+    expect(result.summary.supported).toBe(2);
+    expect(result.claims.find((c) => c.sourceN === 1)?.supported).toBe(false);
+  });
 });

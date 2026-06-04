@@ -1,8 +1,53 @@
 // ABOUTME: Pure functions for note ranking and deduplication via trigram similarity.
 // ABOUTME: Detects near-duplicate notes, merges them, and ranks by confidence/source diversity.
 
-import type { ResearchNote } from "./types.js";
+import type { ResearchNote, SourceTier } from "./types.js";
 import { MAX_EXCERPTS_PER_NOTE } from "./types.js";
+
+/** Confidence ceiling each source tier allows. A note can never exceed its evidence. */
+const TIER_CONFIDENCE_CEILING: Record<SourceTier, ResearchNote["confidence"]> = {
+  primary: "high",
+  secondary: "high",
+  blog: "medium",
+  forum: "low",
+  unreliable: "low",
+};
+
+/** Authority ordering for tiers (lower = more authoritative). */
+const TIER_RANK: Record<SourceTier, number> = {
+  primary: 0,
+  secondary: 1,
+  blog: 2,
+  forum: 3,
+  unreliable: 4,
+};
+
+const CONFIDENCE_LEVEL: Record<ResearchNote["confidence"], number> = {
+  high: 2,
+  medium: 1,
+  low: 0,
+};
+
+/**
+ * Cap a self-reported confidence to what its source tier can support. This only ever
+ * LOWERS confidence (extraordinary claims need primary sources), never raises it, and
+ * leaves confidence untouched when no tier was recorded (back-compat with older notes).
+ */
+export function capConfidenceByTier(
+  confidence: ResearchNote["confidence"],
+  tier: SourceTier | undefined,
+): ResearchNote["confidence"] {
+  if (!tier) return confidence;
+  const ceiling = TIER_CONFIDENCE_CEILING[tier];
+  return CONFIDENCE_LEVEL[confidence] <= CONFIDENCE_LEVEL[ceiling] ? confidence : ceiling;
+}
+
+/** Pick the more authoritative of two (possibly undefined) source tiers. */
+function bestTier(a: SourceTier | undefined, b: SourceTier | undefined): SourceTier | undefined {
+  if (!a) return b;
+  if (!b) return a;
+  return TIER_RANK[a] <= TIER_RANK[b] ? a : b;
+}
 
 /** Merge two excerpt lists, dedup by trimmed lowercase, preserve order, cap at MAX_EXCERPTS_PER_NOTE. */
 function mergeExcerpts(
@@ -94,6 +139,7 @@ export function mergeNotes(a: ResearchNote, b: ResearchNote): ResearchNote {
     : b.confidence;
 
   const keyExcerpts = mergeExcerpts(primary.keyExcerpts, secondary.keyExcerpts);
+  const sourceTier = bestTier(a.sourceTier, b.sourceTier);
 
   return {
     title: primary.title,
@@ -101,6 +147,7 @@ export function mergeNotes(a: ResearchNote, b: ResearchNote): ResearchNote {
     sourceUrls: Array.from(urlSet),
     confidence,
     ...(keyExcerpts ? { keyExcerpts } : {}),
+    ...(sourceTier ? { sourceTier } : {}),
   };
 }
 

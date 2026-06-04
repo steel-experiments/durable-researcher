@@ -140,6 +140,54 @@ describe("createNoteTool", () => {
     expect(notes[0].keyExcerpts).toBeUndefined();
   });
 
+  it("stores sourceTier when provided", async () => {
+    const notes: ResearchNote[] = [];
+    const tool = createNoteTool(notes);
+
+    await tool.execute("call-1", {
+      title: "Institutional finding",
+      content: "Official benchmark numbers",
+      sourceUrls: ["https://nist.gov"],
+      confidence: "high" as const,
+      sourceTier: "primary" as const,
+    });
+
+    expect(notes[0].sourceTier).toBe("primary");
+    expect(notes[0].confidence).toBe("high");
+  });
+
+  it("caps confidence to match a weak source tier", async () => {
+    const notes: ResearchNote[] = [];
+    const tool = createNoteTool(notes);
+
+    await tool.execute("call-1", {
+      title: "Forum claim",
+      content: "Someone on a forum said the model scores 99%",
+      sourceUrls: ["https://reddit.com/r/ml"],
+      confidence: "high" as const,
+      sourceTier: "forum" as const,
+    });
+
+    // high claimed, but a forum source caps it at low.
+    expect(notes[0].confidence).toBe("low");
+    expect(notes[0].sourceTier).toBe("forum");
+  });
+
+  it("leaves confidence unchanged when no sourceTier is given (back-compat)", async () => {
+    const notes: ResearchNote[] = [];
+    const tool = createNoteTool(notes);
+
+    await tool.execute("call-1", {
+      title: "Untiered finding",
+      content: "No tier supplied",
+      sourceUrls: ["https://example.com"],
+      confidence: "high" as const,
+    });
+
+    expect(notes[0].confidence).toBe("high");
+    expect(notes[0].sourceTier).toBeUndefined();
+  });
+
   it("triggers dedup when notes reach threshold", async () => {
     const notes: ResearchNote[] = [];
     const tool = createNoteTool(notes);

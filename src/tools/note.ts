@@ -5,7 +5,7 @@ import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import type { ResearchNote } from "../types.js";
 import { MAX_EXCERPTS_PER_NOTE, MAX_EXCERPT_LENGTH } from "../types.js";
-import { deduplicateNotes } from "../notes-ranker.js";
+import { deduplicateNotes, capConfidenceByTier } from "../notes-ranker.js";
 
 const NoteParams = Type.Object({
   title: Type.String({ description: "Short title for this finding" }),
@@ -28,6 +28,21 @@ const NoteParams = Type.Object({
       description:
         "Up to 8 verbatim quotes from the source(s) supporting this finding (≤240 chars each). Required for high-confidence notes that will be cited in the final report. Capture broader coverage when the source will back multiple fine-grained claims (year, venue, metric, specific contribution).",
     }),
+  ),
+  sourceTier: Type.Optional(
+    Type.Union(
+      [
+        Type.Literal("primary"),
+        Type.Literal("secondary"),
+        Type.Literal("blog"),
+        Type.Literal("forum"),
+        Type.Literal("unreliable"),
+      ],
+      {
+        description:
+          "Provenance quality of the source(s): primary (original research / institutional / official), secondary (reputable reporting), blog (individual opinion), forum (user-generated), unreliable (marketing / SEO / unverifiable). Confidence is capped to the evidence: blog→medium, forum/unreliable→low.",
+      },
+    ),
   ),
 });
 
@@ -56,12 +71,16 @@ export function createNoteTool(notes: ResearchNote[]): AgentTool<typeof NotePara
     parameters: NoteParams,
     execute: async (_toolCallId, params) => {
       const excerpts = sanitizeExcerpts(params.keyExcerpts);
+      // Cap self-reported confidence to what the source tier can support — a note
+      // can never be more confident than its evidence (forum/blog claims get demoted).
+      const confidence = capConfidenceByTier(params.confidence, params.sourceTier);
       const note: ResearchNote = {
         title: params.title,
         content: params.content,
         sourceUrls: params.sourceUrls,
-        confidence: params.confidence,
+        confidence,
         ...(excerpts ? { keyExcerpts: excerpts } : {}),
+        ...(params.sourceTier ? { sourceTier: params.sourceTier } : {}),
       };
       notes.push(note);
 

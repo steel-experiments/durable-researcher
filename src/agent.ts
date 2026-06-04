@@ -18,7 +18,7 @@ import {
 import type { ResearchParams, ResearchResult, MessageLogEntry, TaskMode } from "./types.js";
 import { DEPTH_CONFIG } from "./types.js";
 import { classifyTask } from "./classify.js";
-import { createSteelClient } from "./steel-client.js";
+import { createSteelClient, multiEngineSearch } from "./steel-client.js";
 import { createResearchTools } from "./research-tools.js";
 import {
   verifyClaims,
@@ -29,6 +29,7 @@ import {
   isBetterVerification,
   VERIFY_PASS_THRESHOLD,
   type VerificationResult,
+  type ContradictionChecker,
 } from "./tools/verify-claims.js";
 import {
   loadMessageLog,
@@ -134,7 +135,7 @@ export function createTimeoutSteeringCheck(
 
 /** Build the final research result from accumulated notes and messages. */
 export function buildResult(
-  notes: { title: string; content: string; sourceUrls: string[]; confidence?: "high" | "medium" | "low"; keyExcerpts?: string[] }[],
+  notes: { title: string; content: string; sourceUrls: string[]; confidence?: "high" | "medium" | "low"; keyExcerpts?: string[]; sourceTier?: import("./types.js").SourceTier }[],
   topic: string,
   messages: AgentMessage[],
   verification?: { result: VerificationResult; attempts: number; rewriteTriggered: boolean },
@@ -163,6 +164,7 @@ export function buildResult(
     sourceUrls: n.sourceUrls,
     confidence: n.confidence ?? ("high" as const),
     ...(n.keyExcerpts?.length ? { keyExcerpts: n.keyExcerpts } : {}),
+    ...(n.sourceTier ? { sourceTier: n.sourceTier } : {}),
   }));
   const sources = Array.from(uniqueUrls).map((url) => ({
     title: urlTitles.get(url) ?? url,
@@ -757,6 +759,36 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         priorAttempts > 0;
 
       if (notesHaveExcerpts && finalReport) {
+        /**
+         * Real contradiction checker: searches the web for evidence that disputes
+         * a claim. Uses basic snippet heuristics to detect explicit contradiction
+         * markers (e.g., "actually X", "X is false", "contrary to claims") to avoid
+         * expensive LLM judgment on every check.
+         */
+        const contradictionChecker: ContradictionChecker = async ({ claim }) => {
+          // Build a focused search query from the claim (strip citation markers first).
+          const query = claim.replace(/\[\d+(?:,\s*\d+)*\]/g, "").trim().slice(0, 120);
+          const results = await multiEngineSearch(steelClient, query);
+          // Contradiction markers in snippets — explicit refutations or corrections.
+          const contradictionPatterns = [
+            /\b(actually|in fact|contrary to|despite|however)\b.*\b(false|incorrect|not (?:true|the case)|wrong)\b/i,
+            /\b(disputed|debunked|refuted|contradicted)\b/i,
+            /\b(no evidence|fails to|does not)\b/i,
+          ];
+          for (const result of results.slice(0, 5)) {
+            const snippet = (result.snippet ?? "").toLowerCase();
+            for (const pattern of contradictionPatterns) {
+              if (pattern.test(snippet)) {
+                return {
+                  contradicted: true,
+                  evidence: `Contradiction found in search result: "${result.snippet?.slice(0, 120)}"`,
+                  counterSource: result.url,
+                };
+              }
+            }
+          }
+          return { contradicted: false, evidence: "No contradiction found in top search results" };
+        };
         const urlExcerptMap = urlExcerpts.asMap();
 
         if (resumedAlreadyComplete) {
@@ -769,7 +801,13 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
           for (let attemptN = priorAttempts + 1; attemptN >= 1; attemptN--) {
             try {
               const cached = await ctx.step(`verify-claims-attempt-${attemptN}`, () =>
-                verifyClaims({ report: finalReport, notes, urlExcerpts: urlExcerptMap, refuter: defaultClaimRefuter }),
+                verifyClaims({
+                  report: finalReport,
+                  notes,
+                  urlExcerpts: urlExcerptMap,
+                  refuter: defaultClaimRefuter,
+                  contradictionChecker,
+                }),
               );
               verificationState = {
                 result: cached,
@@ -803,7 +841,13 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
             bus?.emit({ type: "agent-status", text: `Verifying citations (attempt ${attemptN})...` });
 
             const result: VerificationResult = await ctx.step(`verify-claims-attempt-${attemptN}`, () =>
-              verifyClaims({ report: currentReport!, notes, urlExcerpts: urlExcerptMap, refuter: defaultClaimRefuter }),
+              verifyClaims({
+                report: currentReport!,
+                notes,
+                urlExcerpts: urlExcerptMap,
+                refuter: defaultClaimRefuter,
+                contradictionChecker,
+              }),
             );
             // Update the best-so-far before deciding on rewrite. The first
             // iteration always wins by default; later iterations only replace

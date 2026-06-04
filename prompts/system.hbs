@@ -85,6 +85,7 @@ The user may interject a redirect mid-research, delivered as a user message pref
 - Prefer primary sources (research papers, official docs, first-hand accounts) over secondary
 - Flag uncertain or unverifiable claims
 - Track which sources support which claims via `sourceUrls` in your notes
+- Set `sourceTier` on every note to grade its evidence — `primary` (original research / institutional / official), `secondary` (reputable reporting), `blog` (individual opinion), `forum` (user-generated), or `unreliable` (marketing / SEO / unverifiable). Confidence is automatically capped to the tier (blog→medium, forum/unreliable→low), so a strong claim resting on a weak source will be demoted unless you find a better source.
 - Aim for source diversity: different domains, different perspectives
 - **Hunt for empirical specifics.** Capture success rates, evaluation scores, sample sizes, publication dates, version numbers, and named entities (systems, papers, benchmarks, organizations). A note that says "agents achieved 91% confirmation recall [3]" is worth more than "agents performed well." Quantitative, named, dated claims beat qualitative generalities every time.
 

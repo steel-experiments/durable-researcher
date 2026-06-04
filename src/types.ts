@@ -140,6 +140,14 @@ export type RefinedContent = {
   scrapedAt: number;
 };
 
+/**
+ * Provenance quality of a note's backing source(s), most authoritative first:
+ * primary (original research / institutional / official), secondary (reputable
+ * reporting), blog (individual opinion), forum (user-generated), unreliable
+ * (marketing / SEO / unverifiable). Used to cap a note's confidence to its evidence.
+ */
+export type SourceTier = "primary" | "secondary" | "blog" | "forum" | "unreliable";
+
 /** A structured research finding recorded by the agent. */
 export type ResearchNote = {
   title: string;
@@ -148,6 +156,8 @@ export type ResearchNote = {
   confidence: "high" | "medium" | "low";
   /** Verbatim quotes from sources backing this note. Used by claim verification. */
   keyExcerpts?: string[];
+  /** Provenance quality of the backing source(s); caps confidence (blog→medium, forum/unreliable→low). */
+  sourceTier?: SourceTier;
 };
 
 /**

@@ -8,9 +8,39 @@ import {
   mergeNotes,
   deduplicateNotes,
   rankNotes,
+  capConfidenceByTier,
 } from "../src/notes-ranker.js";
 import type { ResearchNote } from "../src/types.js";
 import { MAX_EXCERPTS_PER_NOTE } from "../src/types.js";
+
+describe("capConfidenceByTier", () => {
+  it("leaves confidence untouched for primary and secondary sources", () => {
+    expect(capConfidenceByTier("high", "primary")).toBe("high");
+    expect(capConfidenceByTier("high", "secondary")).toBe("high");
+    expect(capConfidenceByTier("medium", "secondary")).toBe("medium");
+  });
+
+  it("caps blog-backed confidence at medium", () => {
+    expect(capConfidenceByTier("high", "blog")).toBe("medium");
+    expect(capConfidenceByTier("medium", "blog")).toBe("medium");
+    expect(capConfidenceByTier("low", "blog")).toBe("low");
+  });
+
+  it("caps forum- and unreliable-backed confidence at low", () => {
+    expect(capConfidenceByTier("high", "forum")).toBe("low");
+    expect(capConfidenceByTier("medium", "unreliable")).toBe("low");
+    expect(capConfidenceByTier("low", "forum")).toBe("low");
+  });
+
+  it("only ever lowers confidence, never raises it", () => {
+    expect(capConfidenceByTier("low", "primary")).toBe("low");
+    expect(capConfidenceByTier("medium", "primary")).toBe("medium");
+  });
+
+  it("leaves confidence unchanged when no tier is given (back-compat)", () => {
+    expect(capConfidenceByTier("high", undefined)).toBe("high");
+  });
+});
 
 describe("computeSimilarity", () => {
   it("returns 1.0 for identical strings", () => {
@@ -238,6 +268,43 @@ describe("mergeNotes", () => {
     expect(merged.sourceUrls).toContain("https://shared.com");
     // No duplicates
     expect(merged.sourceUrls.filter((u) => u === "https://shared.com")).toHaveLength(1);
+  });
+
+  it("carries the most authoritative source tier", () => {
+    const a: ResearchNote = {
+      title: "Finding A",
+      content: "Some content.",
+      sourceUrls: ["https://a.com"],
+      confidence: "high",
+      sourceTier: "blog",
+    };
+    const b: ResearchNote = {
+      title: "Finding B",
+      content: "Some other content here.",
+      sourceUrls: ["https://b.com"],
+      confidence: "high",
+      sourceTier: "primary",
+    };
+    expect(mergeNotes(a, b).sourceTier).toBe("primary");
+    expect(mergeNotes(b, a).sourceTier).toBe("primary");
+  });
+
+  it("preserves the one tier present when only a single note is tiered", () => {
+    const a: ResearchNote = {
+      title: "Finding A",
+      content: "Some content.",
+      sourceUrls: ["https://a.com"],
+      confidence: "high",
+      sourceTier: "secondary",
+    };
+    const b: ResearchNote = {
+      title: "Finding B",
+      content: "Some other content here.",
+      sourceUrls: ["https://b.com"],
+      confidence: "high",
+    };
+    expect(mergeNotes(a, b).sourceTier).toBe("secondary");
+    expect(mergeNotes(b, a).sourceTier).toBe("secondary");
   });
 
   it("keeps the longer content", () => {

@@ -2,7 +2,8 @@
 // ABOUTME: Shared by resume replay and live event handling so tool-result semantics stay aligned.
 
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { ResearchNote } from "./types.js";
+import type { ResearchNote, SourceTier } from "./types.js";
+import { capConfidenceByTier } from "./notes-ranker.js";
 
 export type MessageProjection = {
   notes: ResearchNote[];
@@ -101,13 +102,18 @@ function recordAssistantToolCalls(
         sourceUrls: string[];
         confidence: "high" | "medium" | "low";
         keyExcerpts?: string[];
+        sourceTier?: SourceTier;
       };
+      // Re-apply the source-tier confidence cap so resume reconstructs the exact note
+      // the live take_note tool produced (the stored args carry the model's raw,
+      // uncapped confidence).
       projector.noteCalls.set(content.id, {
         title: args.title,
         content: args.content,
         sourceUrls: args.sourceUrls,
-        confidence: args.confidence,
+        confidence: capConfidenceByTier(args.confidence, args.sourceTier),
         ...(args.keyExcerpts?.length ? { keyExcerpts: args.keyExcerpts } : {}),
+        ...(args.sourceTier ? { sourceTier: args.sourceTier } : {}),
       });
     } else if (content.name === "browse_url") {
       const args = content.arguments as { url: string };
