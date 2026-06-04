@@ -12,11 +12,72 @@ import {
   buildRewriteSteering,
   shouldTriggerRewrite,
   isBetterVerification,
+  stripRewriteArtifacts,
   VERIFY_PASS_THRESHOLD,
   type ClaimVerifier,
   type VerificationResult,
 } from "../../src/tools/verify-claims.js";
 import type { ResearchNote } from "../../src/types.js";
+
+describe("stripRewriteArtifacts", () => {
+  it("removes changelog edit-narration lines the rewrite loop leaks into the report", () => {
+    const report = [
+      "### Answer",
+      "The race was the Larkspur Dash [1].",
+      "",
+      "**Removed** the unsupported claim that it was very close to the park [2].",
+      "**Softened** the conflation speculation about the user's memory.",
+      "**Removed source [2]** (example.com) entirely since it had no recorded excerpts.",
+      "",
+      "### Sources",
+      "1. https://a.com",
+    ].join("\n");
+    const cleaned = stripRewriteArtifacts(report);
+    expect(cleaned).not.toMatch(/\*\*Removed\*\*/);
+    expect(cleaned).not.toContain("Removed source [2]");
+    expect(cleaned).not.toContain("Softened");
+    // Real report content survives.
+    expect(cleaned).toContain("The race was the Larkspur Dash [1].");
+    expect(cleaned).toContain("### Sources");
+    expect(cleaned).toContain("1. https://a.com");
+  });
+
+  it("strips a leading preamble and a 'Changes made' section", () => {
+    const report = [
+      "Here is the corrected report:",
+      "",
+      "### Answer",
+      "The answer is X [1].",
+      "",
+      "## Changes made",
+      "- Removed claim about Y",
+      "- Re-cited Z to source 1",
+      "",
+      "### Sources",
+      "1. https://a.com",
+    ].join("\n");
+    const cleaned = stripRewriteArtifacts(report);
+    expect(cleaned).not.toMatch(/here is the corrected report/i);
+    expect(cleaned).not.toMatch(/changes made/i);
+    expect(cleaned).not.toContain("Removed claim about Y");
+    expect(cleaned).toContain("The answer is X [1].");
+    expect(cleaned).toContain("### Sources");
+  });
+
+  it("leaves a clean report untouched, including legit bold lead-ins", () => {
+    const report = [
+      "### Answer",
+      "**Bubble Run** is a foam 5K [1].",
+      "**Note:** the park closed in 2027 [2].",
+      "The committee removed the event in 1999 [2].",
+      "",
+      "### Sources",
+      "1. https://a.com",
+      "2. https://b.com",
+    ].join("\n");
+    expect(stripRewriteArtifacts(report)).toBe(report);
+  });
+});
 
 describe("parseSourcesSection", () => {
   it("returns empty map when no Sources heading is present", () => {
