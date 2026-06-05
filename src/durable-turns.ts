@@ -82,7 +82,7 @@ const TOOL_ICONS: Record<string, string> = {
   web_search: "[SEARCH]",
   browse_url: "[BROWSE]",
   screenshot: "[SCREENSHOT]",
-  take_note: "[NOTE]",
+  record_claims: "[CLAIMS]",
   evaluate_progress: "[EVALUATE]",
 };
 
@@ -257,6 +257,13 @@ export function createLoggingPersister(
             index: delta.noteAdded.index,
           });
         }
+        for (const added of delta.notesAdded ?? []) {
+          eventBus?.emit({
+            type: "note-added",
+            note: added.note,
+            index: added.index,
+          });
+        }
         if (delta.browseAdded) {
           eventBus?.emit({ type: "browse-added", url: delta.browseAdded });
         }
@@ -315,10 +322,10 @@ export function summarizeToolResult(
       const total = details.totalResults as number | undefined;
       return `${browsed ?? 0} browsed (of ${total ?? 0})`;
     }
-    case "take_note": {
-      const merged = details.mergedCount as number | undefined;
-      if (merged && merged > 0) return `merged into existing (+${merged})`;
-      return "saved";
+    case "record_claims": {
+      const recorded = details.recordedCount as number | undefined;
+      const claimCount = details.claimCount as number | undefined;
+      return `${recorded ?? 0} evidence item(s), ${claimCount ?? 0} claims`;
     }
     case "evaluate_progress":
       return "ok";
@@ -350,8 +357,10 @@ function formatToolArgs(toolName: string, args: Record<string, unknown>): string
       const focus = args.focus ? `, focus="${args.focus}"` : "";
       return `"${args.url}"${focus}`;
     }
-    case "take_note":
-      return `"${args.title}"`;
+    case "record_claims": {
+      const claims = args.claims as unknown[] | undefined;
+      return `${claims?.length ?? 0} claim(s)`;
+    }
     case "screenshot":
       return `"${args.url}"`;
     case "prefetch_sources": {
@@ -370,11 +379,12 @@ function formatToolArgs(toolName: string, args: Record<string, unknown>): string
  * Rebuild in-memory state from replayed messages.
  *
  * Walks through assistant tool calls and successful tool result messages to reconstruct:
- * - notes: from successful take_note tool executions
+ * - notes: derived from successful record_claims tool executions
  * - scrapedUrls: from successful browse_url/prefetch_sources/scout tool executions
  */
 export function rebuildStateFromMessages(messages: AgentMessage[]): {
   notes: import("./types.js").ResearchNote[];
+  ledger: import("./types.js").ResearchLedger;
   scrapedUrls: Set<string>;
 } {
   return projectMessages(messages);

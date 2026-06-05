@@ -147,13 +147,14 @@ export type RefinedContent = {
  * (marketing / SEO / unverifiable). Used to cap a note's confidence to its evidence.
  */
 export type SourceTier = "primary" | "secondary" | "blog" | "forum" | "unreliable";
+export type Confidence = "high" | "medium" | "low";
 
 /** A structured research finding recorded by the agent. */
 export type ResearchNote = {
   title: string;
   content: string;
   sourceUrls: string[];
-  confidence: "high" | "medium" | "low";
+  confidence: Confidence;
   /** Verbatim quotes from sources backing this note. Used by claim verification. */
   keyExcerpts?: string[];
   /** Provenance quality of the backing source(s); caps confidence (blog→medium, forum/unreliable→low). */
@@ -186,10 +187,19 @@ export type PlanInterpretation = {
 export type ResearchPlan = {
   /** Literal + lateral readings of the question, recorded before queries are generated. */
   interpretations?: PlanInterpretation[];
+  /** Coverage map: required subquestions/claims the loop should answer before synthesis. */
+  requiredClaims?: RequiredClaim[];
   strategicPlan: string;
   subQueries: string[];
   searchStrategy: "breadth-first" | "depth-first" | "mixed";
   estimatedSteps: number;
+};
+
+export type RequiredClaim = {
+  id: string;
+  question: string;
+  status: "open" | "answered" | "contradicted";
+  claimIds: string[];
 };
 
 /** A single search result from a SERP scrape. */
@@ -221,7 +231,9 @@ export type Evidence = {
   content: string;
   sourceUrls: string[];
   excerptIds: string[];
-  confidence: "high" | "medium" | "low";
+  confidence: Confidence;
+  /** Publication date of the source when available; used for recency-aware confidence. */
+  publishedAt?: string;
 };
 
 /** A report claim with addressable links back to evidence and excerpts. */
@@ -231,11 +243,77 @@ export type Claim = {
   sourceUrls: string[];
   evidenceIds: string[];
   excerptIds: string[];
-  confidence: "high" | "medium" | "low";
+  confidence: Confidence;
   verification?: {
     supported: boolean;
     reason: string;
   };
+};
+
+export type ResearchClaim = Claim & {
+  status: "open" | "supported" | "contested" | "refuted";
+  independentCorroboration: number;
+};
+
+export type ClaimEvidenceLink = {
+  claimId: string;
+  evidenceId: string;
+  excerptId: string;
+  sourceUrl: string;
+  supports: boolean;
+  tier: SourceTier;
+  publishedAt?: string;
+};
+
+export type ResearchLedger = {
+  claims: ResearchClaim[];
+  evidence: Evidence[];
+  excerpts: EvidenceExcerpt[];
+  evidenceLinks: ClaimEvidenceLink[];
+  requiredClaims: RequiredClaim[];
+};
+
+/**
+ * One candidate answer to the research question, surfaced from the pooled fan-out ledger.
+ * Distinct from a ResearchClaim: a hypothesis is specifically a claim that *answers the
+ * question* (vs a supporting fact), carried forward into the adversarial answer-axis pass.
+ */
+export type AnswerHypothesis = {
+  /** Stable id derived from the backing claim. */
+  id: string;
+  /** The candidate answer text. */
+  answer: string;
+  /** The interpretation reading that produced it (e.g. "literal", "lateral"), when known. */
+  reading?: string;
+  /** Independent sources corroborating it across the fan-out — the convergence signal. */
+  corroboration: number;
+  /** Best source tier among its supporting evidence. */
+  bestTier?: SourceTier;
+  /** Ledger claim ids backing this hypothesis. */
+  claimIds: string[];
+};
+
+/**
+ * A single skeptic's verdict on whether a candidate answer ACTUALLY answers the question.
+ * This is the answer-correctness axis, distinct from citation grounding: a claim can be
+ * perfectly source-grounded yet still not answer the question (e.g. "the title literally
+ * contains 'bubble gum'" — grounded as false, refuted as an answer).
+ */
+export type AnswerCorrectnessVote = {
+  refuted: boolean;
+  reason: string;
+};
+
+/** Outcome of the adversarial answer-correctness pass for one hypothesis. */
+export type ResolvedAnswer = {
+  hypothesis: AnswerHypothesis;
+  /** Valid (non-abstaining) votes cast — abstentions from voter errors are excluded. */
+  validVotes: number;
+  /** How many valid votes refuted the answer. */
+  refutations: number;
+  /** Killed iff refutations >= refutationsRequired. Retained either way for carry-forward. */
+  refuted: boolean;
+  votes: AnswerCorrectnessVote[];
 };
 
 export type ReasoningStep = {
@@ -256,7 +334,7 @@ export type ExtractionEvidenceTableRow = {
   id: string;
   label: string;
   fields?: { label: string; value: string }[];
-  confidence: "high" | "medium" | "low";
+  confidence: Confidence;
   sourceIds: string[];
   evidenceIds: string[];
   excerptIds: string[];
@@ -305,6 +383,7 @@ export type ResearchResult = {
   topic: string;
   report: string;
   notes: ResearchNote[];
+  ledger?: ResearchLedger;
   sources: { title: string; url: string }[];
   messages: AgentMessage[];
   /** Resolved task mode (auto-classified unless overridden via params.mode). */

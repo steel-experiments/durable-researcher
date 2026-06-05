@@ -2,6 +2,7 @@
 // ABOUTME: Tests extraction of search results from Steel scrape responses.
 
 import { describe, it, expect } from "vitest";
+
 import { extractSearchResults, scoreRelevance, filterByRelevance, isQueryReflectionSpam } from "../../src/steel-client.js";
 import { createSearchTool } from "../../src/tools/search.js";
 import type { ScrapeResponse } from "steel-sdk/resources/top-level.js";
@@ -60,6 +61,21 @@ describe("extractSearchResults", () => {
 
     const results = extractSearchResults(response);
     expect(results).toHaveLength(1);
+  });
+
+  it("deduplicates normalized URL variants", () => {
+    const response: ScrapeResponse = {
+      content: {},
+      links: [
+        { text: "First", url: "https://www.example.com/page/?utm_source=search" },
+        { text: "Duplicate", url: "https://example.com/page" },
+      ],
+      metadata: { statusCode: 200 },
+    };
+
+    const results = extractSearchResults(response);
+    expect(results).toHaveLength(1);
+    expect(results[0].url).toBe("https://www.example.com/page/?utm_source=search");
   });
 
   it("falls back to markdown link parsing when links are sparse", () => {
@@ -124,6 +140,22 @@ describe("extractSearchResults", () => {
     const results = extractSearchResults(response);
     expect(results).toHaveLength(1);
     expect(results[0].title).toBe("Good Result");
+  });
+
+  it("filters query-reflection evidence farms and ticket resellers", () => {
+    const response: ScrapeResponse = {
+      content: {},
+      links: [
+        { text: "Crossword clue", url: "https://www.wordplays.com/crossword-solver/bubble-gum-race" },
+        { text: "Ticket reseller", url: "https://tickets-center.com/search/?kwds=bubble+gum+5k" },
+        { text: "Race Results", url: "https://athlinks.com/event/run-forrest-run-5k" },
+      ],
+      metadata: { statusCode: 200 },
+    };
+
+    const results = extractSearchResults(response);
+    expect(results).toHaveLength(1);
+    expect(results[0].url).toBe("https://athlinks.com/event/run-forrest-run-5k");
   });
 });
 

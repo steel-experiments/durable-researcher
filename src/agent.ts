@@ -14,8 +14,9 @@ import {
   getAgentReasoning,
   getMaxDurationMs,
   getMaxDurationSeconds,
+  isSecondSynthesisAuditEnabled,
 } from "./config.js";
-import type { ResearchParams, ResearchResult, MessageLogEntry, TaskMode } from "./types.js";
+import type { ResearchLedger, ResearchParams, ResearchResult, MessageLogEntry, TaskMode } from "./types.js";
 import { DEPTH_CONFIG } from "./types.js";
 import { classifyTask } from "./classify.js";
 import { createSteelClient, multiEngineSearch } from "./steel-client.js";
@@ -46,6 +47,13 @@ import type { SteeringQueue } from "./steering-queue.js";
 import { createUrlExcerptStore, rebuildUrlExcerptsFromCache } from "./url-excerpts.js";
 import { getCachedBrowse, getTitlesForUrls } from "./browse-cache.js";
 import { buildExplanationModel } from "./explanation.js";
+import { ledgerToNotes } from "./ledger.js";
+import { addVisitedUrl } from "./url-normalize.js";
+import {
+  auditReportAgainstLedger,
+  buildSynthesisAuditMessage,
+  type SynthesisAuditResult,
+} from "./synthesis-audit.js";
 
 /** Options for creating the research app. */
 export type ResearchAppOptions = {
@@ -128,7 +136,7 @@ export function createTimeoutSteeringCheck(
     messageSent = true;
     return {
       shouldStop: true,
-      message: `[SYSTEM] Approaching task timeout (${Math.round(elapsed / 1000)}s elapsed of ${Math.round(maxDuration / 1000)}s max). Stop ALL tool use immediately and write your final research report NOW using the notes you have collected. Use numeric inline citations like [1] and a numbered Sources section; do not use markdown author links as citations.`,
+      message: `[SYSTEM] Approaching task timeout (${Math.round(elapsed / 1000)}s elapsed of ${Math.round(maxDuration / 1000)}s max). Stop ALL tool use immediately and write your final research report NOW using the claims/evidence you have collected. Use numeric inline citations like [1] and a numbered Sources section; do not use markdown author links as citations.`,
     };
   };
 }
@@ -147,6 +155,7 @@ export function buildResult(
    * best version (not a destructive last rewrite).
    */
   reportOverride?: string,
+  ledger?: ResearchLedger,
 ): ResearchResult {
   let report = reportOverride?.trim() || extractFinalReport(messages) || "";
 
@@ -182,6 +191,7 @@ export function buildResult(
     topic,
     report,
     notes: normalizedNotes,
+    ...(ledger ? { ledger } : {}),
     sources,
     messages,
     mode,
@@ -356,18 +366,21 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
       // 2. Rebuild in-memory state from replayed messages
       const rebuilt = rebuildStateFromMessages(messages);
       const scrapedUrls = rebuilt.scrapedUrls;
+      const ledger = rebuilt.ledger;
 
       // Deduplicate notes on resume to clean up any duplicates from prior runs
-      const notes = rebuilt.notes.length > 0
-        ? deduplicateNotes(rebuilt.notes)
-        : rebuilt.notes;
+      const notes = ledger.claims.length > 0
+        ? ledgerToNotes(ledger)
+        : rebuilt.notes.length > 0
+          ? deduplicateNotes(rebuilt.notes)
+          : rebuilt.notes;
 
       // Seed with prior research if extending a completed run
       if (params.priorNotes?.length) {
         for (const note of params.priorNotes) notes.push(note);
       }
       if (params.priorUrls?.length) {
-        for (const url of params.priorUrls) scrapedUrls.add(url);
+        for (const url of params.priorUrls) addVisitedUrl(scrapedUrls, url);
       }
 
       // Snapshot rebuilt state to the TUI so a resumed run shows prior findings
@@ -435,6 +448,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         client: steelClient,
         scrapedUrls,
         notes,
+        ledger,
         params,
         mode,
         maxSources: resolvedMaxSources,
@@ -560,7 +574,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
                   : `token limit (${maxTokens})`;
             return [{
               role: "user" as const,
-              content: `[SYSTEM] You have reached the maximum ${reason}. Stop browsing and searching. Write your final research report NOW using the notes you have collected. Use numeric inline citations like [1] and a numbered Sources section; do not use markdown author links as citations. Do NOT call any tools. Just write the report.`,
+              content: `[SYSTEM] You have reached the maximum ${reason}. Stop browsing and searching. Write your final research report NOW using the claims/evidence you have collected. Use numeric inline citations like [1] and a numbered Sources section; do not use markdown author links as citations. Do NOT call any tools. Just write the report.`,
               timestamp: Date.now(),
             }];
           }
@@ -582,10 +596,10 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
               role: "user" as const,
               content: [
                 `[SYSTEM] Auto-evaluation after ${EVAL_INTERVAL} browses:`,
-                `Sources: ${scrapedUrls.size}/${maxBrowses} | Notes: ${notes.length} (${highCount} high, ${medCount} med, ${lowCount} low) | Domains: ${domains.size}`,
+                `Sources: ${scrapedUrls.size}/${maxBrowses} | Ledger claims: ${ledger.claims.length} | Derived notes: ${notes.length} (${highCount} high, ${medCount} med, ${lowCount} low) | Domains: ${domains.size}`,
                 `Turns: ${turnCount}/${maxTurns}`,
                 ``,
-                `Review your coverage. If you have enough high-confidence notes across diverse sources, write your final report. Otherwise, identify specific gaps and do targeted searches.`,
+                `Review ledger coverage. If required claims are answered and contested claims are resolved or disclosed, write your final report. Otherwise, identify specific gaps and do targeted searches.`,
                 `When you write the final report, use numeric inline citations like [1] and a numbered Sources section. Do not use markdown author links as citations.`,
               ].join("\n"),
               timestamp: Date.now(),
@@ -742,7 +756,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
       // model that can't reach 70% after two corrective passes likely needs different
       // sources rather than more attempts.
       const priorAttempts = countRewriteAttempts(context.messages);
-      const finalReport = extractFinalReport(context.messages);
+      let finalReport = extractFinalReport(context.messages);
       const notesHaveExcerpts = notes.some((n) => n.keyExcerpts && n.keyExcerpts.length > 0);
       const MAX_REWRITES = 2;
 
@@ -757,6 +771,39 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         lastForVerify.role === "assistant" &&
         lastForVerify.content.every((c) => c.type !== "toolCall") &&
         priorAttempts > 0;
+
+      if (!resumedAlreadyComplete && finalReport && ledger.claims.length > 0 && isSecondSynthesisAuditEnabled()) {
+        taskLog("[SYNTHESIS] Running independent ledger synthesis audit...");
+        bus?.emit({ type: "agent-status", text: "Running independent synthesis audit..." });
+        const synthesisAudit: SynthesisAuditResult = await ctx.step("second-synthesis-audit", () =>
+          auditReportAgainstLedger({
+            topic: params.topic,
+            report: finalReport!,
+            ledger,
+          }),
+        );
+        if (synthesisAudit.needsRewrite) {
+          taskLog(`[SYNTHESIS] Independent audit found ${synthesisAudit.issues.length} issue(s); requesting one reconciliation rewrite.`);
+          const steeringMessage = buildSynthesisAuditMessage(synthesisAudit);
+          await ctx.completeStep(nextHandle, { message: steeringMessage } satisfies MessageLogEntry);
+          context.messages.push(steeringMessage);
+          nextHandle = await ctx.beginStep<MessageLogEntry>("message");
+          const auditRewritePersister = createLoggingPersister(ctx, nextHandle, {
+            ...persisterOpts,
+            initialTurnCount: countCompletedTurns(),
+          });
+          await runWithTimeout(auditRewritePersister);
+          checkForAgentError(context.messages);
+          const rewritten = extractFinalReport(context.messages);
+          if (rewritten && rewritten !== finalReport) {
+            finalReport = rewritten;
+          } else {
+            taskLog("[SYNTHESIS] Audit rewrite produced no new report; keeping submitted report.");
+          }
+        } else {
+          taskLog("[SYNTHESIS] Independent audit found no material ledger/report disagreement.");
+        }
+      }
 
       if (notesHaveExcerpts && finalReport) {
         /**
@@ -939,6 +986,18 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         }
       }
 
+      if (verificationState && shouldTriggerRewrite(verificationState.result)) {
+        const { supported, total, passRate, reason } = verificationState.result.summary;
+        throw new Error(
+          [
+            `Final report failed citation verification after ${verificationState.attempts} attempt(s):`,
+            `${supported}/${total} claims supported (${Math.round(passRate * 100)}%, threshold ${Math.round(VERIFY_PASS_THRESHOLD * 100)}%).`,
+            reason ? `Reason: ${reason}.` : undefined,
+            `Do not accept this report as complete; extend research with better source excerpts and resubmit.`,
+          ].filter(Boolean).join(" "),
+        );
+      }
+
       bus?.emit({ type: "phase", phase: "complete" });
 
       // Fetch real page titles for cited sources. Falls back to URL on miss, so the
@@ -948,7 +1007,7 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
         () => new Map<string, string>(),
       );
 
-      return buildResult(notes, params.topic, messages, verificationState, mode, urlTitles, bestReportOverride);
+      return buildResult(notes, params.topic, messages, verificationState, mode, urlTitles, bestReportOverride, ledger);
     },
   );
 

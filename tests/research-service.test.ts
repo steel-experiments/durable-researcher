@@ -4,6 +4,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResearchRunStatus } from "../src/service/research-runs.js";
 
+const describeWithModuleMocks = (vi as unknown as { doMock?: unknown }).doMock ? describe : describe.skip;
+
 type Row = {
   id: string;
   kind: string;
@@ -29,7 +31,7 @@ function emptyUsage() {
 }
 
 async function setupServiceMock() {
-  vi.resetModules();
+  await (vi as unknown as { resetModules?: () => Promise<void> | void }).resetModules?.();
   const rows: Row[] = [];
   const events: any[] = [];
   let started!: () => void;
@@ -132,11 +134,11 @@ async function setupServiceMock() {
     })),
   }));
 
-  const { createResearchService } = await import("../src/service/research-service.js");
+  const { createResearchService } = await import(`../src/service/research-service.js?test=${Date.now()}-${Math.random()}`);
   return { service: createResearchService(), rows, startedPromise, finish, signals };
 }
 
-describe("ResearchService lifecycle", () => {
+describeWithModuleMocks("ResearchService lifecycle", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });

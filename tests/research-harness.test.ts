@@ -18,9 +18,25 @@ describe("research harness selection", () => {
     expect(selectHarness({ type: "auto" }, "cost")).toEqual({ type: "single_agent" });
     expect(selectHarness({ type: "auto" }, "latency")).toEqual({ type: "fixed_team", agents: 5 });
     expect(selectHarness({ type: "auto" }, "quality")).toEqual({
-      type: "orchestrator_blocking_subagents",
-      maxSubagents: 5,
+      type: "redundant_fanout",
+      width: 4,
     });
+  });
+
+  it("makes the redundant fan-out the deep-depth default", () => {
+    expect(selectHarness(undefined, undefined, "deep")).toEqual({ type: "redundant_fanout", width: 4 });
+    // Non-deep depths keep the balanced default.
+    expect(selectHarness(undefined, undefined, "standard")).toEqual({ type: "campaign_pulses" });
+    expect(selectHarness(undefined, "balanced", "quick")).toEqual({ type: "campaign_pulses" });
+  });
+
+  it("preserves an explicit harness even at deep depth", () => {
+    expect(selectHarness({ type: "single_agent" }, undefined, "deep")).toEqual({ type: "single_agent" });
+  });
+
+  it("validates redundant_fanout width and token limits", () => {
+    expect(validateExecutableHarness({ type: "redundant_fanout", width: 4 })).toEqual({ type: "redundant_fanout", width: 4 });
+    expect(() => validateExecutableHarness({ type: "redundant_fanout", width: 0 })).toThrow(/harness\.width/);
   });
 
   it("preserves an explicit executable harness over optimizeFor", () => {

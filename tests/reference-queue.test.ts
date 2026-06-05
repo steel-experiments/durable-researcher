@@ -34,6 +34,13 @@ describe("createReferenceQueue", () => {
     expect(q.drain(10)).toEqual(["https://new.com"]);
   });
 
+  it("skips normalized URL variants already in the shared seen set", () => {
+    const seen = new Set<string>(["https://www.example.com/paper/?utm_source=feed"]);
+    const q = createReferenceQueue(seen);
+    q.add(["https://example.com/paper/", "https://example.com/other"]);
+    expect(q.drain(10)).toEqual(["https://example.com/other"]);
+  });
+
   it("ignores blank entries", () => {
     const q = createReferenceQueue();
     q.add(["  ", "", "x"]);

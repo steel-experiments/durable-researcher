@@ -1,5 +1,6 @@
 # ABOUTME: Downloads benchmark datasets from HuggingFace and loads them into
-# ABOUTME: unified BenchmarkTask/Criterion dataclasses for both ResearchRubrics and DRACO.
+# ABOUTME: unified BenchmarkTask/Criterion dataclasses for ResearchRubrics, DRACO,
+# ABOUTME: and the local mode-balanced golden set.
 
 from __future__ import annotations
 
@@ -122,11 +123,54 @@ def load_draco(jsonl_path: Path) -> list[BenchmarkTask]:
     return tasks
 
 
+def load_modegolden(jsonl_path: Path) -> list[BenchmarkTask]:
+    """Parse local mode-balanced golden JSONL into BenchmarkTask list.
+
+    The deterministic scorer in bench.golden owns the answer-key scoring. We
+    still expose expected answers as positive criteria so the shared runner,
+    reporting, and task metadata can treat the golden set like any other
+    benchmark while calling the real agent loop.
+    """
+    tasks = []
+    with open(jsonl_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            entry = json.loads(line)
+            task_id = entry["task_id"]
+            expected_answers = list(entry["expected_answers"])
+            criteria = [
+                Criterion(
+                    id=f"{task_id}:{i}",
+                    text=f"Report includes deterministic answer key: {answer}",
+                    weight=1.0,
+                    section="deterministic-answer",
+                )
+                for i, answer in enumerate(expected_answers)
+            ]
+            tasks.append(
+                BenchmarkTask(
+                    benchmark="modegolden",
+                    task_id=task_id,
+                    prompt=entry["prompt"],
+                    criteria=criteria,
+                    metadata={
+                        "mode": entry["mode"],
+                        "expected_confidence": entry.get("expected_confidence", "medium"),
+                    },
+                )
+            )
+    return tasks
+
+
 def load_benchmark(benchmark: str, data_path: Path) -> list[BenchmarkTask]:
     """Load a benchmark dataset from a JSONL file."""
     if benchmark == "researchrubrics":
         return load_researchrubrics(data_path)
     elif benchmark == "draco":
         return load_draco(data_path)
+    elif benchmark == "modegolden":
+        return load_modegolden(data_path)
     else:
         raise ValueError(f"Unknown benchmark: {benchmark}")

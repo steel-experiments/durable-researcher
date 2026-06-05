@@ -10,6 +10,7 @@ import { createResearchApp, type ResearchAppOptions } from "./agent.js";
 import type { ResearchParams } from "./types.js";
 import { DEPTH_CONFIG } from "./types.js";
 import { getModel } from "@mariozechner/pi-ai";
+import { setUtilityModelOverride } from "./config.js";
 import {
   findRecentTasks,
   findExactMatch,
@@ -139,6 +140,7 @@ async function main() {
     const [provider, modelId] = cli.modelSpec.split(":");
     try {
       appOptions.model = getModel(provider as any, modelId as any);
+      setUtilityModelOverride(appOptions.model);
       modelLabel = `${provider}:${modelId}`;
       if (!useTui) console.log(`Using model: ${provider}/${modelId}`);
     } catch {

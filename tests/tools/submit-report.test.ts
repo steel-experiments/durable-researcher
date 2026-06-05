@@ -6,6 +6,7 @@ import {
   createSubmitReportTool,
   type SubmittedReportRef,
 } from "../../src/tools/submit-report.js";
+import { createResearchLedger, recordClaimsInLedger } from "../../src/ledger.js";
 
 describe("createSubmitReportTool", () => {
   it("stores the submitted report in the shared ref", async () => {
@@ -60,5 +61,40 @@ describe("createSubmitReportTool", () => {
 
     const result = await tool.execute("call-1", { report: "hello world" });
     expect(result.details).toEqual({ reportLength: "hello world".length });
+  });
+
+  it("rejects submission while required ledger coverage is still open", async () => {
+    const ref: SubmittedReportRef = { value: null };
+    const ledger = createResearchLedger([
+      { id: "rq1", question: "Verify the answer contains bubble gum", status: "open", claimIds: [] },
+    ]);
+    const tool = createSubmitReportTool(ref, ledger);
+
+    const result = await tool.execute("call-1", { report: "premature report" });
+
+    expect(ref.value).toBeNull();
+    expect(result.content[0].text).toContain("Report not accepted");
+    expect(result.content[0].text).toContain("bubble gum");
+    expect(result.details).toMatchObject({ rejected: true, openRequiredClaims: 1 });
+  });
+
+  it("accepts submission when required coverage is answered and uncontested", async () => {
+    const ref: SubmittedReportRef = { value: null };
+    const ledger = createResearchLedger([
+      { id: "rq1", question: "Identify the answer", status: "open", claimIds: [] },
+    ]);
+    recordClaimsInLedger(ledger, [
+      {
+        text: "The answer is Sample Race",
+        sourceUrl: "https://example.com",
+        excerpt: "Sample Race",
+        requiredClaimIds: ["rq1"],
+      },
+    ]);
+    const tool = createSubmitReportTool(ref, ledger);
+
+    await tool.execute("call-1", { report: "accepted report" });
+
+    expect(ref.value).toBe("accepted report");
   });
 });

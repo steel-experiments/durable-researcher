@@ -1,0 +1,2 @@
+{"task_id":"lookup-001","mode":"lookup","prompt":"What is the direct answer?","expected_answers":["Sample Answer"],"expected_confidence":"high"}
+{"task_id":"survey-001","mode":"survey","prompt":"Survey sample systems.","expected_answers":["System Alpha","Dataset Beta"],"expected_confidence":"medium"}

@@ -119,14 +119,13 @@ describe("createLoggingPersister event emission", () => {
     const opts = { ...makeOpts(), eventBus: bus, quiet: true };
     const persister = createLoggingPersister(ctx as any, { id: "h" } as any, opts);
 
-    // Five take_note calls in one turn — the original bug was that they all keyed
-    // by toolName="take_note" and overwrote each other's argSummary.
+    // Parallel calls of the same tool must stay keyed by toolCallId, not tool name.
     for (let i = 1; i <= 3; i++) {
       await persister({
         type: "tool_execution_start",
         toolCallId: `tc-${i}`,
-        toolName: "take_note",
-        args: { title: `Note ${i}` },
+        toolName: "record_claims",
+        args: { claims: [{ text: `Claim ${i}` }] },
       } as AgentEvent);
     }
     const starts = received.filter((e) => e.type === "tool-start") as Array<
@@ -134,13 +133,13 @@ describe("createLoggingPersister event emission", () => {
     >;
     expect(starts.map((s) => s.toolCallId)).toEqual(["tc-1", "tc-2", "tc-3"]);
     expect(starts.map((s) => s.argSummary)).toEqual([
-      '"Note 1"',
-      '"Note 2"',
-      '"Note 3"',
+      "1 claim(s)",
+      "1 claim(s)",
+      "1 claim(s)",
     ]);
   });
 
-  it("emits note-added when a successful take_note toolResult arrives", async () => {
+  it("emits note-added events when record_claims adds ledger claims", async () => {
     const { ctx } = createCtxStub();
     const bus = createResearchEventBus();
     const received: ResearchEvent[] = [];
@@ -149,19 +148,28 @@ describe("createLoggingPersister event emission", () => {
     const opts = { ...makeOpts(), eventBus: bus, quiet: true };
     const persister = createLoggingPersister(ctx as any, { id: "h" } as any, opts);
 
-    // First the assistant must emit the toolCall so we can reconstruct args
     const assistantMsg: AssistantMessage = {
       role: "assistant",
       content: [
         {
           type: "toolCall",
-          id: "tc-1",
-          name: "take_note",
+          id: "claims-1",
+          name: "record_claims",
           arguments: {
-            title: "Surface Codes",
-            content: "Body",
-            sourceUrls: ["https://x.com"],
-            confidence: "high",
+            claims: [
+              {
+                text: "Ledger claim one.",
+                sourceUrl: "https://example.com/one",
+                excerpt: "Ledger claim one.",
+                tier: "primary",
+              },
+              {
+                text: "Ledger claim two.",
+                sourceUrl: "https://example.com/two",
+                excerpt: "Ledger claim two.",
+                tier: "primary",
+              },
+            ],
           },
         },
       ],
@@ -176,8 +184,8 @@ describe("createLoggingPersister event emission", () => {
 
     const toolResult: ToolResultMessage = {
       role: "toolResult",
-      toolCallId: "tc-1",
-      toolName: "take_note",
+      toolCallId: "claims-1",
+      toolName: "record_claims",
       content: [{ type: "text", text: "ok" }],
       isError: false,
       timestamp: Date.now(),
@@ -185,10 +193,10 @@ describe("createLoggingPersister event emission", () => {
     await persister({ type: "message_end", message: toolResult } as AgentEvent);
 
     const noteEvents = received.filter((e) => e.type === "note-added");
-    expect(noteEvents).toHaveLength(1);
-    const note = noteEvents[0] as Extract<ResearchEvent, { type: "note-added" }>;
-    expect(note.note.title).toBe("Surface Codes");
-    expect(note.index).toBe(0);
+    expect(noteEvents).toHaveLength(2);
+    const first = noteEvents[0] as Extract<ResearchEvent, { type: "note-added" }>;
+    expect(first.note.title).toContain("Ledger claim one");
+    expect(first.index).toBe(0);
   });
 
   it("emits browse-added when a successful browse_url toolResult arrives", async () => {

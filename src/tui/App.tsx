@@ -115,7 +115,7 @@ const TOOL_LABEL: Record<string, string> = {
   web_search: "search",
   browse_url: "browse",
   screenshot: "screenshot",
-  take_note: "note",
+  record_claims: "claims",
   evaluate_progress: "evaluate",
   submit_report: "submit",
   verify_claims: "verify",
@@ -159,8 +159,8 @@ export function TuiApp({
   const [activityLog, setActivityLog] = useState<ActivityLogEntry[]>([]);
   const [usage, setUsage] = useState<UsageStats | null>(null);
   const [verification, setVerification] = useState<VerificationLine | null>(null);
-  // Pending tool calls keyed by toolCallId so parallel calls of the same tool (e.g.
-  // five take_note in one turn) don't collide and lose their per-call argSummary.
+  // Pending tool calls keyed by toolCallId so parallel calls of the same tool don't
+  // collide and lose their per-call argSummary.
   const pendingToolRef = useRef<Map<string, string>>(new Map());
 
   // Ticker for elapsed time

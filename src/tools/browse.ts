@@ -7,11 +7,13 @@ import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { completeSimple, getEnvApiKey } from "@mariozechner/pi-ai";
 import { getUtilityModel, getUtilityReasoning } from "../config.js";
 import { scrapeUrl } from "../steel-client.js";
+import { addVisitedUrl } from "../url-normalize.js";
 import { isContentMeaningful, truncateContent } from "../content.js";
 import { loadTemplate } from "../prompts.js";
 import { getCachedBrowse, setCachedBrowse } from "../browse-cache.js";
 import { isPdfUrl, fetchAndExtractPdf } from "../pdf.js";
 import type { RefinedContent } from "../types.js";
+import { assessContentRelevance } from "../content-relevance.js";
 import { captureExcerptsForUrl, type UrlExcerptStore } from "../url-excerpts.js";
 import {
   isPaperLikeUrl,
@@ -121,7 +123,7 @@ export async function browseOne(opts: {
     };
   }
 
-  scrapedUrls.add(url);
+  addVisitedUrl(scrapedUrls, url);
 
   // Harvest references from primary sources so chase_references can follow the citation graph.
   if (referenceQueue && isPaperLikeUrl(url)) {
@@ -152,13 +154,18 @@ export async function browseOne(opts: {
     rawLength,
     scrapedAt: Date.now(),
   };
+  const relevance = assessContentRelevance({ title, url, content: summary, topic });
 
   return {
     text: `## ${refined.title}\n**Source:** ${refined.url}\n**Raw length:** ${refined.rawLength} chars\n\n${refined.summary}`,
     title,
     meaningful: true,
     fromCache,
-    details: refined as unknown as Record<string, unknown>,
+    details: {
+      ...refined,
+      contentRelevanceScore: relevance.score,
+      contentRelevant: relevance.relevant,
+    } as unknown as Record<string, unknown>,
   };
 }
 

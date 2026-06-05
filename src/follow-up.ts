@@ -12,12 +12,13 @@ import {
 import { getEnvApiKey, type Model, type Api } from "@mariozechner/pi-ai";
 import { getAgentModel, getAgentReasoning } from "./config.js";
 import type { ResearchNote } from "./types.js";
+import { createResearchLedger } from "./ledger.js";
 import { createSteelClient } from "./steel-client.js";
 import { createSearchTool } from "./tools/search.js";
 import { createBrowseTool } from "./tools/browse.js";
 import { createScoutTool } from "./tools/scout.js";
 import { createScreenshotTool } from "./tools/screenshot.js";
-import { createNoteTool } from "./tools/note.js";
+import { createRecordClaimsTool } from "./tools/record-claims.js";
 import { createEvaluateTool } from "./tools/evaluate.js";
 import { convertToLlm } from "./agent-messages.js";
 
@@ -62,7 +63,7 @@ function createStreamingEmitter(): (event: AgentEvent) => void {
 function formatArgs(name: string, args: Record<string, unknown>): string {
   if (name === "web_search") return `"${args.query}"`;
   if (name === "browse_url") return `"${args.url}"`;
-  if (name === "take_note") return `"${args.title}"`;
+  if (name === "record_claims") return `${(args.claims as unknown[] | undefined)?.length ?? 0} claim(s)`;
   return "";
 }
 
@@ -80,19 +81,20 @@ export async function runFollowUp(
   });
 
   const steelClient = createSteelClient();
+  const ledger = createResearchLedger();
   const tools = [
     createScoutTool(steelClient, scrapedUrls, topic),
     createSearchTool(steelClient, scrapedUrls, topic),
     createBrowseTool(steelClient, scrapedUrls, topic),
     createScreenshotTool(steelClient),
-    createNoteTool(notes),
-    createEvaluateTool(notes, scrapedUrls),
+    createRecordClaimsTool(ledger, notes),
+    createEvaluateTool(notes, scrapedUrls, "synthesis", ledger),
   ];
 
   const agentModel = getAgentModel(model);
 
   const context: AgentContext = {
-    systemPrompt: `You are a research assistant continuing a conversation about "${topic}". You have already produced a research report. The user is now asking follow-up questions. You have access to the same browsing and note-taking tools. Answer concisely, citing sources where applicable.`,
+    systemPrompt: `You are a research assistant continuing a conversation about "${topic}". You have already produced a research report. The user is now asking follow-up questions. You have access to browsing and the record_claims ledger tool. Answer concisely, citing sources where applicable.`,
     tools,
     messages: [...messages],
   };

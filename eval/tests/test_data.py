@@ -1,9 +1,9 @@
-# ABOUTME: Tests for dataset loading — parsing ResearchRubrics and DRACO JSONL into
-# ABOUTME: unified BenchmarkTask/Criterion dataclasses.
+# ABOUTME: Tests for dataset loading — parsing ResearchRubrics, DRACO, and
+# ABOUTME: local golden JSONL into unified BenchmarkTask/Criterion dataclasses.
 
 from pathlib import Path
 
-from bench.data import BenchmarkTask, load_draco, load_researchrubrics
+from bench.data import BenchmarkTask, load_benchmark, load_draco, load_modegolden, load_researchrubrics
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -95,3 +95,32 @@ class TestLoadDraco:
         task = tasks[0]
         c0 = task.criteria[0]
         assert "Vaswani" in c0.text
+
+
+class TestLoadModeGolden:
+    def test_loads_correct_count(self):
+        tasks = load_modegolden(FIXTURES / "modegolden_sample.jsonl")
+        assert len(tasks) == 2
+
+    def test_task_fields(self):
+        tasks = load_modegolden(FIXTURES / "modegolden_sample.jsonl")
+        task = tasks[0]
+        assert isinstance(task, BenchmarkTask)
+        assert task.benchmark == "modegolden"
+        assert task.task_id == "lookup-001"
+        assert task.prompt == "What is the direct answer?"
+        assert task.metadata["mode"] == "lookup"
+        assert task.metadata["expected_confidence"] == "high"
+
+    def test_expected_answers_are_criteria_for_shared_runner_shape(self):
+        tasks = load_modegolden(FIXTURES / "modegolden_sample.jsonl")
+        task = tasks[1]
+        assert len(task.criteria) == 2
+        assert task.criteria[0].id == "survey-001:0"
+        assert task.criteria[0].weight == 1.0
+        assert task.criteria[0].section == "deterministic-answer"
+        assert "System Alpha" in task.criteria[0].text
+
+    def test_shared_loader_supports_modegolden(self):
+        tasks = load_benchmark("modegolden", FIXTURES / "modegolden_sample.jsonl")
+        assert [task.task_id for task in tasks] == ["lookup-001", "survey-001"]

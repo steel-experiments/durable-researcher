@@ -325,6 +325,7 @@ export const OPENAPI_DOCUMENT = {
           { $ref: "#/components/schemas/FixedTeamHarness" },
           { $ref: "#/components/schemas/AsyncSubagentsHarness" },
           { $ref: "#/components/schemas/BlockingSubagentsHarness" },
+          { $ref: "#/components/schemas/RedundantFanoutHarness" },
         ],
       },
       ExecutableResearchHarness: {
@@ -334,6 +335,7 @@ export const OPENAPI_DOCUMENT = {
           { $ref: "#/components/schemas/FixedTeamHarness" },
           { $ref: "#/components/schemas/AsyncSubagentsHarness" },
           { $ref: "#/components/schemas/BlockingSubagentsHarness" },
+          { $ref: "#/components/schemas/RedundantFanoutHarness" },
         ],
       },
       AutoHarness: {
@@ -387,6 +389,17 @@ export const OPENAPI_DOCUMENT = {
         },
         additionalProperties: false,
       },
+      RedundantFanoutHarness: {
+        type: "object",
+        required: ["type", "width"],
+        properties: {
+          type: { const: "redundant_fanout" },
+          width: { type: "integer", minimum: 1, default: 4 },
+          perWorkerTokenLimit: { type: "integer", minimum: 1 },
+          totalTokenLimit: { type: "integer", minimum: 1 },
+        },
+        additionalProperties: false,
+      },
       CampaignBudgets: {
         type: "object",
         properties: {
@@ -415,7 +428,7 @@ export const OPENAPI_DOCUMENT = {
         required: ["id", "kind", "campaignId", "status", "topic", "params", "usage", "createdAt", "updatedAt", "deadlineAt", "stopReason", "links"],
         properties: {
           id: { type: "string" },
-          kind: { type: "string", enum: ["single_agent", "campaign_pulses", "fixed_team", "async_subagents", "orchestrator_blocking_subagents"] },
+          kind: { type: "string", enum: ["single_agent", "campaign_pulses", "fixed_team", "async_subagents", "orchestrator_blocking_subagents", "redundant_fanout"] },
           campaignId: { type: ["string", "null"] },
           status: { type: "string", enum: ["queued", "running", "paused", "finalizing", "completed", "failed", "cancelled"] },
           topic: { type: "string" },

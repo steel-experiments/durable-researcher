@@ -5,9 +5,11 @@ import Steel from "steel-sdk";
 import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { multiEngineSearch, filterByRelevance } from "../steel-client.js";
-import { browseOne } from "./browse.js";
+import { browseOne, type BrowseOneResult } from "./browse.js";
 import type { ToolProgress } from "../event-bus.js";
 import type { UrlExcerptStore } from "../url-excerpts.js";
+import type { TaskMode } from "../types.js";
+import { hasVisitedUrl, normalizeUrlForDedup } from "../url-normalize.js";
 
 const PrefetchParams = Type.Object({
   queries: Type.Array(Type.String(), {
@@ -35,6 +37,12 @@ type QueryResult = {
   searchResultCount: number;
   browseResults: BrowseResult[];
   errors: string[];
+};
+
+type PrefetchDeps = {
+  search?: typeof multiEngineSearch;
+  filterByRelevance?: typeof filterByRelevance;
+  browseOne?: (opts: Parameters<typeof browseOne>[0]) => Promise<BrowseOneResult>;
 };
 
 /** Simple concurrency limiter using a counter and promise queue. */
@@ -68,8 +76,13 @@ export function createPrefetchTool(
   taskId?: string,
   progress?: ToolProgress,
   urlExcerpts?: UrlExcerptStore,
+  mode?: TaskMode,
+  deps: PrefetchDeps = {},
 ): AgentTool<typeof PrefetchParams> {
   const report = progress ?? ((text: string) => console.log(text));
+  const search = deps.search ?? multiEngineSearch;
+  const filterResults = deps.filterByRelevance ?? filterByRelevance;
+  const browse = deps.browseOne ?? browseOne;
   return {
     name: "prefetch_sources",
     label: "Prefetch Sources",
@@ -97,7 +110,7 @@ export function createPrefetchTool(
             try {
               if (totalBrowsed >= maxBudget) return;
 
-              const result = await browseOne({
+              const result = await browse({
                 client,
                 url,
                 topic,
@@ -123,11 +136,15 @@ export function createPrefetchTool(
 
               allBrowsedUrls.push(url);
               meaningfulBrowsedUrls.push(url);
+              const contentRelevant = result.details.contentRelevant !== false;
+              const relevancePrefix = contentRelevant
+                ? ""
+                : "[Low content relevance to the research topic]\n\n";
               qr.browseResults.push({
                 query,
                 url,
                 title: result.title,
-                summary: String(result.details.summary ?? ""),
+                summary: `${relevancePrefix}${String(result.details.summary ?? "")}`,
                 rawLength: Number(result.details.rawLength ?? 0),
               });
             } catch (err) {
@@ -147,8 +164,10 @@ export function createPrefetchTool(
           queryResults.push(qr);
 
           try {
-            const rawResults = await multiEngineSearch(client, query);
-            const results = filterByRelevance(rawResults, topic, 0.3, query);
+            const rawResults = await search(client, query);
+            const results = mode === "lookup"
+              ? rawResults
+              : filterResults(rawResults, topic, 0.3, query);
             qr.searchResultCount = results.length;
             report(`    ✓ "${query.slice(0, 50)}" → ${results.length}/${rawResults.length} relevant`);
 
@@ -156,9 +175,10 @@ export function createPrefetchTool(
             for (const result of results) {
               if (queuedForQuery >= BROWSES_PER_QUERY) break;
               if (totalQueued >= maxBudget) break;
-              if (scrapedUrls.has(result.url) || browsingUrls.has(result.url)) continue;
+              const dedupUrl = normalizeUrlForDedup(result.url);
+              if (hasVisitedUrl(scrapedUrls, result.url) || browsingUrls.has(dedupUrl)) continue;
 
-              browsingUrls.add(result.url);
+              browsingUrls.add(dedupUrl);
               totalQueued++;
               queuedForQuery++;
               queueBrowse(qr, query, result.url);
@@ -214,7 +234,7 @@ export function createPrefetchTool(
 
       sections.push(
         `---`,
-        `Review these results, take notes on key findings, then do targeted follow-up searches for any gaps.`,
+        `Review these results, record atomic claims with verbatim evidence, then do targeted follow-up searches for any gaps.`,
       );
 
       return {

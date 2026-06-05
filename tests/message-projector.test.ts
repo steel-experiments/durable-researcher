@@ -1,57 +1,100 @@
-// ABOUTME: Tests that message projection (resume replay) reconstructs note state faithfully.
-// ABOUTME: Focuses on the source-tier confidence cap matching the live take_note tool.
+// ABOUTME: Tests that message projection (resume replay) reconstructs ledger state faithfully.
+// ABOUTME: Focuses on record_claims replay and derived note events.
 
 import { describe, it, expect } from "vitest";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import { projectMessages } from "../src/message-projector.js";
+import { createMessageProjector, projectMessage, projectMessages } from "../src/message-projector.js";
 
-/** Build the assistant tool-call + tool-result pair a successful take_note produces. */
-function noteMessages(args: Record<string, unknown>): AgentMessage[] {
-  const toolCallId = "tc-1";
-  return [
-    {
+describe("projectMessages ledger reconstruction", () => {
+  it("reconstructs the claim ledger from plan_research and record_claims replay", () => {
+    const { ledger, notes } = projectMessages([
+      {
+        role: "toolResult",
+        toolCallId: "plan-1",
+        toolName: "plan_research",
+        content: [{ type: "text", text: "plan" }],
+        details: {
+          requiredClaims: [
+            { id: "rq1", question: "Find the answer", status: "open", claimIds: [] },
+          ],
+        },
+        isError: false,
+        timestamp: Date.now(),
+      } as unknown as AgentMessage,
+      {
+        role: "assistant",
+        content: [{
+          type: "toolCall",
+          id: "claims-1",
+          name: "record_claims",
+          arguments: {
+            claims: [
+              {
+                text: "The answer is X.",
+                sourceUrl: "https://example.com/a",
+                excerpt: "The answer is X.",
+                tier: "primary",
+                requiredClaimIds: ["rq1"],
+              },
+            ],
+          },
+        }],
+        timestamp: Date.now(),
+      } as unknown as AgentMessage,
+      {
+        role: "toolResult",
+        toolCallId: "claims-1",
+        toolName: "record_claims",
+        content: [{ type: "text", text: "ok" }],
+        isError: false,
+        timestamp: Date.now(),
+      } as unknown as AgentMessage,
+    ]);
+
+    expect(ledger.claims).toHaveLength(1);
+    expect(ledger.requiredClaims[0].status).toBe("answered");
+    expect(notes[0].title).toContain("The answer is X");
+  });
+
+  it("returns derived notes added by record_claims for live event emission", () => {
+    const projector = createMessageProjector();
+    projectMessage(projector, {
       role: "assistant",
-      content: [{ type: "toolCall", id: toolCallId, name: "take_note", arguments: args }],
+      content: [{
+        type: "toolCall",
+        id: "claims-1",
+        name: "record_claims",
+        arguments: {
+          claims: [
+            {
+              text: "Claim one.",
+              sourceUrl: "https://example.com/one",
+              excerpt: "Claim one.",
+              tier: "primary",
+            },
+            {
+              text: "Claim two.",
+              sourceUrl: "https://example.com/two",
+              excerpt: "Claim two.",
+              tier: "primary",
+            },
+          ],
+        },
+      }],
       timestamp: Date.now(),
-    } as unknown as AgentMessage,
-    {
+    } as unknown as AgentMessage);
+
+    const delta = projectMessage(projector, {
       role: "toolResult",
-      toolCallId,
-      toolName: "take_note",
+      toolCallId: "claims-1",
+      toolName: "record_claims",
       content: [{ type: "text", text: "ok" }],
       isError: false,
       timestamp: Date.now(),
-    } as unknown as AgentMessage,
-  ];
-}
+    } as unknown as AgentMessage);
 
-describe("projectMessages note reconstruction", () => {
-  it("re-applies the source-tier confidence cap on resume", () => {
-    const { notes } = projectMessages(
-      noteMessages({
-        title: "Forum claim",
-        content: "Someone said 99%",
-        sourceUrls: ["https://reddit.com/r/ml"],
-        confidence: "high",
-        sourceTier: "forum",
-      }),
-    );
-    expect(notes).toHaveLength(1);
-    // Resume must match the live tool: forum caps high → low.
-    expect(notes[0].confidence).toBe("low");
-    expect(notes[0].sourceTier).toBe("forum");
-  });
-
-  it("leaves untiered notes unchanged on resume (back-compat)", () => {
-    const { notes } = projectMessages(
-      noteMessages({
-        title: "Legacy note",
-        content: "No tier",
-        sourceUrls: ["https://example.com"],
-        confidence: "high",
-      }),
-    );
-    expect(notes[0].confidence).toBe("high");
-    expect(notes[0].sourceTier).toBeUndefined();
+    expect(delta.notesAdded).toHaveLength(2);
+    expect(delta.notesAdded?.[0].note.title).toContain("Claim one");
+    expect(delta.notesAdded?.[1].index).toBe(1);
   });
 });

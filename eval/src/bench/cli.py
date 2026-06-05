@@ -22,7 +22,7 @@ from rich.table import Table
 app = typer.Typer(help="Evaluation harness for durable-researcher benchmarks.")
 console = Console()
 
-BENCHMARKS = ("researchrubrics", "draco", "all")
+BENCHMARKS = ("researchrubrics", "draco", "modegolden", "all")
 
 
 def _resolve_data_path(benchmark: str, data_dir: Path) -> Path:
@@ -31,7 +31,33 @@ def _resolve_data_path(benchmark: str, data_dir: Path) -> Path:
         return data_dir / "researchrubrics" / "processed_data.jsonl"
     elif benchmark == "draco":
         return data_dir / "draco" / "test.jsonl"
+    elif benchmark == "modegolden":
+        return data_dir / "modegolden" / "tasks.jsonl"
     raise typer.BadParameter(f"Unknown benchmark: {benchmark}")
+
+
+@app.command()
+def golden(
+    data_dir: Path = typer.Option("data"),
+    responses_dir: Path = typer.Option("responses"),
+    output: Optional[Path] = typer.Option(None, help="Output path for report markdown"),
+) -> None:
+    """Score the deterministic mode-balanced golden set and calibration metric."""
+    from bench.golden import format_golden_report, load_golden_tasks, score_golden_dir
+
+    data_path = _resolve_data_path("modegolden", data_dir)
+    if not data_path.exists():
+        console.print(f"[red]Golden dataset not found at {data_path}.[/red]")
+        raise typer.Exit(1)
+
+    scores = score_golden_dir(load_golden_tasks(data_path), responses_dir)
+    report_text = format_golden_report(scores)
+    if output:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(report_text)
+        console.print(f"Golden report saved to {output}")
+    else:
+        console.print(report_text)
 
 
 @app.command()
@@ -63,7 +89,7 @@ def download(
 
 @app.command()
 def run(
-    benchmark: str = typer.Argument(..., help="Benchmark: researchrubrics or draco"),
+    benchmark: str = typer.Argument(..., help="Benchmark: researchrubrics, draco, or modegolden"),
     data_dir: Path = typer.Option("data"),
     responses_dir: Path = typer.Option("responses"),
     depth: str = typer.Option("quick", help="Research depth: quick, standard, deep"),
@@ -370,12 +396,30 @@ def judge(
 
 @app.command()
 def score(
-    benchmark: str = typer.Argument(..., help="Benchmark: researchrubrics or draco"),
+    benchmark: str = typer.Argument(..., help="Benchmark: researchrubrics, draco, or modegolden"),
     data_dir: Path = typer.Option("data"),
     results_dir: Path = typer.Option("results"),
+    responses_dir: Path = typer.Option("responses"),
     judge_model: Optional[str] = typer.Option(None, help="Judge model subdir to score"),
 ) -> None:
     """Compute scores from judge verdicts."""
+    if benchmark == "modegolden":
+        from bench.golden import aggregate_by_mode, load_golden_tasks, score_golden_dir
+
+        scores = score_golden_dir(load_golden_tasks(_resolve_data_path("modegolden", data_dir)), responses_dir)
+        if not scores:
+            console.print("[red]No golden responses found.[/red]")
+            raise typer.Exit(1)
+        table = Table(title="modegolden Scores")
+        table.add_column("Mode")
+        table.add_column("Tasks", justify="right")
+        table.add_column("Mean Score", justify="right")
+        table.add_column("Mean Brier", justify="right")
+        for mode, row in sorted(aggregate_by_mode(scores).items()):
+            table.add_row(mode, str(int(row["tasks"])), f"{row['mean_score']:.3f}", f"{row['mean_brier']:.3f}")
+        console.print(table)
+        return
+
     from bench.data import load_benchmark
     from bench.judge import load_existing_verdicts
     from bench.score import score_task
@@ -425,7 +469,7 @@ def score(
 
 @app.command()
 def report(
-    benchmark: str = typer.Argument(..., help="Benchmark: researchrubrics or draco"),
+    benchmark: str = typer.Argument(..., help="Benchmark: researchrubrics, draco, or modegolden"),
     data_dir: Path = typer.Option("data"),
     results_dir: Path = typer.Option("results"),
     responses_dir: Path = typer.Option("responses"),
@@ -433,6 +477,22 @@ def report(
     output: Optional[Path] = typer.Option(None, help="Output path for report markdown"),
 ) -> None:
     """Generate summary report from scores."""
+    if benchmark == "modegolden":
+        from bench.golden import format_golden_report, load_golden_tasks, score_golden_dir
+        from bench.report import save_report
+
+        scores = score_golden_dir(load_golden_tasks(_resolve_data_path("modegolden", data_dir)), responses_dir)
+        if not scores:
+            console.print("[red]No golden responses found.[/red]")
+            raise typer.Exit(1)
+        report_text = format_golden_report(scores)
+        if output:
+            save_report(report_text, output)
+            console.print(f"Report saved to {output}")
+        else:
+            console.print(report_text)
+        return
+
     from bench.data import load_benchmark
     from bench.judge import load_existing_verdicts
     from bench.report import generate_report, save_report

@@ -20,7 +20,7 @@ describe("rebuildStateFromMessages", () => {
     expect(scrapedUrls.size).toBe(0);
   });
 
-  it("extracts notes from successful take_note tool results", () => {
+  it("extracts derived notes from successful record_claims tool results", () => {
     const messages: AgentMessage[] = [
       {
         role: "user",
@@ -33,12 +33,16 @@ describe("rebuildStateFromMessages", () => {
           {
             type: "toolCall",
             id: "tc-1",
-            name: "take_note",
+            name: "record_claims",
             arguments: {
-              title: "Surface Codes",
-              content: "Google uses surface codes for QEC",
-              sourceUrls: ["https://research.google/qec"],
-              confidence: "high",
+              claims: [
+                {
+                  text: "Google uses surface codes for QEC.",
+                  sourceUrl: "https://research.google/qec",
+                  excerpt: "Google uses surface codes for QEC.",
+                  tier: "primary",
+                },
+              ],
             },
           },
         ],
@@ -57,9 +61,9 @@ describe("rebuildStateFromMessages", () => {
       {
         role: "toolResult",
         toolCallId: "tc-1",
-        toolName: "take_note",
-        content: [{ type: "text", text: "Note recorded" }],
-        details: { noteIndex: 0, mergedCount: 0 },
+        toolName: "record_claims",
+        content: [{ type: "text", text: "Claim recorded" }],
+        details: { recordedCount: 1, claimCount: 1 },
         isError: false,
         timestamp: Date.now(),
       } satisfies ToolResultMessage,
@@ -67,12 +71,12 @@ describe("rebuildStateFromMessages", () => {
 
     const { notes } = rebuildStateFromMessages(messages);
     expect(notes).toHaveLength(1);
-    expect(notes[0].title).toBe("Surface Codes");
-    expect(notes[0].confidence).toBe("high");
+    expect(notes[0].title).toContain("Google uses surface codes");
+    expect(notes[0].confidence).toBe("medium");
     expect(notes[0].sourceUrls).toEqual(["https://research.google/qec"]);
   });
 
-  it("preserves keyExcerpts when rebuilding from take_note tool calls", () => {
+  it("preserves excerpts when rebuilding from record_claims tool calls", () => {
     const messages: AgentMessage[] = [
       {
         role: "assistant",
@@ -80,13 +84,22 @@ describe("rebuildStateFromMessages", () => {
           {
             type: "toolCall",
             id: "tc-1",
-            name: "take_note",
+            name: "record_claims",
             arguments: {
-              title: "Quote-bearing",
-              content: "Some QEC content",
-              sourceUrls: ["https://research.google/qec"],
-              confidence: "high",
-              keyExcerpts: ["Surface codes are the leading approach", "Error rate 0.143%"],
+              claims: [
+                {
+                  text: "Surface codes are the leading approach.",
+                  sourceUrl: "https://research.google/qec",
+                  excerpt: "Surface codes are the leading approach",
+                  tier: "primary",
+                },
+                {
+                  text: "The error rate was 0.143%.",
+                  sourceUrl: "https://research.google/qec",
+                  excerpt: "Error rate 0.143%",
+                  tier: "primary",
+                },
+              ],
             },
           },
         ],
@@ -105,17 +118,17 @@ describe("rebuildStateFromMessages", () => {
       {
         role: "toolResult",
         toolCallId: "tc-1",
-        toolName: "take_note",
-        content: [{ type: "text", text: "Note recorded" }],
-        details: { noteIndex: 0, mergedCount: 0 },
+        toolName: "record_claims",
+        content: [{ type: "text", text: "Claim recorded" }],
+        details: { recordedCount: 2, claimCount: 2 },
         isError: false,
         timestamp: Date.now(),
       } satisfies ToolResultMessage,
     ];
 
     const { notes } = rebuildStateFromMessages(messages);
-    expect(notes).toHaveLength(1);
-    expect(notes[0].keyExcerpts).toEqual([
+    expect(notes).toHaveLength(2);
+    expect(notes.flatMap((note) => note.keyExcerpts ?? [])).toEqual([
       "Surface codes are the leading approach",
       "Error rate 0.143%",
     ]);
@@ -318,7 +331,7 @@ describe("rebuildStateFromMessages", () => {
     expect([...scrapedUrls]).toEqual(["https://example.com/report"]);
   });
 
-  it("handles mixed messages with notes and browses", () => {
+  it("handles mixed messages with browses and recorded claims", () => {
     const messages: AgentMessage[] = [
       {
         role: "user",
@@ -361,12 +374,16 @@ describe("rebuildStateFromMessages", () => {
           {
             type: "toolCall",
             id: "tc-2",
-            name: "take_note",
+            name: "record_claims",
             arguments: {
-              title: "Key Finding",
-              content: "Important discovery",
-              sourceUrls: ["https://source.com/article"],
-              confidence: "high",
+              claims: [
+                {
+                  text: "The source contains an important discovery.",
+                  sourceUrl: "https://source.com/article",
+                  excerpt: "Important discovery",
+                  tier: "primary",
+                },
+              ],
             },
           },
         ],
@@ -385,9 +402,9 @@ describe("rebuildStateFromMessages", () => {
       {
         role: "toolResult",
         toolCallId: "tc-2",
-        toolName: "take_note",
-        content: [{ type: "text", text: "Note recorded" }],
-        details: { noteIndex: 0, mergedCount: 0 },
+        toolName: "record_claims",
+        content: [{ type: "text", text: "Claim recorded" }],
+        details: { recordedCount: 1, claimCount: 1 },
         isError: false,
         timestamp: Date.now(),
       } satisfies ToolResultMessage,
@@ -396,7 +413,7 @@ describe("rebuildStateFromMessages", () => {
     const { notes, scrapedUrls } = rebuildStateFromMessages(messages);
     expect(notes).toHaveLength(1);
     expect(scrapedUrls.size).toBe(1);
-    expect(notes[0].title).toBe("Key Finding");
+    expect(notes[0].title).toContain("important discovery");
     expect(scrapedUrls.has("https://source.com/article")).toBe(true);
   });
 });
@@ -440,13 +457,8 @@ describe("summarizeToolResult", () => {
     expect(summarizeToolResult("prefetch_sources", result, false)).toBe("4 queries → 7 pages");
   });
 
-  it("summarizes take_note as `saved` when nothing was merged", () => {
-    const result = { details: { noteIndex: 0, mergedCount: 0 } };
-    expect(summarizeToolResult("take_note", result, false)).toBe("saved");
-  });
-
-  it("summarizes take_note when content merged into an existing note", () => {
-    const result = { details: { noteIndex: 0, mergedCount: 2 } };
-    expect(summarizeToolResult("take_note", result, false)).toBe("merged into existing (+2)");
+  it("summarizes record_claims by evidence items and claims", () => {
+    const result = { details: { recordedCount: 3, claimCount: 2 } };
+    expect(summarizeToolResult("record_claims", result, false)).toBe("3 evidence item(s), 2 claims");
   });
 });

@@ -1,0 +1,4 @@
+{"task_id":"lookup-001","mode":"lookup","prompt":"What is the direct answer to the sample lookup?","expected_answers":["Sample Lookup Answer"],"expected_confidence":"high"}
+{"task_id":"extraction-001","mode":"extraction","prompt":"Extract revenue and operating income from the sample filing.","expected_answers":["revenue","operating income"],"expected_confidence":"high"}
+{"task_id":"survey-001","mode":"survey","prompt":"Survey sample benchmark systems and datasets.","expected_answers":["System Alpha","Benchmark Beta","Dataset Gamma"],"expected_confidence":"medium"}
+{"task_id":"synthesis-001","mode":"synthesis","prompt":"Synthesize the sample evidence about method tradeoffs.","expected_answers":["tradeoff","limitation","evidence"],"expected_confidence":"medium"}

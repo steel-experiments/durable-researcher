@@ -111,6 +111,35 @@ export function hasSurveySignals(topic: string): boolean {
 }
 
 /**
+ * Heuristic: does this prompt ask for one recoverable fact/entity name?
+ *
+ * This protects needle lookups when the classifier under-routes them to
+ * synthesis. Questions like "what was the name of..." should get answer-first
+ * lookup behavior, looser decoded-query retrieval, and a short final report.
+ */
+export function hasLookupSignals(topic: string): boolean {
+  const t = topic.toLowerCase().replace(/\s+/g, " ").trim();
+
+  const factQuestionPatterns = [
+    /\bwhat (?:is|was|were) the name of\b/,
+    /\bwhat (?:is|was|were) (?:the )?(?:name|title|date|year|location|city|person|company|organization)\b/,
+    /\bwho (?:is|was|were)\b/,
+    /\bwhen (?:is|was|were|did)\b/,
+    /\bwhere (?:is|was|were|did)\b/,
+    /\bhow (?:much|many|old|tall|long|far)\b/,
+  ];
+  const asksForSingleFact = factQuestionPatterns.some((re) => re.test(t));
+  if (!asksForSingleFact) return false;
+
+  const broadAnalysisSignals = [
+    "compare", "explain", "analyze", "evaluate", "assess", "strategy",
+    "overview", "pros and cons", "tradeoffs", "why ", "how does",
+    "literature review", "survey", "landscape",
+  ];
+  return !broadAnalysisSignals.some((w) => t.includes(w));
+}
+
+/**
  * Heuristic: does this prompt have strong signals it's an extraction task that
  * the LLM may have under-classified as synthesis? Two-stage check:
  *
@@ -164,6 +193,12 @@ export async function classifyTask(opts: {
     llmMode = null;
   }
   const baseMode = llmMode ?? "synthesis";
+
+  // Heuristic override: if the LLM under-classified to synthesis but the
+  // prompt clearly asks for one fact/name/date/entity, use lookup behavior.
+  if (baseMode === "synthesis" && hasLookupSignals(opts.topic)) {
+    return "lookup";
+  }
 
   // Heuristic override: if the LLM under-classified to synthesis but the
   // prompt clearly asks for extraction, upgrade. Never override lookup or

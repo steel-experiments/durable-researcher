@@ -118,6 +118,7 @@ async function generateResearchPlan(
   } catch (err) {
     report(`    Plan LLM call failed (${(err as Error).message}), using fallback queries`);
     return {
+      requiredClaims: fallbackRequiredClaims(topic),
       strategicPlan: `Research "${topic}" across multiple dimensions`,
       subQueries: extractQueriesFromText("", topic, maxQueries),
       searchStrategy: "breadth-first",
@@ -149,6 +150,14 @@ export function formatPlan(plan: ResearchPlan): string[] {
     lines.push(``);
   }
 
+  if (plan.requiredClaims && plan.requiredClaims.length > 0) {
+    lines.push(`### Required Claims`);
+    for (const item of plan.requiredClaims) {
+      lines.push(`- **${item.id}:** ${item.question} (${item.status})`);
+    }
+    lines.push(``);
+  }
+
   lines.push(
     `### Strategic Approach`,
     plan.strategicPlan,
@@ -172,10 +181,19 @@ export function parsePlanResponse(
   if (jsonMatch) {
     try {
       const parsed = JSON.parse(jsonMatch[0]);
+      const parsedRequired = Array.isArray(parsed.requiredClaims)
+        ? parsed.requiredClaims.map((item: { id?: unknown; question?: unknown; status?: unknown; claimIds?: unknown }, index: number) => ({
+            id: typeof item.id === "string" && item.id.trim() ? item.id : `rq${index + 1}`,
+            question: typeof item.question === "string" ? item.question : String(item.question ?? ""),
+            status: item.status === "answered" || item.status === "contradicted" ? item.status : "open",
+            claimIds: Array.isArray(item.claimIds) ? item.claimIds.filter((id): id is string => typeof id === "string") : [],
+          })).filter((item: { question: string }) => item.question.trim().length > 0)
+        : fallbackRequiredClaims(topic);
       return {
         interpretations: Array.isArray(parsed.interpretations)
           ? parsed.interpretations
           : undefined,
+        requiredClaims: addTopicConstraintClaims(parsedRequired, topic),
         strategicPlan: parsed.strategicPlan ?? parsed.plan ?? text,
         subQueries: Array.isArray(parsed.subQueries ?? parsed.queries)
           ? (parsed.subQueries ?? parsed.queries).slice(0, maxQueries)
@@ -189,11 +207,64 @@ export function parsePlanResponse(
   }
 
   return {
+    requiredClaims: fallbackRequiredClaims(topic),
     strategicPlan: text,
     subQueries: extractQueriesFromText(text, topic, maxQueries),
     searchStrategy: "breadth-first",
     estimatedSteps: maxQueries * 2,
   };
+}
+
+function fallbackRequiredClaims(topic: string) {
+  return addTopicConstraintClaims([
+    {
+      id: "rq1",
+      question: `Answer the core research question: ${topic}`,
+      status: "open" as const,
+      claimIds: [],
+    },
+  ], topic);
+}
+
+type PlanRequiredClaim = NonNullable<ResearchPlan["requiredClaims"]>[number];
+
+function addTopicConstraintClaims(
+  requiredClaims: PlanRequiredClaim[],
+  topic: string,
+): PlanRequiredClaim[] {
+  const out = [...requiredClaims];
+  const existing = new Set(out.map((item) => normalizeRequiredQuestion(item.question)));
+  const add = (question: string) => {
+    const key = normalizeRequiredQuestion(question);
+    if (!key || existing.has(key)) return;
+    existing.add(key);
+    out.push({
+      id: `rq${out.length + 1}`,
+      question,
+      status: "open",
+      claimIds: [],
+    });
+  };
+
+  const quoted = Array.from(topic.matchAll(/["'“”‘’]([^"'“”‘’]{2,80})["'“”‘’]/g))
+    .map((match) => match[1]?.trim())
+    .filter((value): value is string => !!value);
+  for (const phrase of quoted) {
+    add(`Verify how the literal phrase "${phrase}" appears in the answer or source title/name.`);
+  }
+
+  const titlePhrase = topic.match(/\b(?:title|name)\b/i);
+  if (titlePhrase && quoted.length > 0) {
+    for (const phrase of quoted) {
+      add(`Verify the final answer's title/name contains or explains the phrase "${phrase}".`);
+    }
+  }
+
+  return out;
+}
+
+function normalizeRequiredQuestion(question: string): string {
+  return question.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
 /** Extract numbered queries from text, with fallback to topic variations. */

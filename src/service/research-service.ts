@@ -133,7 +133,7 @@ function rowToRun(
 }
 
 function normalizeRunParams(params: ResearchRunParams): ResearchRunParams {
-  const selectedHarness = params.selectedHarness ?? selectHarness(params.harness, params.optimizeFor);
+  const selectedHarness = params.selectedHarness ?? selectHarness(params.harness, params.optimizeFor, params.depth);
   return {
     ...params,
     harness: params.harness ?? selectedHarness,

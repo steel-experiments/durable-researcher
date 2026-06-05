@@ -29,6 +29,11 @@ import { mergeSurveyParts, assembleSurvey } from "../survey-merge.js";
 import { refineSurveyProse } from "../survey-prose.js";
 import { parseWorkstreams } from "./workstreams.js";
 import { critiqueCompleteness } from "./completeness-critic.js";
+import { getFanoutWidth, isFanoutEscalationEnabled } from "../config.js";
+import { generateInterpretations } from "../interpretations.js";
+import { interpretationsToAngles, runRedundantFanout } from "../fanout.js";
+import { createResearchLedger, ledgerToNotes } from "../ledger.js";
+import type { ResearchLedger } from "../types.js";
 
 export type ExecutorContext = {
   signal: AbortSignal;
@@ -50,11 +55,12 @@ function queueName(runId: string, role: string): string {
 
 function taskTokenLimit(harness: ExecutableHarness | undefined, role: "agent" | "subagent" | "synthesis"): number | undefined {
   if (!harness) return undefined;
-  if (role === "synthesis") return harness.type === "fixed_team" || harness.type === "async_subagents" || harness.type === "orchestrator_blocking_subagents"
+  if (role === "synthesis") return harness.type === "fixed_team" || harness.type === "async_subagents" || harness.type === "orchestrator_blocking_subagents" || harness.type === "redundant_fanout"
     ? harness.totalTokenLimit
     : undefined;
   if (harness.type === "fixed_team") return harness.perAgentTokenLimit;
   if (harness.type === "async_subagents" || harness.type === "orchestrator_blocking_subagents") return harness.perSubagentTokenLimit;
+  if (harness.type === "redundant_fanout") return harness.perWorkerTokenLimit;
   return undefined;
 }
 
@@ -479,6 +485,110 @@ export function createBlockingSubagentsExecutor(): ResearchExecutor {
   };
 }
 
+/** Build the per-agent params shared by fan-out angle workers, escalation, and synthesis. */
+function fanoutWorkerParams(run: ResearchRun, instruction: string, harness: ExecutableHarness | undefined, extra: Partial<ResearchParams> = {}): ResearchParams {
+  return {
+    topic: run.topic,
+    depth: run.params.depth,
+    mode: run.params.mode,
+    clarifications: run.params.clarify,
+    maxSources: run.params.budgets.maxSources,
+    maxTokens: taskTokenLimit(harness, "agent"),
+    extensionInstruction: instruction,
+    // Quarantine: fan-out workers read untrusted web content, so they must not hold the
+    // code-adapter tools.
+    allowAdapters: false,
+    ...extra,
+  };
+}
+
+export function createRedundantFanoutExecutor(): ResearchExecutor {
+  return {
+    async start(run, ctx) {
+      const harness = run.params.selectedHarness;
+      const width = harness?.type === "redundant_fanout" ? harness.width : getFanoutWidth();
+
+      // Scope: generate diverse readings up front so each worker can be assigned one.
+      const interpretations = await generateInterpretations(run.topic);
+      const angles = interpretationsToAngles(run.topic, interpretations, width);
+
+      const fanout = await runRedundantFanout({
+        question: run.topic,
+        angles,
+        runAngle: async (angle): Promise<ResearchLedger> => {
+          const { result } = await runResearchTask({
+            run,
+            harnessType: "redundant_fanout",
+            role: `angle-${angle.reading}`,
+            objective: angle.instruction,
+            signal: ctx.signal,
+            params: fanoutWorkerParams(run, angle.instruction, harness),
+          });
+          return result.ledger ?? createResearchLedger();
+        },
+        escalation: { enabled: isFanoutEscalationEnabled() },
+        runEscalation: async (hypothesis): Promise<ResearchLedger> => {
+          const instruction = [
+            `Deeply confirm or refute this candidate answer to the question:`,
+            `Question: ${run.topic}`,
+            `Candidate answer: "${hypothesis.answer}"`,
+            `Find primary or authoritative sources that settle it either way.`,
+          ].join("\n");
+          const { result } = await runResearchTask({
+            run,
+            harnessType: "redundant_fanout",
+            role: "escalation",
+            objective: instruction,
+            signal: ctx.signal,
+            params: fanoutWorkerParams(run, instruction, harness),
+          });
+          return result.ledger ?? createResearchLedger();
+        },
+      });
+
+      // Synthesis: a constrained agent run grounded in the pooled notes, steered by the
+      // carry-forward synthesis input (confirmed answers + refuted-for-transparency block).
+      const notes = ledgerToNotes(fanout.ledger);
+      const priorUrls = [...new Set(notes.flatMap((n) => n.sourceUrls))];
+      const synthesis = await runResearchTask({
+        run,
+        harnessType: "redundant_fanout",
+        role: "synthesis",
+        objective: `Synthesize final report for ${run.topic}`,
+        signal: ctx.signal,
+        params: {
+          topic: run.topic,
+          depth: run.params.depth,
+          mode: run.params.mode,
+          clarifications: run.params.clarify,
+          maxSources: priorUrls.length,
+          priorNotes: notes,
+          priorUrls,
+          maxTokens: taskTokenLimit(harness, "synthesis"),
+          extensionInstruction: fanout.synthesis.prompt,
+          allowAdapters: false,
+        },
+      });
+
+      await saveResearchArtifact({
+        runId: run.id,
+        kind: "final-report",
+        contentType: "text/markdown",
+        content: synthesis.result.report,
+        metadata: {
+          harnessType: "redundant_fanout",
+          angles: angles.length,
+          escalated: fanout.escalation.escalate,
+          confirmedAnswers: fanout.resolved.filter((r) => !r.refuted).length,
+          refutedAnswers: fanout.resolved.filter((r) => r.refuted).length,
+          recommendedConfidence: fanout.synthesis.recommendedConfidence,
+        },
+      });
+      await ctx.setRunStatus("completed");
+    },
+  };
+}
+
 export function executorForHarness(harness: ExecutableHarness): ResearchExecutor {
   switch (harness.type) {
     case "campaign_pulses":
@@ -491,6 +601,8 @@ export function executorForHarness(harness: ExecutableHarness): ResearchExecutor
       return createAsyncSubagentsExecutor();
     case "orchestrator_blocking_subagents":
       return createBlockingSubagentsExecutor();
+    case "redundant_fanout":
+      return createRedundantFanoutExecutor();
   }
 }
 

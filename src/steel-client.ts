@@ -5,6 +5,7 @@ import Steel from "steel-sdk";
 import type { ScrapeResponse } from "steel-sdk/resources/top-level.js";
 import type { SearchResult } from "./types.js";
 import { cleanContent, truncateContent } from "./content.js";
+import { normalizeUrlForDedup } from "./url-normalize.js";
 
 const MAX_CONTENT_CHARS = 25_000;
 
@@ -104,6 +105,10 @@ const BLOCKED_DOMAINS = new Set([
   "pinterest.com",
   "quora.com",
   "wikipedia.org",
+  // Query-reflection / thin-search pages. These often manufacture pages from
+  // the user's query and should not be treated as evidence for obscure facts.
+  "wordplays.com",
+  "tickets-center.com",
 ]);
 
 /** Check if a URL belongs to a blocked domain. */
@@ -172,9 +177,10 @@ export function extractSearchResults(
       const realUrl = unwrapTrackingUrl(link.url);
       if (!realUrl || !realUrl.startsWith("http")) continue;
       if (isBlockedUrl(realUrl)) continue;
-      if (seenUrls.has(realUrl)) continue;
+      const dedupUrl = normalizeUrlForDedup(realUrl);
+      if (seenUrls.has(dedupUrl)) continue;
 
-      seenUrls.add(realUrl);
+      seenUrls.add(dedupUrl);
       results.push({
         title: link.text.trim(),
         url: realUrl,
@@ -192,9 +198,10 @@ export function extractSearchResults(
       const realUrl = unwrapTrackingUrl(rawUrl);
       if (!realUrl || !realUrl.startsWith("http")) continue;
       if (isBlockedUrl(realUrl)) continue;
-      if (seenUrls.has(realUrl)) continue;
+      const dedupUrl = normalizeUrlForDedup(realUrl);
+      if (seenUrls.has(dedupUrl)) continue;
 
-      seenUrls.add(realUrl);
+      seenUrls.add(dedupUrl);
       results.push({
         title: text.trim(),
         url: realUrl,

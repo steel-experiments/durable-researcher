@@ -73,6 +73,19 @@ describe("plan.hbs template", () => {
     expect(rendered.toLowerCase()).not.toContain("bubble gum");
     expect(rendered.toLowerCase()).not.toContain("bubba gump");
   });
+
+  it("adds lookup-specific query tests for quoted clue phrases", async () => {
+    const rendered = await loadTemplate("plan", { maxQueries: "5", depth: "standard", mode: "lookup" });
+    const lowered = rendered.toLowerCase();
+    expect(lowered).toContain("lookup mode");
+    expect(lowered).toContain("quoted");
+    expect(lowered).toContain("omits the phrase");
+    expect(lowered).toContain("homophone");
+    expect(lowered).toContain("sponsor");
+    expect(lowered).toContain("authoritative for the entity type");
+    expect(lowered).toContain("domain-specific databases");
+    expect(lowered).toContain("crossword clues");
+  });
 });
 
 describe("summarize.hbs template", () => {
@@ -108,7 +121,7 @@ describe("system.hbs template", () => {
     expect(lowered).toMatch(/10-?k|10-?q|sec filing/);
   });
 
-  it("requires keyExcerpts on high-confidence notes", async () => {
+  it("requires verbatim excerpts on every recorded claim", async () => {
     const rendered = await loadTemplate("system", {
       topic: "x",
       depth: "standard",
@@ -116,7 +129,8 @@ describe("system.hbs template", () => {
       maxSources: 20,
       maxIterations: 3,
     });
-    expect(rendered.toLowerCase()).toContain("keyexcerpts");
+    expect(rendered.toLowerCase()).toContain("record_claims");
+    expect(rendered.toLowerCase()).toContain("excerpt");
     expect(rendered.toLowerCase()).toContain("verbatim");
   });
 

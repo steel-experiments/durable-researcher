@@ -14,6 +14,10 @@ const PLAN_WITH_INTERPRETATIONS = JSON.stringify({
       queriesTarget: "decoded terms",
     },
   ],
+  requiredClaims: [
+    { id: "rq1", question: "Identify the answer", status: "open", claimIds: [] },
+    { id: "rq2", question: "Verify the premise", status: "open", claimIds: [] },
+  ],
   strategicPlan: "Investigate both readings.",
   subQueries: ["query one", "query two"],
   searchStrategy: "mixed",
@@ -32,6 +36,8 @@ describe("parsePlanResponse", () => {
     // Existing fields still parse.
     expect(plan.subQueries).toEqual(["query one", "query two"]);
     expect(plan.strategicPlan).toBe("Investigate both readings.");
+    expect(plan.requiredClaims).toHaveLength(2);
+    expect(plan.requiredClaims?.[0].question).toBe("Identify the answer");
   });
 
   it("leaves interpretations undefined when the model omits them", () => {
@@ -43,6 +49,25 @@ describe("parsePlanResponse", () => {
     expect(plan.interpretations).toBeUndefined();
     expect(plan.subQueries).toEqual(["a", "b"]);
   });
+
+  it("adds quoted title constraints as required claims", () => {
+    const plan = parsePlanResponse(
+      JSON.stringify({
+        strategicPlan: "p",
+        subQueries: ["a"],
+        searchStrategy: "mixed",
+        estimatedSteps: 2,
+        requiredClaims: [
+          { id: "rq1", question: "Identify the race", status: "open", claimIds: [] },
+        ],
+      }),
+      "What was the 5K race that had 'bubble gum' in its title?",
+      5,
+    );
+
+    expect(plan.requiredClaims?.map((claim) => claim.question).join("\n")).toContain("bubble gum");
+    expect(plan.requiredClaims?.map((claim) => claim.question).join("\n")).toContain("title/name");
+  });
 });
 
 describe("formatPlan", () => {
@@ -52,6 +77,8 @@ describe("formatPlan", () => {
     expect(text).toContain("Interpretations");
     expect(text).toContain("homophone");
     expect(text).toContain("the decoded phrase that sounds the same");
+    expect(text).toContain("Required Claims");
+    expect(text).toContain("Identify the answer");
     // Queries still render.
     expect(text).toContain("query one");
   });

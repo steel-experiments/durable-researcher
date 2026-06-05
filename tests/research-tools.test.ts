@@ -40,4 +40,12 @@ describe("createResearchTools adapter quarantine", () => {
     expect(names).toContain("browse_url");
     expect(names).toContain("web_search");
   });
+
+  it("withholds adapter tools for lookup mode even when adapters are otherwise allowed", () => {
+    const names = createResearchTools(baseOptions({ mode: "lookup", allowAdapters: true })).map((t) => t.name);
+    for (const name of ADAPTER_TOOLS) expect(names).not.toContain(name);
+    expect(names).toContain("prefetch_sources");
+    expect(names).toContain("scout");
+    expect(names).toContain("web_search");
+  });
 });

@@ -3,11 +3,11 @@
 
 import Steel from "steel-sdk";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
-import type { ResearchNote, TaskMode } from "./types.js";
+import type { ResearchLedger, ResearchNote, TaskMode } from "./types.js";
 import { createSearchTool } from "./tools/search.js";
 import { createBrowseTool } from "./tools/browse.js";
 import { createScreenshotTool } from "./tools/screenshot.js";
-import { createNoteTool } from "./tools/note.js";
+import { createRecordClaimsTool } from "./tools/record-claims.js";
 import { createWriteAdapterTool } from "./tools/write-adapter.js";
 import { createUseAdapterTool } from "./tools/use-adapter.js";
 import { createSubmitReportTool, type SubmittedReportRef } from "./tools/submit-report.js";
@@ -27,6 +27,7 @@ export type ResearchToolOptions = {
   client: Steel;
   scrapedUrls: Set<string>;
   notes: ResearchNote[];
+  ledger: ResearchLedger;
   params: ResearchParams;
   mode: TaskMode;
   maxSources: number;
@@ -47,6 +48,7 @@ export function createResearchTools(opts: ResearchToolOptions): AgentTool<any>[]
     client,
     scrapedUrls,
     notes,
+    ledger,
     params,
     mode,
     maxSources,
@@ -56,21 +58,22 @@ export function createResearchTools(opts: ResearchToolOptions): AgentTool<any>[]
     urlExcerpts,
   } = opts;
   const allowAdapters = opts.allowAdapters !== false;
+  const exposeAdapters = allowAdapters && mode !== "lookup";
   const prefetchBudget = Math.floor(maxSources / 2);
   const referenceChasingEnabled = mode === "survey";
   const referenceQueue = createReferenceQueue(scrapedUrls);
   const submittedReport: SubmittedReportRef = { value: null };
 
   return [
-    createSubmitReportTool(submittedReport),
+    createSubmitReportTool(submittedReport, ledger),
     createPlanTool(params, mode, progress),
-    createPrefetchTool(client, scrapedUrls, params.topic, prefetchBudget, taskId, progress, urlExcerpts),
-    createScoutTool(client, scrapedUrls, params.topic, taskId, progress, urlExcerpts, referenceQueue),
+    createPrefetchTool(client, scrapedUrls, params.topic, prefetchBudget, taskId, progress, urlExcerpts, mode),
+    createScoutTool(client, scrapedUrls, params.topic, taskId, progress, urlExcerpts, referenceQueue, mode),
     createSearchTool(client, scrapedUrls, params.topic, mode),
     createBrowseTool(client, scrapedUrls, params.topic, taskId, urlExcerpts, referenceQueue),
     createScreenshotTool(client),
-    createNoteTool(notes),
-    createEvaluateTool(notes, scrapedUrls, mode),
+    createRecordClaimsTool(ledger, notes),
+    createEvaluateTool(notes, scrapedUrls, mode, ledger),
     ...(gapPasses > 0
       ? [
           createGapAnalysisTool({ notes, topic: params.topic, maxCalls: gapPasses, progress }),
@@ -90,7 +93,7 @@ export function createResearchTools(opts: ResearchToolOptions): AgentTool<any>[]
           ),
         ]
       : []),
-    ...(allowAdapters
+    ...(exposeAdapters
       ? [createUseAdapterTool(), createWriteAdapterTool()]
       : []),
   ];

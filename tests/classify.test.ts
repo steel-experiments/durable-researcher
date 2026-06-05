@@ -5,6 +5,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import {
   parseClassification,
   classifyTask,
+  hasLookupSignals,
   hasSurveySignals,
   TASK_MODES,
   type ModeClassifier,
@@ -67,6 +68,32 @@ describe("classifyTask (with stubbed classifier)", () => {
     };
     await classifyTask({ topic: "What is the height of Mount Everest?", classifier });
     expect(seen).toEqual(["What is the height of Mount Everest?"]);
+  });
+});
+
+describe("lookup-signal heuristic override", () => {
+  const greatAmericaTopic =
+    "What was the name of the 5K race hosted at the old Great America theme park in California that had 'bubble gum' in its title?";
+
+  it("fires on one-fact name questions", () => {
+    expect(hasLookupSignals(greatAmericaTopic)).toBe(true);
+    expect(hasLookupSignals("What was the name of the restaurant sponsor?")).toBe(true);
+  });
+
+  it("upgrades synthesis to lookup for one-fact name questions", async () => {
+    const classifier: ModeClassifier = async () => "synthesis";
+    const mode = await classifyTask({ topic: greatAmericaTopic, classifier });
+    expect(mode).toBe("lookup");
+  });
+
+  it("does not override explicit survey/extraction/lookup verdicts", async () => {
+    expect(await classifyTask({ topic: greatAmericaTopic, classifier: async () => "lookup" })).toBe("lookup");
+    expect(await classifyTask({ topic: greatAmericaTopic, classifier: async () => "extraction" })).toBe("extraction");
+    expect(await classifyTask({ topic: greatAmericaTopic, classifier: async () => "survey" })).toBe("survey");
+  });
+
+  it("does not fire on broad analysis prompts", () => {
+    expect(hasLookupSignals("Analyze what caused Great America to close and compare redevelopment options")).toBe(false);
   });
 });
 

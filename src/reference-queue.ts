@@ -1,6 +1,8 @@
 // ABOUTME: Bounded, deduplicated queue of reference candidates harvested from browsed papers.
 // ABOUTME: Feeds the chase_references tool so a survey can follow a paper's citation graph.
 
+import { hasVisitedUrl, normalizeUrlForDedup } from "./url-normalize.js";
+
 /** A capped, order-preserving, deduplicated queue of reference strings (URLs or titles). */
 export type ReferenceQueue = {
   add: (refs: string[]) => void;
@@ -11,6 +13,10 @@ export type ReferenceQueue = {
 /** Max references retained — keeps the citation-chase bounded. */
 export const MAX_REFERENCE_QUEUE = 30;
 
+function dedupKey(ref: string): string {
+  return /^https?:\/\//i.test(ref) ? normalizeUrlForDedup(ref) : ref.trim().toLowerCase();
+}
+
 /** Create an empty reference queue. `seen` is shared with scraped URLs to avoid re-queuing visited pages. */
 export function createReferenceQueue(seen?: Set<string>): ReferenceQueue {
   const items: string[] = [];
@@ -20,11 +26,12 @@ export function createReferenceQueue(seen?: Set<string>): ReferenceQueue {
     add(refs: string[]) {
       for (const raw of refs) {
         const ref = raw.trim();
+        const key = dedupKey(ref);
         if (!ref) continue;
-        if (queued.has(ref)) continue;
-        if (seen?.has(ref)) continue;
+        if (queued.has(key)) continue;
+        if (seen && /^https?:\/\//i.test(ref) && hasVisitedUrl(seen, ref)) continue;
         if (items.length >= MAX_REFERENCE_QUEUE) break;
-        queued.add(ref);
+        queued.add(key);
         items.push(ref);
       }
     },

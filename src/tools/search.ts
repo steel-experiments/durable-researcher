@@ -7,6 +7,7 @@ import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { multiEngineSearch, filterByRelevance } from "../steel-client.js";
 import { searchEdgar } from "../edgar.js";
 import type { TaskMode } from "../types.js";
+import { hasVisitedUrl } from "../url-normalize.js";
 
 const SearchParams = Type.Object({
   query: Type.String({ description: "The search query to execute" }),
@@ -53,7 +54,7 @@ export function createSearchTool(
         : rawResults;
 
       // Filter out already-visited URLs
-      const fresh = relevant.filter((r) => !scrapedUrls.has(r.url));
+      const fresh = relevant.filter((r) => !hasVisitedUrl(scrapedUrls, r.url));
 
       if (fresh.length === 0) {
         return {

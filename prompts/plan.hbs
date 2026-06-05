@@ -6,6 +6,9 @@ Your output MUST be valid JSON with this exact structure:
     { "reading": "literal", "meaning": "what the words say at face value", "queriesTarget": "what to search for this reading" },
     { "reading": "lateral", "device": "homophone|pun|anagram|paraphrase|reference|descriptor|association", "meaning": "the decoded meaning", "queriesTarget": "what to search for this reading" }
   ],
+  "requiredClaims": [
+    { "id": "rq1", "question": "subquestion or required claim that must be answered", "status": "open", "claimIds": [] }
+  ],
   "strategicPlan": "A 2-3 sentence description of the research approach and key areas to investigate",
   "subQueries": ["query1", "query2", ...],
   "searchStrategy": "breadth-first" | "depth-first" | "mixed",
@@ -57,9 +60,37 @@ Record the literal reading AND the 1–3 strongest lateral readings in
 `interpretations`. Then generate queries that test EACH surviving reading — do
 not assume the literal reading is correct when the phrasing signals indirection.
 
+Also populate `requiredClaims` with the coverage map the agent must satisfy
+before synthesis. These are not interpretations; they are the concrete
+subquestions or required claims that would make the final answer complete. Keep
+IDs short and stable (`rq1`, `rq2`, ...), set every status to `"open"`, and use
+empty `claimIds`.
+
 **Guardrail:** if nothing is oblique, record a single literal interpretation and
 move on. Do not invent wordplay where the phrasing is plainly straightforward —
 most topics are literal, and manufactured puns waste queries.
+
+{{#if (eq mode "lookup")}}
+## Lookup mode: force hypothesis tests before broad searching
+
+This is a one-fact lookup. The plan must recover the answer, not produce a
+general report. If the prompt asks for a "name" or "title" and includes a quoted
+or unusual phrase, treat that phrase as an untrusted clue until proven by a
+primary source.
+
+For quoted/unusual clue phrases, include all of these in `subQueries`:
+1. one literal query containing the phrase;
+2. one query that omits the phrase and uses the strongest remaining clues;
+3. one decoded-query hypothesis for each plausible homophone, brand, film,
+   sponsor, venue, or cultural-reference reading.
+
+Do not let auto-generated event pages, crossword clues, reseller search pages,
+or generic category pages confirm the answer. Use them only as weak hints for
+new queries. Prefer sources that are authoritative for the entity type: official
+pages, primary records, reputable domain-specific databases/indexes, local or
+trade reporting, archived pages, and pages from named organizations directly
+involved in the answer.
+{{/if}}
 
 ## Query Generation Rules
 

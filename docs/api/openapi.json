@@ -540,6 +540,9 @@
           },
           {
             "$ref": "#/components/schemas/BlockingSubagentsHarness"
+          },
+          {
+            "$ref": "#/components/schemas/RedundantFanoutHarness"
           }
         ]
       },
@@ -559,6 +562,9 @@
           },
           {
             "$ref": "#/components/schemas/BlockingSubagentsHarness"
+          },
+          {
+            "$ref": "#/components/schemas/RedundantFanoutHarness"
           }
         ]
       },
@@ -676,6 +682,32 @@
         },
         "additionalProperties": false
       },
+      "RedundantFanoutHarness": {
+        "type": "object",
+        "required": [
+          "type",
+          "width"
+        ],
+        "properties": {
+          "type": {
+            "const": "redundant_fanout"
+          },
+          "width": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 4
+          },
+          "perWorkerTokenLimit": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "totalTokenLimit": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      },
       "CampaignBudgets": {
         "type": "object",
         "properties": {
@@ -761,7 +793,8 @@
               "campaign_pulses",
               "fixed_team",
               "async_subagents",
-              "orchestrator_blocking_subagents"
+              "orchestrator_blocking_subagents",
+              "redundant_fanout"
             ]
           },
           "campaignId": {

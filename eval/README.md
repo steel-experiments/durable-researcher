@@ -6,6 +6,7 @@ Benchmarks durable-researcher against two open-source deep research evaluation s
 |-----------|--------|-------|----------|----------|
 | [ResearchRubrics](https://github.com/scaleai/researchrubrics) | Scale AI | 101 | 2,593 | Factual grounding, reasoning, completeness, clarity |
 | [DRACO](https://huggingface.co/datasets/perplexity-ai/draco) | Perplexity | 100 | 3,934 | Factual accuracy, breadth/depth, presentation, citations |
+| modegolden | local fixtures | 4+ | deterministic answers | Mode coverage + confidence calibration |
 
 ## Prerequisites
 
@@ -41,6 +42,7 @@ Downloads ResearchRubrics and DRACO from HuggingFace into `data/`.
 ```bash
 # Start small to validate the pipeline
 uv run bench run researchrubrics --limit 3 --depth quick --project-root ..
+uv run bench run modegolden --depth quick --project-root ..
 
 # Full benchmark at standard depth
 uv run bench run draco --depth standard --project-root ..
@@ -86,6 +88,7 @@ Notes:
 ```bash
 uv run bench score researchrubrics
 uv run bench score draco
+uv run bench score modegolden
 ```
 
 Prints a table of per-task scores and the overall mean.
@@ -94,11 +97,14 @@ Prints a table of per-task scores and the overall mean.
 
 **DRACO** uses a normalized score: `clamp(sum(weight * met) / sum(positive_weights), 0, 1)` plus a pass rate (fraction of criteria correctly handled, accounting for negative-weight penalty criteria).
 
+**modegolden** scores deterministic mode-balanced answer keys and reports a Brier-style calibration score for stated confidence.
+
 ### 5. Generate report
 
 ```bash
 uv run bench report researchrubrics
 uv run bench report draco --output results/draco-report.md
+uv run bench report modegolden --output results/modegolden-report.md
 ```
 
 Produces a markdown summary with aggregate stats, per-section breakdowns (DRACO), resource usage averages when `.usage.json` sidecars exist, and the lowest-scoring tasks for debugging.
@@ -147,7 +153,7 @@ eval/
 uv run python -m pytest tests/ -v
 ```
 
-117 unit tests covering scoring math, data parsing, judge prompt construction, verdict parsing, pricing/concurrency helpers, and runner skip logic. No LLM calls in tests.
+122 unit tests covering scoring math, data parsing, golden-set calibration, judge prompt construction, verdict parsing, pricing/concurrency helpers, and runner skip logic. No LLM calls in tests.
 
 ## Completed Evaluation Runs
 

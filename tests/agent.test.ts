@@ -21,7 +21,7 @@ describe("loadTemplate", () => {
     expect(result).toContain("plan_research");
     expect(result).toContain("web_search");
     expect(result).toContain("browse_url");
-    expect(result).toContain("take_note");
+    expect(result).toContain("record_claims");
     expect(result).toContain("evaluate_progress");
     expect(result).toContain("prefetch_sources");
   });

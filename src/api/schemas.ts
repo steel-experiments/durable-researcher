@@ -15,6 +15,7 @@ const HARNESS_TYPES = new Set([
   "fixed_team",
   "async_subagents",
   "orchestrator_blocking_subagents",
+  "redundant_fanout",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -61,6 +62,13 @@ function parseHarness(value: unknown): ResearchHarness | undefined {
         type,
         maxSubagents: positiveInteger(value.maxSubagents, "harness.maxSubagents") ?? 5,
         perSubagentTokenLimit: positiveInteger(value.perSubagentTokenLimit, "harness.perSubagentTokenLimit"),
+        totalTokenLimit: positiveInteger(value.totalTokenLimit, "harness.totalTokenLimit"),
+      };
+    case "redundant_fanout":
+      return {
+        type,
+        width: positiveInteger(value.width, "harness.width") ?? 4,
+        perWorkerTokenLimit: positiveInteger(value.perWorkerTokenLimit, "harness.perWorkerTokenLimit"),
         totalTokenLimit: positiveInteger(value.totalTokenLimit, "harness.totalTokenLimit"),
       };
   }

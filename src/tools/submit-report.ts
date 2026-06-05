@@ -3,6 +3,7 @@
 
 import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
+import type { ResearchLedger } from "../types.js";
 
 /** Mutable holder for the most recently submitted report. */
 export type SubmittedReportRef = { value: string | null };
@@ -25,14 +26,43 @@ const SubmitReportParams = Type.Object({
  */
 export function createSubmitReportTool(
   ref: SubmittedReportRef,
+  ledger?: ResearchLedger,
 ): AgentTool<typeof SubmitReportParams> {
   return {
     name: "submit_report",
     label: "Submit Report",
     description:
-      "Record the final research report as the task deliverable. Call this exactly once when the report is complete. After calling, end your turn — do NOT call any further tools or write additional commentary.",
+      "Record the final research report as the task deliverable. Call this exactly once when the report is complete, all required claims are answered, and no contradictions remain unresolved. After calling, end your turn — do NOT call any further tools or write additional commentary.",
     parameters: SubmitReportParams,
     execute: async (_toolCallId, params) => {
+      const openRequired = ledger?.requiredClaims.filter((item) => item.status === "open") ?? [];
+      const contradictedRequired = ledger?.requiredClaims.filter((item) => item.status === "contradicted") ?? [];
+      const contestedClaims = ledger?.claims.filter((claim) => claim.status === "contested" || claim.status === "refuted") ?? [];
+      if (openRequired.length > 0 || contradictedRequired.length > 0 || contestedClaims.length > 0) {
+        const blockers = [
+          ...openRequired.slice(0, 5).map((item) => `open required claim ${item.id}: ${item.question}`),
+          ...contradictedRequired.slice(0, 5).map((item) => `contradicted required claim ${item.id}: ${item.question}`),
+          ...contestedClaims.slice(0, 5).map((claim) => `unresolved ${claim.status} claim: ${claim.text}`),
+        ];
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: [
+                `Report not accepted: ledger coverage is incomplete.`,
+                ...blockers.map((item) => `- ${item}`),
+                `Continue targeted research, record supporting or contradicting evidence with record_claims, then call evaluate before submitting again.`,
+              ].join("\n"),
+            },
+          ],
+          details: {
+            rejected: true,
+            openRequiredClaims: openRequired.length,
+            contradictedRequiredClaims: contradictedRequired.length,
+            unresolvedContestedClaims: contestedClaims.length,
+          },
+        };
+      }
       const report = params.report.trim();
       ref.value = report;
       return {

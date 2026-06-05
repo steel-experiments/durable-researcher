@@ -37,8 +37,16 @@ export function getAgentReasoning(): ThinkingLevel | undefined {
   return parseReasoningEffort(process.env.AGENT_REASONING) ?? "high";
 }
 
+let _utilityModelOverride: Model<Api> | undefined;
+
+/** Set the utility model override (used by --model CLI flag to cover both models). */
+export function setUtilityModelOverride(model: Model<Api>): void {
+  _utilityModelOverride = model;
+}
+
 /** Get the model used for utility LLM calls (summarization, planning, fuzzy matching, clarification). */
 export function getUtilityModel(): Model<Api> {
+  if (_utilityModelOverride) return _utilityModelOverride;
   const envModel = process.env.UTILITY_MODEL;
   if (envModel) return parseModelString(envModel);
   return getModel("zai", "glm-5.1");
@@ -82,4 +90,36 @@ export function getMaxDurationSeconds(depth?: DurationDepth): number {
 /** Get the maximum task duration in milliseconds. */
 export function getMaxDurationMs(depth?: DurationDepth): number {
   return getMaxDurationSeconds(depth) * 1000;
+}
+
+/** Quality-first by default; evals can set SECOND_SYNTHESIS_AUDIT=0 for ablations. */
+export function isSecondSynthesisAuditEnabled(): boolean {
+  const value = process.env.SECOND_SYNTHESIS_AUDIT;
+  if (!value) return true;
+  return !["0", "false", "off", "no"].includes(value.trim().toLowerCase());
+}
+
+/** Default number of parallel angle workers in the redundant fan-out. */
+const DEFAULT_FANOUT_WIDTH = 4;
+
+/**
+ * Width of the redundant fan-out (parallel angle workers on the SAME question). Override
+ * with FANOUT_WIDTH. Clamped to [1, 8] — 1 disables redundancy, above 8 is diminishing
+ * returns for the token cost.
+ */
+export function getFanoutWidth(): number {
+  const value = process.env.FANOUT_WIDTH;
+  if (value) {
+    const n = parseInt(value, 10);
+    if (Number.isFinite(n) && n > 0) return Math.min(8, n);
+    console.warn(`Invalid FANOUT_WIDTH "${value}" — falling back to default`);
+  }
+  return DEFAULT_FANOUT_WIDTH;
+}
+
+/** Whether the Hybrid Stage-2 escalation (one full agent for an unconfirmed top answer) runs. */
+export function isFanoutEscalationEnabled(): boolean {
+  const value = process.env.FANOUT_ESCALATE;
+  if (!value) return true;
+  return !["0", "false", "off", "no"].includes(value.trim().toLowerCase());
 }

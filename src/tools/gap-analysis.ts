@@ -183,7 +183,7 @@ export function createGapAnalysisTool(opts: {
 
       const lines = [
         `## Coverage gaps (call ${callsUsed}/${opts.maxCalls})`,
-        `These named entities are likely relevant but missing from your notes. Use \`find_entity\` (fast, entity-targeted) or \`scout\` to cover each, then \`take_note\`. Skip any that are genuinely out of scope.`,
+        `These named entities are likely relevant but missing from your ledger. Use \`find_entity\` (fast, entity-targeted) or \`scout\` to cover each, then \`record_claims\`. Skip any that are genuinely out of scope.`,
         ``,
         ...entities.map(
           (e) => `- **${e.name}** (${e.kind})${e.why ? ` — ${e.why}` : ""}`,

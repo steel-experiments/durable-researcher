@@ -9,6 +9,7 @@ import { searchAndBrowse } from "./scout.js";
 import type { ReferenceQueue } from "../reference-queue.js";
 import type { ToolProgress } from "../event-bus.js";
 import type { UrlExcerptStore } from "../url-excerpts.js";
+import { hasVisitedUrl } from "../url-normalize.js";
 
 const ChaseParams = Type.Object({
   references: Type.Optional(
@@ -52,7 +53,7 @@ export function createChaseReferencesTool(
       const refs: string[] = [];
       for (const r of explicit) {
         if (refs.length >= MAX_CHASE) break;
-        if (looksLikeUrl(r) && scrapedUrls.has(r)) continue;
+        if (looksLikeUrl(r) && hasVisitedUrl(scrapedUrls, r)) continue;
         refs.push(r);
       }
       if (refs.length < MAX_CHASE) {
@@ -79,7 +80,7 @@ export function createChaseReferencesTool(
 
       for (const ref of refs) {
         if (looksLikeUrl(ref)) {
-          if (scrapedUrls.has(ref)) continue;
+          if (hasVisitedUrl(scrapedUrls, ref)) continue;
           try {
             const result = await browseOne({
               client,

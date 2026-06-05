@@ -5,12 +5,14 @@ import Steel from "steel-sdk";
 import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { multiEngineSearch, filterByRelevance } from "../steel-client.js";
-import { browseOne } from "./browse.js";
+import { browseOne, type BrowseOneResult } from "./browse.js";
 import type { ToolProgress } from "../event-bus.js";
 import type { UrlExcerptStore } from "../url-excerpts.js";
+import type { TaskMode } from "../types.js";
 import {
   type ReferenceQueue,
 } from "../reference-queue.js";
+import { hasVisitedUrl } from "../url-normalize.js";
 
 const ScoutParams = Type.Object({
   query: Type.String({ description: "The search query to execute" }),
@@ -45,6 +47,12 @@ export type SearchAndBrowseOutcome = {
   browsedUrls: string[];
 };
 
+type SearchAndBrowseDeps = {
+  search?: typeof multiEngineSearch;
+  filterByRelevance?: typeof filterByRelevance;
+  browseOne?: (opts: Parameters<typeof browseOne>[0]) => Promise<BrowseOneResult>;
+};
+
 /**
  * Search a query, filter by relevance, and browse the top fresh results in parallel.
  * Shared by the `scout` and `find_entity` tools. `label` tags the progress/output lines.
@@ -61,13 +69,20 @@ export async function searchAndBrowse(opts: {
   taskId?: string;
   urlExcerpts?: UrlExcerptStore;
   referenceQueue?: ReferenceQueue;
+  mode?: TaskMode;
+  deps?: SearchAndBrowseDeps;
 }): Promise<SearchAndBrowseOutcome> {
-  const { client, query, topic, scrapedUrls, maxBrowse, report, focus, taskId, urlExcerpts, referenceQueue } = opts;
+  const { client, query, topic, scrapedUrls, maxBrowse, report, focus, taskId, urlExcerpts, referenceQueue, mode } = opts;
   const label = opts.label ?? "SCOUT";
+  const search = opts.deps?.search ?? multiEngineSearch;
+  const filterResults = opts.deps?.filterByRelevance ?? filterByRelevance;
+  const browse = opts.deps?.browseOne ?? browseOne;
 
-  const rawResults = await multiEngineSearch(client, query);
-  const relevant = filterByRelevance(rawResults, topic, 0.2, query);
-  const fresh = relevant.filter((r) => !scrapedUrls.has(r.url));
+  const rawResults = await search(client, query);
+  const relevant = mode === "lookup"
+    ? rawResults
+    : filterResults(rawResults, topic, 0.2, query);
+  const fresh = relevant.filter((r) => !hasVisitedUrl(scrapedUrls, r.url));
 
   if (fresh.length === 0) {
     return {
@@ -89,7 +104,7 @@ export async function searchAndBrowse(opts: {
   await Promise.allSettled(
     toBrowse.map(async (result) => {
       try {
-        const browsed = await browseOne({
+        const browsed = await browse({
           client,
           url: result.url,
           topic,
@@ -110,11 +125,15 @@ export async function searchAndBrowse(opts: {
           });
           return;
         }
+        const contentRelevant = browsed.details.contentRelevant !== false;
+        const relevancePrefix = contentRelevant
+          ? ""
+          : "[Low content relevance to the research topic]\n\n";
 
         browseResults.push({
           url: result.url,
           title: browsed.title,
-          content: String(browsed.details.summary ?? ""),
+          content: `${relevancePrefix}${String(browsed.details.summary ?? "")}`,
           rawLength: Number(browsed.details.rawLength ?? 0),
         });
 
@@ -168,6 +187,8 @@ export function createScoutTool(
   progress?: ToolProgress,
   urlExcerpts?: UrlExcerptStore,
   referenceQueue?: ReferenceQueue,
+  mode?: TaskMode,
+  deps: SearchAndBrowseDeps = {},
 ): AgentTool<typeof ScoutParams> {
   const report = progress ?? ((text: string) => console.log(text));
   return {
@@ -189,6 +210,8 @@ export function createScoutTool(
         taskId,
         urlExcerpts,
         referenceQueue,
+        mode,
+        deps,
       });
       return {
         content: [{ type: "text" as const, text: outcome.text }],
