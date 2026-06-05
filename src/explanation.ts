@@ -210,17 +210,19 @@ export function buildExplanationModel(input: {
 
   const claims = input.verification?.result.claims.length
     ? input.verification.result.claims.map<Claim>((claim, index) => {
+        // A claim may cite several sources (OR semantics); match evidence whose URLs
+        // intersect any cited source.
         const matchedEvidence = evidence.filter((item) =>
-          claim.sourceUrl ? item.sourceUrls.includes(claim.sourceUrl) : false,
+          claim.sourceUrls.some((url) => item.sourceUrls.includes(url)),
         );
         const evidenceIds = matchedEvidence.map((item) => item.id);
         return {
           id: `claim-${index + 1}`,
           text: claim.claim,
-          sourceUrls: claim.sourceUrl ? [claim.sourceUrl] : [],
+          sourceUrls: claim.sourceUrls,
           evidenceIds,
           excerptIds: matchedEvidence.flatMap((item) =>
-            excerptIdsForEvidenceUrl(excerpts, item.id, claim.sourceUrl),
+            claim.sourceUrls.flatMap((url) => excerptIdsForEvidenceUrl(excerpts, item.id, url)),
           ),
           confidence: confidenceFromSupported(claim.supported),
           verification: {

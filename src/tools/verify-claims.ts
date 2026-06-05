@@ -43,14 +43,21 @@ const VERIFY_TIMEOUT_MS = 30_000;
 export type ParsedClaim = {
   /** The sentence containing the citation. */
   text: string;
-  /** The source number referenced in the citation marker. */
-  sourceN: number;
+  /**
+   * All source numbers cited for this sentence. A sentence citing [1][2][3] or [1, 2, 3]
+   * is ONE claim backed by a candidate set, not three claims each requiring a single
+   * source to independently back the whole sentence. Verification uses OR semantics: the
+   * claim is supported when ANY cited source backs it.
+   */
+  sourceNs: number[];
 };
 
 export type ClaimVerification = {
   claim: string;
-  sourceN: number;
-  sourceUrl: string | null;
+  /** Candidate source numbers cited for the claim (OR semantics). */
+  sourceNs: number[];
+  /** Resolved URLs for the cited sources that mapped to the Sources section. */
+  sourceUrls: string[];
   supported: boolean;
   reason: string;
 };
@@ -100,6 +107,15 @@ export type ContradictionChecker = (input: {
 const SOURCES_HEADING_RE = /^#{1,3}\s*Sources\b/im;
 const NEXT_HEADING_RE = /^#{1,3}\s+\S/m;
 const CITATION_RE = /\[(\d+(?:\s*,\s*\d+)*)\]/g;
+/**
+ * A citation GROUP: a run of one or more adjacent citation markers separated only by
+ * whitespace — `[1]`, `[1, 2]`, `[1][2][3]`, `[1] [2]`. The whole run cites one sentence,
+ * so it becomes a single OR-claim rather than one claim per source (which would impose
+ * AND semantics: every source independently backing the whole sentence).
+ */
+const CITATION_GROUP_RE = /(?:\[\d+(?:\s*,\s*\d+)*\]\s*)+/g;
+/** Strip every citation marker from a sentence to recover its prose. */
+const STRIP_CITATIONS_RE = /\[\d+(?:\s*,\s*\d+)*\]/g;
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/;
 const BARE_URL_RE = /(https?:\/\/[^\s)]+)/;
 const NUMBERED_LINE_RE = /^\s*(\d+)\.\s+(.+)$/;
@@ -139,17 +155,22 @@ export function parseCitations(report: string): ParsedClaim[] {
     : report;
 
   const claims: ParsedClaim[] = [];
-  CITATION_RE.lastIndex = 0;
+  CITATION_GROUP_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
-  while ((m = CITATION_RE.exec(body)) !== null) {
-    const numbers = m[1]
-      .split(",")
-      .map((s) => Number.parseInt(s.trim(), 10))
+  while ((m = CITATION_GROUP_RE.exec(body)) !== null) {
+    const group = m[0];
+    const numbers = [...group.matchAll(/\d+/g)]
+      .map((d) => Number.parseInt(d[0], 10))
       .filter((n) => Number.isFinite(n) && n > 0);
-    if (numbers.length === 0) continue;
-    const sentence = extractSentenceAround(body, m.index, m.index + m[0].length);
+    const sourceNs = [...new Set(numbers)];
+    if (sourceNs.length === 0) continue;
+    const sentence = extractSentenceAround(body, m.index, m.index + group.length);
     if (!sentence) continue;
-    for (const n of numbers) claims.push({ text: sentence, sourceN: n });
+    // Defect B fix: skip bare-marker pseudo-claims. When a sentence boundary or own-line
+    // precedes the markers, extractSentenceAround can return just "[2][3]" with no prose;
+    // such claims are un-passable noise that only inflate the denominator. Drop them.
+    if (sentence.replace(STRIP_CITATIONS_RE, "").trim().length === 0) continue;
+    claims.push({ text: sentence, sourceNs });
   }
   return claims;
 }
@@ -384,42 +405,59 @@ export async function verifyClaims(opts: {
   const sourceMap = parseSourcesSection(opts.report);
   const parsed = parseCitations(opts.report);
 
-  const claims = await pMap(parsed, concurrency, async ({ text, sourceN }) => {
+  const claims = await pMap(parsed, concurrency, async ({ text, sourceNs }) => {
     opts.signal?.throwIfAborted();
-    const url = sourceMap.get(sourceN) ?? null;
-    if (!url) {
+    // Resolve every cited source to a URL; a sentence citing [1][2][3] is grounded if ANY
+    // of those sources backs it (OR), not all three (AND). Partial mapping is fine — we
+    // verify against whatever cited sources actually mapped and have excerpts.
+    const resolvedUrls = sourceNs
+      .map((n) => sourceMap.get(n))
+      .filter((url): url is string => Boolean(url));
+    if (resolvedUrls.length === 0) {
       return {
         claim: text,
-        sourceN,
-        sourceUrl: null,
+        sourceNs,
+        sourceUrls: [],
         supported: false,
-        reason: `Cited source [${sourceN}] not found in the report's Sources section`,
+        reason: `Cited source(s) [${sourceNs.join("], [")}] not found in the report's Sources section`,
       } satisfies ClaimVerification;
     }
-    const excerpts = effectiveExcerptsForSource(opts.notes, url, opts.urlExcerpts);
+    // Union the excerpts across all candidate sources, then verify once: "is the claim
+    // backed by ANY of these quotes?". This is the OR semantics writers intend with a
+    // multi-citation — more citations should never lower the pass rate.
+    const seen = new Set<string>();
+    const excerpts: string[] = [];
+    for (const url of resolvedUrls) {
+      for (const ex of effectiveExcerptsForSource(opts.notes, url, opts.urlExcerpts)) {
+        const key = ex.trim().toLowerCase();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        excerpts.push(ex);
+      }
+    }
     if (excerpts.length === 0) {
       return {
         claim: text,
-        sourceN,
-        sourceUrl: url,
+        sourceNs,
+        sourceUrls: resolvedUrls,
         supported: false,
-        reason: "No excerpts recorded for this source — cannot ground the claim",
+        reason: "No excerpts recorded for any cited source — cannot ground the claim",
       } satisfies ClaimVerification;
     }
     try {
-      const verdict = await verifier({ claim: text, excerpts, sourceUrl: url });
+      const verdict = await verifier({ claim: text, excerpts, sourceUrl: resolvedUrls.join(", ") });
       return {
         claim: text,
-        sourceN,
-        sourceUrl: url,
+        sourceNs,
+        sourceUrls: resolvedUrls,
         supported: verdict.supported,
         reason: verdict.reason,
       } satisfies ClaimVerification;
     } catch (err) {
       return {
         claim: text,
-        sourceN,
-        sourceUrl: url,
+        sourceNs,
+        sourceUrls: resolvedUrls,
         supported: false,
         reason: `Verifier error: ${(err as Error).message}`,
       } satisfies ClaimVerification;
@@ -429,8 +467,8 @@ export async function verifyClaims(opts: {
     for (const section of findUncitedSubstantiveSections(opts.report)) {
       claims.push({
         claim: `Section "${section}" contains substantive text without numeric inline citations.`,
-        sourceN: 0,
-        sourceUrl: null,
+        sourceNs: [],
+        sourceUrls: [],
         supported: false,
         reason: "Substantive report section has no numeric inline citations",
       });
@@ -456,17 +494,26 @@ export async function verifyClaims(opts: {
       const refutationsRequired = opts.refutationsRequired ?? REFUTATIONS_REQUIRED;
       const supported = claims
         .map((claim, index) => ({ claim, index }))
-        .filter(({ claim }) => claim.supported && claim.sourceUrl);
+        .filter(({ claim }) => claim.supported && claim.sourceUrls.length > 0);
       // Flatten (claim × vote) into one ballot list so every vote shares the concurrency pool.
       const ballots = supported.flatMap(({ claim, index }) =>
         Array.from({ length: votesPerClaim }, () => ({ claim, index })),
       );
       const cast = await pMap(ballots, concurrency, async ({ claim }) => {
         opts.signal?.throwIfAborted();
-        const excerpts = effectiveExcerptsForSource(opts.notes, claim.sourceUrl!, opts.urlExcerpts);
+        const seen = new Set<string>();
+        const excerpts: string[] = [];
+        for (const url of claim.sourceUrls) {
+          for (const ex of effectiveExcerptsForSource(opts.notes, url, opts.urlExcerpts)) {
+            const key = ex.trim().toLowerCase();
+            if (!key || seen.has(key)) continue;
+            seen.add(key);
+            excerpts.push(ex);
+          }
+        }
         if (excerpts.length === 0) return null;
         try {
-          return await opts.refuter!({ claim: claim.claim, excerpts, sourceUrl: claim.sourceUrl! });
+          return await opts.refuter!({ claim: claim.claim, excerpts, sourceUrl: claim.sourceUrls.join(", ") });
         } catch {
           // Refuter infra error (timeout/parse) is our failure, not evidence against the
           // claim — abstain rather than flip on our own noise.
@@ -509,12 +556,12 @@ export async function verifyClaims(opts: {
     ) {
       const strongSupported = claims
         .map((claim, index) => ({ claim, index }))
-        .filter(({ claim }) => claim.supported && claim.sourceUrl && isStrongClaim(claim.claim));
+        .filter(({ claim }) => claim.supported && claim.sourceUrls.length > 0 && isStrongClaim(claim.claim));
       if (strongSupported.length > 0) {
         const checks = await pMap(strongSupported, concurrency, async ({ claim }) => {
           opts.signal?.throwIfAborted();
           try {
-            return await opts.contradictionChecker!({ claim: claim.claim, sourceUrl: claim.sourceUrl! });
+            return await opts.contradictionChecker!({ claim: claim.claim, sourceUrl: claim.sourceUrls[0] });
           } catch {
             // Checker infra error (search timeout/parse) is our failure, not evidence against
             // the claim — abstain rather than flip on our own noise.
@@ -738,8 +785,8 @@ export function isBetterVerification(a: VerificationResult, b: VerificationResul
  * excerpts. Those can be softened or re-cited.
  */
 const UNGROUNDED_REASON_MARKERS = [
-  "No excerpts recorded for this source",
-  "Cited source [",
+  "No excerpts recorded for",
+  "not found in the report's Sources section",
 ];
 
 function isUngroundedFailure(c: ClaimVerification): boolean {
@@ -820,7 +867,7 @@ export function buildRewriteSteering(result: VerificationResult): string {
 
   const ungrounded = failed.filter(isUngroundedFailure);
   const unsupported = failed.filter((c) => !isUngroundedFailure(c));
-  const ungroundedSourceNs = [...new Set(ungrounded.map((c) => c.sourceN))].sort((a, b) => a - b);
+  const ungroundedSourceNs = [...new Set(ungrounded.flatMap((c) => c.sourceNs))].sort((a, b) => a - b);
 
   const lines = [
     `[SYSTEM] Citation verification: ${result.summary.supported}/${result.summary.total} claims supported (${(result.summary.passRate * 100).toFixed(0)}%, threshold ${thresholdPct}%).`,
@@ -842,7 +889,7 @@ export function buildRewriteSteering(result: VerificationResult): string {
       `  3. Renumber the remaining Sources sequentially (1, 2, 3, …) and update every [n] marker in the body to match.`,
       ``,
       `Examples of claims to fix (delete the sentence OR re-cite to a browsed source):`,
-      ...ungrounded.slice(0, 6).map((c) => `  • "${c.claim}" (cites [${c.sourceN}])`),
+      ...ungrounded.slice(0, 6).map((c) => `  • "${c.claim}" (cites [${c.sourceNs.join("], [")}])`),
       ``,
     );
   }
@@ -852,7 +899,7 @@ export function buildRewriteSteering(result: VerificationResult): string {
       `The following claims cite a browsed source, but the excerpts do not back the specific assertion:`,
       ``,
       ...unsupported.slice(0, 10).map((c, i) =>
-        `  ${i + 1}. Cites [${c.sourceN}] (${c.sourceUrl ?? "no URL"}): "${c.claim}"\n     Reason: ${c.reason}`,
+        `  ${i + 1}. Cites [${c.sourceNs.join(", ")}] (${c.sourceUrls.join(", ") || "no URL"}): "${c.claim}"\n     Reason: ${c.reason}`,
       ),
       ``,
       `For each, do EXACTLY ONE of:`,

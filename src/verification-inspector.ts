@@ -71,8 +71,8 @@ export function formatVerificationCheckpoint(
     for (const c of unsupported) {
       const claimPreview = c.claim.replace(/\s+/g, " ").trim().slice(0, 140);
       const truncated = c.claim.length > 140 ? "…" : "";
-      lines.push(`  ✗ [${c.sourceN}] ${claimPreview}${truncated}`);
-      lines.push(`      cited: ${c.sourceUrl ?? "(no URL)"}`);
+      lines.push(`  ✗ [${c.sourceNs.join(", ") || "—"}] ${claimPreview}${truncated}`);
+      lines.push(`      cited: ${c.sourceUrls.join(", ") || "(no URL)"}`);
       lines.push(`      reason: ${c.reason}`);
       lines.push("");
     }
@@ -83,7 +83,7 @@ export function formatVerificationCheckpoint(
     for (const c of supported) {
       const claimPreview = c.claim.replace(/\s+/g, " ").trim().slice(0, 100);
       const truncated = c.claim.length > 100 ? "…" : "";
-      lines.push(`  ✓ [${c.sourceN}] ${claimPreview}${truncated}`);
+      lines.push(`  ✓ [${c.sourceNs.join(", ") || "—"}] ${claimPreview}${truncated}`);
     }
     lines.push("");
   }

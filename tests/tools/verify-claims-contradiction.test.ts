@@ -63,7 +63,7 @@ describe("verifyClaims external-contradiction pass", () => {
     });
 
     expect(result.summary.supported).toBe(2); // [1] flipped, [2]+[3] stand, [4] already failed
-    const flipped = result.claims.find((c) => c.sourceN === 1);
+    const flipped = result.claims.find((c) => c.sourceNs.includes(1));
     expect(flipped?.supported).toBe(false);
     expect(flipped?.reason).toMatch(/contradict/i);
     expect(flipped?.reason).toContain("truth.com");
@@ -101,7 +101,7 @@ describe("verifyClaims external-contradiction pass", () => {
 
     // Checker errored on every strong claim → no flips, first-pass 3/4 stands.
     expect(result.summary.supported).toBe(3);
-    expect(result.claims.find((c) => c.sourceN === 1)?.supported).toBe(true);
+    expect(result.claims.find((c) => c.sourceNs.includes(1))?.supported).toBe(true);
   });
 
   it("does not run when the result is comfortably above the band", async () => {

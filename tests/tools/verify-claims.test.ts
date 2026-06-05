@@ -134,16 +134,29 @@ describe("parseCitations", () => {
     const report = "Quantum chips dropped to 0.143% error rate [1]. Other content.";
     const claims = parseCitations(report);
     expect(claims).toHaveLength(1);
-    expect(claims[0].sourceN).toBe(1);
+    expect(claims[0].sourceNs).toEqual([1]);
     expect(claims[0].text).toContain("0.143%");
   });
 
-  it("expands multi-source citations [1, 2] into separate claims", () => {
+  it("groups a comma multi-source citation [1, 2] into one OR-claim", () => {
     const report = "Multiple labs report the same trend [1, 2].";
     const claims = parseCitations(report);
-    expect(claims).toHaveLength(2);
-    expect(claims.map((c) => c.sourceN).sort()).toEqual([1, 2]);
-    expect(claims[0].text).toBe(claims[1].text);
+    expect(claims).toHaveLength(1);
+    expect([...claims[0].sourceNs].sort((a, b) => a - b)).toEqual([1, 2]);
+  });
+
+  it("groups adjacent [1][2][3] markers into one OR-claim (not three AND-claims)", () => {
+    const report = "Well corroborated across independent sources [1][2][3].";
+    const claims = parseCitations(report);
+    expect(claims).toHaveLength(1);
+    expect([...claims[0].sourceNs].sort((a, b) => a - b)).toEqual([1, 2, 3]);
+  });
+
+  it("skips a citation group whose sentence has no prose (bare markers)", () => {
+    const report = "Real claim with substance [1].\n\n[2][3]";
+    const claims = parseCitations(report);
+    expect(claims).toHaveLength(1);
+    expect(claims[0].sourceNs).toEqual([1]);
   });
 
   it("ignores citations inside the Sources section", () => {
@@ -154,13 +167,13 @@ describe("parseCitations", () => {
     ].join("\n");
     const claims = parseCitations(report);
     expect(claims).toHaveLength(1);
-    expect(claims[0].sourceN).toBe(1);
+    expect(claims[0].sourceNs).toEqual([1]);
   });
 
   it("handles citations on paragraph boundaries", () => {
     const report = "First paragraph claim [1].\n\nSecond paragraph claim [2].";
     const claims = parseCitations(report);
-    expect(claims.map((c) => c.sourceN)).toEqual([1, 2]);
+    expect(claims.map((c) => c.sourceNs)).toEqual([[1], [2]]);
     expect(claims[0].text).toContain("First");
     expect(claims[1].text).toContain("Second");
   });
@@ -258,9 +271,9 @@ describe("computeVerificationSummary", () => {
 
   it("computes pass rate over the verified set", () => {
     const s = computeVerificationSummary([
-      { claim: "a", sourceN: 1, sourceUrl: "u", supported: true, reason: "" },
-      { claim: "b", sourceN: 2, sourceUrl: "u", supported: false, reason: "" },
-      { claim: "c", sourceN: 3, sourceUrl: "u", supported: true, reason: "" },
+      { claim: "a", sourceNs: [1], sourceUrls: ["u"], supported: true, reason: "" },
+      { claim: "b", sourceNs: [2], sourceUrls: ["u"], supported: false, reason: "" },
+      { claim: "c", sourceNs: [3], sourceUrls: ["u"], supported: true, reason: "" },
     ]);
     expect(s.total).toBe(3);
     expect(s.supported).toBe(2);
@@ -314,6 +327,46 @@ describe("verifyClaims (with stubbed verifier)", () => {
     expect(result.summary.supported).toBe(1);
     expect(result.summary.unsupported).toBe(1);
     expect(result.summary.passRate).toBeCloseTo(0.5);
+  });
+
+  it("supports a multi-citation claim when ANY cited source backs it (OR, not AND)", async () => {
+    // The AND-scoring bug: a sentence citing [1][2] used to become two claims, each
+    // requiring its single source to back the whole sentence. Here source 1 lacks the
+    // fact and source 2 has it — OR semantics must score this 1/1 supported, not 1/2.
+    const orNotes: ResearchNote[] = [
+      {
+        title: "Park overview",
+        content: "general",
+        sourceUrls: ["https://a.com/p1"],
+        confidence: "medium",
+        keyExcerpts: ["The park hosted many family events over the years."],
+      },
+      {
+        title: "Race listing",
+        content: "specific",
+        sourceUrls: ["https://b.com/p2"],
+        confidence: "high",
+        keyExcerpts: ["The Run Forrest Run 5K was held at the park."],
+      },
+    ];
+    const orReport = [
+      "The Run Forrest Run 5K was hosted at the park [1][2].",
+      "",
+      "## Sources",
+      "1. Park — [a](https://a.com/p1)",
+      "2. Race — [b](https://b.com/p2)",
+    ].join("\n");
+    const verifier: ClaimVerifier = async ({ claim, excerpts }) => {
+      const supported = excerpts.some(
+        (e) => claim.includes("Run Forrest Run") && e.includes("Run Forrest Run"),
+      );
+      return { supported, reason: supported ? "backed by a cited source" : "no source backs it" };
+    };
+    const result = await verifyClaims({ report: orReport, notes: orNotes, verifier });
+    expect(result.claims).toHaveLength(1);
+    expect(result.claims[0].sourceNs).toEqual([1, 2]);
+    expect(result.claims[0].supported).toBe(true);
+    expect(result.summary.passRate).toBe(1);
   });
 
   it("marks claims unsupported when the cited source N has no URL mapping", async () => {
@@ -389,8 +442,8 @@ describe("verifyClaims (with stubbed verifier)", () => {
   it("buildRewriteSteering lists failed claims and includes the threshold", () => {
     const text = buildRewriteSteering({
       claims: [
-        { claim: "fact one", sourceN: 1, sourceUrl: "https://a.com", supported: false, reason: "not in source" },
-        { claim: "fact two", sourceN: 2, sourceUrl: "https://b.com", supported: true, reason: "matches" },
+        { claim: "fact one", sourceNs: [1], sourceUrls: ["https://a.com"], supported: false, reason: "not in source" },
+        { claim: "fact two", sourceNs: [2], sourceUrls: ["https://b.com"], supported: true, reason: "matches" },
       ],
       summary: { total: 2, supported: 1, unsupported: 1, passRate: 0.5, status: "failed" },
     });
@@ -405,17 +458,17 @@ describe("verifyClaims (with stubbed verifier)", () => {
       claims: [
         {
           claim: "Voyager achieved X",
-          sourceN: 3,
-          sourceUrl: "https://example.com/voyager",
+          sourceNs: [3],
+          sourceUrls: ["https://example.com/voyager"],
           supported: false,
-          reason: "No excerpts recorded for this source — cannot ground the claim",
+          reason: "No excerpts recorded for any cited source — cannot ground the claim",
         },
         {
           claim: "Dangling source",
-          sourceN: 9,
-          sourceUrl: null,
+          sourceNs: [9],
+          sourceUrls: [],
           supported: false,
-          reason: "Cited source [9] not found in the report's Sources section",
+          reason: "Cited source(s) [9] not found in the report's Sources section",
         },
       ],
       summary: { total: 2, supported: 0, unsupported: 2, passRate: 0, status: "failed" },
@@ -434,17 +487,17 @@ describe("verifyClaims (with stubbed verifier)", () => {
       claims: [
         {
           claim: "Browsed source claim",
-          sourceN: 1,
-          sourceUrl: "https://a.com",
+          sourceNs: [1],
+          sourceUrls: ["https://a.com"],
           supported: false,
           reason: "Excerpts mention X but not Y",
         },
         {
           claim: "Phantom source claim",
-          sourceN: 2,
-          sourceUrl: "https://b.com",
+          sourceNs: [2],
+          sourceUrls: ["https://b.com"],
           supported: false,
-          reason: "No excerpts recorded for this source",
+          reason: "No excerpts recorded for any cited source",
         },
       ],
       summary: { total: 2, supported: 0, unsupported: 2, passRate: 0, status: "failed" },

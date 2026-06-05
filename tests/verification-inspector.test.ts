@@ -21,8 +21,8 @@ function makeResult(
     claimsOverride ??
     Array.from({ length: total }, (_, i) => ({
       claim: `Claim ${i + 1}.`,
-      sourceN: i + 1,
-      sourceUrl: `https://src${i + 1}.com`,
+      sourceNs: [i + 1],
+      sourceUrls: [`https://src${i + 1}.com`],
       supported: i < supported,
       reason: i < supported ? "matches" : "no excerpt",
     }));
@@ -65,7 +65,7 @@ describe("formatVerificationCheckpoint", () => {
   it("truncates long claim text", () => {
     const longClaim = "x".repeat(500);
     const result = makeResult(0, 1, [
-      { claim: longClaim, sourceN: 1, sourceUrl: "u", supported: false, reason: "n/a" },
+      { claim: longClaim, sourceNs: [1], sourceUrls: ["u"], supported: false, reason: "n/a" },
     ]);
     const out = formatVerificationCheckpoint({ attempt: 1, result });
     expect(out).toContain("…");

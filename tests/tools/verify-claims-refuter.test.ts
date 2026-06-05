@@ -47,7 +47,7 @@ describe("verifyClaims adversarial refuter pass", () => {
     expect(result.summary.supported).toBe(2);
     expect(result.summary.total).toBe(4);
     expect(result.summary.status).toBe("failed");
-    const flipped = result.claims.find((c) => c.sourceN === 1);
+    const flipped = result.claims.find((c) => c.sourceNs.includes(1));
     expect(flipped?.supported).toBe(false);
     expect(flipped?.reason).toMatch(/refut/i);
   });
@@ -109,7 +109,7 @@ describe("verifyClaims adversarial refuter pass", () => {
     };
     const result = await verifyClaims({ report: REPORT, notes: NOTES, verifier: borderlineVerifier, refuter });
     expect(result.summary.supported).toBe(3);
-    expect(result.claims.find((c) => c.sourceN === 1)?.supported).toBe(true);
+    expect(result.claims.find((c) => c.sourceNs.includes(1))?.supported).toBe(true);
   });
 
   it("flips when a quorum (2 of 3) of skeptics dissents", async () => {
@@ -123,7 +123,7 @@ describe("verifyClaims adversarial refuter pass", () => {
     };
     const result = await verifyClaims({ report: REPORT, notes: NOTES, verifier: borderlineVerifier, refuter });
     expect(result.summary.supported).toBe(2);
-    const flipped = result.claims.find((c) => c.sourceN === 1);
+    const flipped = result.claims.find((c) => c.sourceNs.includes(1));
     expect(flipped?.supported).toBe(false);
     expect(flipped?.reason).toMatch(/refut/i);
   });
@@ -142,7 +142,7 @@ describe("verifyClaims adversarial refuter pass", () => {
     const result = await verifyClaims({ report: REPORT, notes: NOTES, verifier: borderlineVerifier, refuter });
     // [1] has 1 valid refutation + 2 abstentions → below the 2-vote quorum → kept.
     expect(result.summary.supported).toBe(3);
-    expect(result.claims.find((c) => c.sourceN === 1)?.supported).toBe(true);
+    expect(result.claims.find((c) => c.sourceNs.includes(1))?.supported).toBe(true);
   });
 
   it("respects an overridden vote count and quorum", async () => {
@@ -160,6 +160,6 @@ describe("verifyClaims adversarial refuter pass", () => {
       refutationsRequired: 1,
     });
     expect(result.summary.supported).toBe(2);
-    expect(result.claims.find((c) => c.sourceN === 1)?.supported).toBe(false);
+    expect(result.claims.find((c) => c.sourceNs.includes(1))?.supported).toBe(false);
   });
 });
