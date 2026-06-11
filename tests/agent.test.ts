@@ -4,7 +4,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { loadTemplate } from "../src/prompts.js";
 import { DEPTH_CONFIG } from "../src/types.js";
-import { buildResult, compactContextForModel, resolveCacheKey } from "../src/agent.js";
+import { buildResult, compactContextForModel, junkBrowseSignal, resolveCacheKey } from "../src/agent.js";
 
 describe("loadTemplate", () => {
   it("renders system prompt with topic and depth", async () => {
@@ -458,6 +458,68 @@ describe("compactContextForModel", () => {
     const latest = compacted[2] as ReturnType<typeof assistant>;
     const latestCall = latest.content[0] as { type: "toolCall"; arguments: { report: string } };
     expect(latestCall.arguments.report).toBe(latestReport);
+  });
+
+  it("keeps the recovery turn's own tool calls and results after the steering", () => {
+    const report = "# Report\n\nAnswer [1].\n\n## Sources\n1. https://example.com";
+    const messages = [
+      { role: "user" as const, content: "Research this topic thoroughly: x", timestamp: Date.now() },
+      { role: "toolResult" as const, toolCallId: "browse-1", toolName: "browse_url", content: [{ type: "text" as const, text: "x".repeat(20_000) }], isError: false, timestamp: Date.now() },
+      assistant([
+        {
+          type: "toolCall" as const,
+          id: "submit-1",
+          name: "submit_report",
+          arguments: { report },
+        },
+      ]),
+      {
+        role: "user" as const,
+        content: "[SYSTEM] Citation recovery: 0/1 claims supported (0%, threshold 70%).",
+        timestamp: Date.now(),
+      },
+      assistant([
+        {
+          type: "toolCall" as const,
+          id: "scout-1",
+          name: "scout",
+          arguments: { query: "run forrest run 5k results" },
+        },
+      ]),
+      { role: "toolResult" as const, toolCallId: "scout-1", toolName: "scout", content: [{ type: "text" as const, text: "Recovery scout findings" }], isError: false, timestamp: Date.now() },
+    ];
+
+    const compacted = compactContextForModel(messages);
+
+    // Pre-steering browse bulk is still dropped...
+    expect(JSON.stringify(compacted)).not.toContain("x".repeat(20_000));
+    // ...but the recovery turn's own progress survives, in order, after the steering.
+    expect(compacted[compacted.length - 2]).toBe(messages[4]);
+    expect(compacted[compacted.length - 1]).toBe(messages[5]);
+  });
+});
+
+describe("junkBrowseSignal", () => {
+  it("flags a browse_url result without meaningful content", () => {
+    expect(junkBrowseSignal("browse_url", { meaningful: false })).toBe(true);
+    expect(junkBrowseSignal("browse_url", { meaningful: true })).toBe(false);
+  });
+
+  it("flags a prefetch that browsed pages but none were meaningful", () => {
+    expect(junkBrowseSignal("prefetch_sources", { browsedCount: 3, meaningfulBrowsedUrls: [] })).toBe(true);
+    expect(junkBrowseSignal("prefetch_sources", { browsedCount: 3, meaningfulBrowsedUrls: ["https://a.com"] })).toBe(false);
+    expect(junkBrowseSignal("prefetch_sources", { browsedCount: 0, meaningfulBrowsedUrls: [] })).toBe(false);
+  });
+
+  it("flags a scout that browsed pages but none were meaningful", () => {
+    expect(junkBrowseSignal("scout", { browsedCount: 2, meaningfulCount: 0 })).toBe(true);
+    expect(junkBrowseSignal("scout", { browsedCount: 2, meaningfulCount: 1 })).toBe(false);
+    expect(junkBrowseSignal("scout", { browsedCount: 0, meaningfulCount: 0 })).toBe(false);
+  });
+
+  it("returns null for tools that do not browse", () => {
+    expect(junkBrowseSignal("record_claims", { recordedCount: 2 })).toBeNull();
+    expect(junkBrowseSignal("evaluate_progress", {})).toBeNull();
   });
 });
 

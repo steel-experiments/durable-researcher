@@ -108,10 +108,13 @@ function phoneticVariants(phrase: string): string[] {
   const joined = words.join(" ");
   variants.add(joined);
 
-  // Generic-ish sound-alike substitutions that often appear in clues and brand names.
+  // Whole-word sound-alike substitutions. This is NOT a general phonetic
+  // algorithm: the table mixes common English homophone pairs with entries
+  // seeded from observed lookup failures (bubble gum -> Bubba Gump). Grow it
+  // from real failures, or replace it with a metaphone-based generator if the
+  // seeded entries stop covering new cases.
   const substitutions: Array<[RegExp, string]> = [
     [/\bbubble\b/g, "bubba"],
-    [/\bble\b/g, "bba"],
     [/\bgum\b/g, "gump"],
     [/\bforrest\b/g, "forest"],
     [/\bforest\b/g, "forrest"],
@@ -128,12 +131,15 @@ function phoneticVariants(phrase: string): string[] {
     if (next !== joined) variants.add(next);
   }
 
-  // Also try replacing inside words, which catches bubble -> bubba.
-  const inside = joined
-    .replace(/\bbubble\b/g, "bubba")
-    .replace(/ble\b/g, "bba")
-    .replace(/\bgum\b/g, "gump");
-  if (inside !== joined) variants.add(inside);
+  // Combined pass: apply every substitution cumulatively so multi-word phrases
+  // surface their fully substituted form (bubble gum -> bubba gump), not just
+  // one-word-at-a-time variants. Bidirectional pairs cancel out here; their
+  // single-substitution variants above already cover them.
+  let combined = joined;
+  for (const [pattern, replacement] of substitutions) {
+    combined = combined.replace(pattern, replacement);
+  }
+  if (combined !== joined) variants.add(combined);
 
   variants.delete(joined);
   return [...variants].slice(0, 6);

@@ -44,6 +44,8 @@ export type SearchAndBrowseOutcome = {
   totalResults: number;
   relevantResults: number;
   browsedCount: number;
+  /** Browsed pages with meaningful content (excludes bot blocks, paywalls, empty shells). */
+  meaningfulCount: number;
   browsedUrls: string[];
 };
 
@@ -90,6 +92,7 @@ export async function searchAndBrowse(opts: {
       totalResults: rawResults.length,
       relevantResults: relevant.length,
       browsedCount: 0,
+      meaningfulCount: 0,
       browsedUrls: [],
     };
   }
@@ -100,6 +103,7 @@ export async function searchAndBrowse(opts: {
   const browseResults: ScoutResult[] = [];
   const browsedUrls: string[] = [];
   const errors: string[] = [];
+  let meaningfulCount = 0;
 
   await Promise.allSettled(
     toBrowse.map(async (result) => {
@@ -125,6 +129,7 @@ export async function searchAndBrowse(opts: {
           });
           return;
         }
+        meaningfulCount++;
         const contentRelevant = browsed.details.contentRelevant !== false;
         const relevancePrefix = contentRelevant
           ? ""
@@ -174,6 +179,7 @@ export async function searchAndBrowse(opts: {
     totalResults: rawResults.length,
     relevantResults: relevant.length,
     browsedCount: browseResults.length,
+    meaningfulCount,
     browsedUrls,
   };
 }
@@ -220,6 +226,7 @@ export function createScoutTool(
           totalResults: outcome.totalResults,
           relevantResults: outcome.relevantResults,
           browsedCount: outcome.browsedCount,
+          meaningfulCount: outcome.meaningfulCount,
           browsedUrls: outcome.browsedUrls,
         },
       };

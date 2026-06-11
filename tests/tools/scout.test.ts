@@ -117,4 +117,65 @@ describe("searchAndBrowse", () => {
     expect(outcome.browsedCount).toBe(0);
     expect(mockFilterByRelevance).toHaveBeenCalled();
   });
+
+  it("counts meaningful browses separately so junk-only scouts are detectable", async () => {
+    mockSearch.mockResolvedValue([
+      {
+        title: "Bubble Shooter — play online",
+        url: "https://games.example/bubble-shooter",
+        snippet: "Play bubble shooter free",
+      },
+    ]);
+    mockBrowse.mockResolvedValue({
+      text: "",
+      title: "Just a moment...",
+      meaningful: false,
+      fromCache: false,
+      details: { rawLength: 120 },
+    });
+
+    const outcome = await searchAndBrowse({
+      client,
+      query: "bubble gum 5k race",
+      topic: '"bubble gum" 5K Great America',
+      scrapedUrls,
+      maxBrowse: 3,
+      report: () => undefined,
+      deps: {
+        search: mockSearch,
+        filterByRelevance: mockFilterByRelevance,
+        browseOne: mockBrowse,
+      },
+    });
+
+    expect(outcome.browsedCount).toBe(1);
+    expect(outcome.meaningfulCount).toBe(0);
+  });
+
+  it("reports meaningfulCount equal to browsedCount when every page has content", async () => {
+    mockSearch.mockResolvedValue([
+      {
+        title: "Run Forrest Run 5K Bubba Gump Shrimp Co.",
+        url: "https://results.example/run-forrest-run-5k",
+        snippet: "Great America Santa Clara race results",
+      },
+    ]);
+
+    const outcome = await searchAndBrowse({
+      client,
+      query: "Run Forrest Run 5K results",
+      topic: '"bubble gum" 5K Great America',
+      scrapedUrls,
+      maxBrowse: 3,
+      report: () => undefined,
+      deps: {
+        search: mockSearch,
+        filterByRelevance: mockFilterByRelevance,
+        browseOne: mockBrowse,
+      },
+    });
+
+    expect(outcome.browsedCount).toBe(1);
+    expect(outcome.meaningfulCount).toBe(1);
+  });
 });

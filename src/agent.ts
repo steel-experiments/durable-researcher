@@ -391,6 +391,13 @@ export function compactContextForModel(messages: AgentMessage[]): AgentMessage[]
       });
     }
     compacted.push(steering);
+    // Keep everything after the steering: those messages are the in-progress
+    // recovery/rewrite turn's own tool calls and results. Dropping them would make
+    // every model call in the recovery loop blind to its previous step, so the agent
+    // could only re-issue the same searches instead of acting on their results.
+    for (const message of messages.slice(steeringIndex + 1)) {
+      compacted.push(cloneMessageWithCompactedSubmitReport(message));
+    }
     return compacted;
   }
 
@@ -408,6 +415,36 @@ export function compactContextForModel(messages: AgentMessage[]): AgentMessage[]
       ? message
       : cloneMessageWithCompactedSubmitReport(message);
   });
+}
+
+/**
+ * Junk-browse signal for the consecutive-junk breaker. Returns true when the tool
+ * call browsed pages and none were meaningful, false when at least one page had
+ * real content (or nothing was browsed), and null when the tool is not a
+ * browse-style tool — the breaker counter must be left untouched for those.
+ */
+export function junkBrowseSignal(toolName: string, details: unknown): boolean | null {
+  const d = details as {
+    meaningful?: unknown;
+    browsedCount?: unknown;
+    meaningfulBrowsedUrls?: unknown;
+    meaningfulCount?: unknown;
+  } | undefined;
+  if (toolName === "browse_url") {
+    return d?.meaningful === false;
+  }
+  if (toolName === "prefetch_sources") {
+    return typeof d?.browsedCount === "number" &&
+      d.browsedCount > 0 &&
+      Array.isArray(d.meaningfulBrowsedUrls) &&
+      d.meaningfulBrowsedUrls.length === 0;
+  }
+  if (toolName === "scout") {
+    return typeof d?.browsedCount === "number" &&
+      d.browsedCount > 0 &&
+      d.meaningfulCount === 0;
+  }
+  return null;
 }
 
 /** Count how many rewrite-steering messages have been injected into the log. */
@@ -683,21 +720,16 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
           // Count browses and prefetches; reset on evaluate
           if (ctx.toolCall.name === "browse_url" || ctx.toolCall.name === "prefetch_sources") {
             browsesSinceEval++;
-            const details = ctx.result.details as {
-              meaningful?: unknown;
-              browsedCount?: unknown;
-              meaningfulBrowsedUrls?: unknown;
-            } | undefined;
-            const noMeaningfulBrowse = ctx.toolCall.name === "browse_url"
-              ? details?.meaningful === false
-              : typeof details?.browsedCount === "number" &&
-                details.browsedCount > 0 &&
-                Array.isArray(details.meaningfulBrowsedUrls) &&
-                details.meaningfulBrowsedUrls.length === 0;
-            consecutiveJunkBrowses = noMeaningfulBrowse ? consecutiveJunkBrowses + 1 : 0;
           } else if (ctx.toolCall.name === "evaluate_progress") {
             browsesSinceEval = 0;
             consecutiveJunkBrowses = 0;
+            // Re-arm the junk breaker: an evaluate marks a deliberate strategy
+            // checkpoint, so a later junk streak deserves a fresh nudge.
+            junkSteeringSent = false;
+          }
+          const junk = junkBrowseSignal(ctx.toolCall.name, ctx.result.details);
+          if (junk !== null) {
+            consecutiveJunkBrowses = junk ? consecutiveJunkBrowses + 1 : 0;
           }
           return undefined;
         },

@@ -49,4 +49,16 @@ describe("generateInterpretations", () => {
     expect(out[1]).toMatchObject({ reading: "lateral", device: "homophone" });
     expect(out[1].queriesTarget?.toLowerCase()).toContain("bubba gump");
   });
+
+  it("does not invent pseudo-homophones for words that merely end in -ble", async () => {
+    const complete = async () => JSON.stringify({ interpretations: [] });
+
+    const out = await generateInterpretations(
+      `Which toy store sold the 'marble run' kit?`,
+      { complete },
+    );
+
+    const targets = out.map((interp) => interp.queriesTarget?.toLowerCase() ?? "");
+    expect(targets.some((target) => target.includes("marbba"))).toBe(false);
+  });
 });
