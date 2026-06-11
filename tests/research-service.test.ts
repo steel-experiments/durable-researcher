@@ -134,7 +134,7 @@ async function setupServiceMock() {
     })),
   }));
 
-  const { createResearchService } = await import(`../src/service/research-service.js?test=${Date.now()}-${Math.random()}`);
+  const { createResearchService } = await import("../src/service/research-service.js");
   return { service: createResearchService(), rows, startedPromise, finish, signals };
 }
 
