@@ -4,7 +4,7 @@
 import Steel from "steel-sdk";
 import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { multiEngineSearch, filterByRelevance } from "../steel-client.js";
+import { multiEngineSearch, filterByRelevance, filterLookupResults } from "../steel-client.js";
 import { browseOne, type BrowseOneResult } from "./browse.js";
 import type { ToolProgress } from "../event-bus.js";
 import type { UrlExcerptStore } from "../url-excerpts.js";
@@ -80,7 +80,7 @@ export async function searchAndBrowse(opts: {
 
   const rawResults = await search(client, query);
   const relevant = mode === "lookup"
-    ? rawResults
+    ? filterLookupResults(rawResults, query, topic)
     : filterResults(rawResults, topic, 0.2, query);
   const fresh = relevant.filter((r) => !hasVisitedUrl(scrapedUrls, r.url));
 

@@ -136,7 +136,8 @@ export function buildSynthesisAuditSteering(result: SynthesisAuditResult): strin
     "Issues to reconcile:",
     ...issueLines,
     "",
-    "Rewrite the final report now. Use only ledger-backed claims, explicitly report unresolved contradictions, soften overclaims to match confidence, and then call submit_report exactly once.",
+    "Rewrite the final report now. Use only ledger-backed claims, explicitly report unresolved contradictions, and soften overclaims to match confidence.",
+    "Do NOT call any tools. Output only the corrected report itself.",
   ].join("\n");
 }
 

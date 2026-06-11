@@ -4,7 +4,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { loadTemplate } from "../src/prompts.js";
 import { DEPTH_CONFIG } from "../src/types.js";
-import { buildResult, resolveCacheKey } from "../src/agent.js";
+import { buildResult, compactContextForModel, resolveCacheKey } from "../src/agent.js";
 
 describe("loadTemplate", () => {
   it("renders system prompt with topic and depth", async () => {
@@ -364,6 +364,100 @@ describe("buildResult source titles", () => {
         }),
       ],
     });
+  });
+});
+
+describe("compactContextForModel", () => {
+  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+
+  function assistant(content: any[]) {
+    return {
+      role: "assistant" as const,
+      content,
+      api: "anthropic-messages" as const,
+      provider: "anthropic" as const,
+      model: "test",
+      usage,
+      stopReason: "stop" as const,
+      timestamp: Date.now(),
+    };
+  }
+
+  it("reduces citation rewrite turns to the original ask, current report, and steering", () => {
+    const report = "# Report\n\nAnswer [1].\n\n## Sources\n1. https://example.com";
+    const messages = [
+      { role: "user" as const, content: "Research this topic thoroughly: x", timestamp: Date.now() },
+      { role: "toolResult" as const, toolCallId: "browse-1", toolName: "browse_url", content: [{ type: "text" as const, text: "x".repeat(20_000) }], isError: false, timestamp: Date.now() },
+      assistant([
+        {
+          type: "toolCall" as const,
+          id: "submit-1",
+          name: "submit_report",
+          arguments: { report },
+        },
+      ]),
+      {
+        role: "user" as const,
+        content: "[SYSTEM] Citation verification: 0/1 claims supported (0%, threshold 70%).",
+        timestamp: Date.now(),
+      },
+    ];
+
+    const compacted = compactContextForModel(messages);
+
+    expect(compacted).toHaveLength(3);
+    expect(compacted[0]).toBe(messages[0]);
+    expect((compacted[1] as { role: "user"; content: string }).content).toContain(report);
+    expect(JSON.stringify(compacted)).not.toContain("x".repeat(20_000));
+    expect(compacted[2]).toBe(messages[3]);
+  });
+
+  it("reduces citation recovery turns to the original ask, current report, and steering", () => {
+    const report = "# Report\n\nAnswer [1].\n\n## Sources\n1. https://example.com";
+    const messages = [
+      { role: "user" as const, content: "Research this topic thoroughly: x", timestamp: Date.now() },
+      { role: "toolResult" as const, toolCallId: "browse-1", toolName: "browse_url", content: [{ type: "text" as const, text: "x".repeat(20_000) }], isError: false, timestamp: Date.now() },
+      assistant([
+        {
+          type: "toolCall" as const,
+          id: "submit-1",
+          name: "submit_report",
+          arguments: { report },
+        },
+      ]),
+      {
+        role: "user" as const,
+        content: "[SYSTEM] Citation recovery: 0/1 claims supported (0%, threshold 70%).",
+        timestamp: Date.now(),
+      },
+    ];
+
+    const compacted = compactContextForModel(messages);
+
+    expect(compacted).toHaveLength(3);
+    expect(compacted[0]).toBe(messages[0]);
+    expect((compacted[1] as { role: "user"; content: string }).content).toContain(report);
+    expect(JSON.stringify(compacted)).not.toContain("x".repeat(20_000));
+    expect(compacted[2]).toBe(messages[3]);
+  });
+
+  it("redacts older submit_report payloads but keeps the latest submit intact", () => {
+    const oldReport = "# Old\n\n" + "a".repeat(5000);
+    const latestReport = "# Latest\n\n" + "b".repeat(5000);
+    const messages = [
+      { role: "user" as const, content: "Research this topic thoroughly: x", timestamp: Date.now() },
+      assistant([{ type: "toolCall" as const, id: "submit-1", name: "submit_report", arguments: { report: oldReport } }]),
+      assistant([{ type: "toolCall" as const, id: "submit-2", name: "submit_report", arguments: { report: latestReport } }]),
+    ];
+
+    const compacted = compactContextForModel(messages);
+    const text = JSON.stringify(compacted);
+
+    expect(text).toContain("[compacted previous submit_report payload");
+    expect(text).not.toContain(oldReport);
+    const latest = compacted[2] as ReturnType<typeof assistant>;
+    const latestCall = latest.content[0] as { type: "toolCall"; arguments: { report: string } };
+    expect(latestCall.arguments.report).toBe(latestReport);
   });
 });
 

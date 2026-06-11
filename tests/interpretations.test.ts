@@ -31,4 +31,22 @@ describe("generateInterpretations", () => {
     const out = await generateInterpretations("q", { complete });
     expect(out[0].meaning).toBe("m");
   });
+
+  it("deterministically adds quoted-phrase homophone readings before LLM readings", async () => {
+    const complete = async () =>
+      JSON.stringify({
+        interpretations: [
+          { reading: "literal", meaning: "LLM literal", queriesTarget: "bubble gum 5K" },
+        ],
+      });
+
+    const out = await generateInterpretations(
+      `What was the name of the 5K race that had 'bubble gum' in its title?`,
+      { complete },
+    );
+
+    expect(out[0]).toMatchObject({ reading: "literal" });
+    expect(out[1]).toMatchObject({ reading: "lateral", device: "homophone" });
+    expect(out[1].queriesTarget?.toLowerCase()).toContain("bubba gump");
+  });
 });

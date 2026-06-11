@@ -2,6 +2,7 @@
 // ABOUTME: Owns the stable ResearchRun boundary, idempotency, and campaign lifecycle mapping.
 
 import { createHash, randomUUID } from "node:crypto";
+import type { ResearchAppOptions } from "../agent.js";
 import { getDbPool } from "../db-pool.js";
 import { getCampaign } from "../campaign.js";
 import { emptyCampaignUsage, mergeCampaignUsage } from "../campaign.js";
@@ -51,6 +52,10 @@ export type CreateResearchRunInput = {
 };
 
 export type ResearchService = ReturnType<typeof createResearchService>;
+
+export type ResearchServiceOptions = {
+  appOptions?: ResearchAppOptions;
+};
 
 type ActiveRun = {
   promise: Promise<void>;
@@ -197,7 +202,7 @@ async function setRunStatus(
   return true;
 }
 
-export function createResearchService() {
+export function createResearchService(options: ResearchServiceOptions = {}) {
   async function createRun(input: CreateResearchRunInput): Promise<{ run: ResearchRun; created: boolean }> {
     await ensureResearchRunSchema();
     const ownerId = input.ownerId ?? "default";
@@ -304,6 +309,7 @@ export function createResearchService() {
     const abortController = new AbortController();
     const promise = executor.start(run, {
       signal: abortController.signal,
+      appOptions: options.appOptions,
       setRunStatus: (status) => setRunStatus(id, ownerId, status, { preserveStopped: true }).then(() => undefined),
       setRunCampaign: (campaignId, status) => setRunCampaign(id, ownerId, campaignId, status),
     })
@@ -342,6 +348,7 @@ export function createResearchService() {
     if (executor.pause) {
       await executor.pause(run, {
         signal: activeRuns.get(id)?.abortController.signal ?? new AbortController().signal,
+        appOptions: options.appOptions,
         setRunStatus: (status) => setRunStatus(id, ownerId, status, { preserveStopped: true }).then(() => undefined),
         setRunCampaign: (campaignId, status) => setRunCampaign(id, ownerId, campaignId, status),
       });
@@ -366,6 +373,7 @@ export function createResearchService() {
     const report = executor.finalize
       ? await executor.finalize(run, {
           signal: activeRuns.get(id)?.abortController.signal ?? new AbortController().signal,
+          appOptions: options.appOptions,
           setRunStatus: (status) => setRunStatus(id, ownerId, status, { preserveStopped: true }).then(() => undefined),
           setRunCampaign: (campaignId, status) => setRunCampaign(id, ownerId, campaignId, status),
         })

@@ -127,4 +127,48 @@ describe("createRecordClaimsTool", () => {
     expect(ledger.claims[0].confidence).toBe("medium");
     expect(ledger.evidence[0].publishedAt).toBe("2019-01-01");
   });
+
+  it("rejects unsupported negative meta-claims with generic excerpts", async () => {
+    const ledger = createResearchLedger();
+    const notes: ResearchNote[] = [];
+    const tool = createRecordClaimsTool(ledger, notes);
+
+    const result = await tool.execute("call-1", {
+      claims: [
+        {
+          text: "No verifiable source was found confirming a 5K race with 'bubble gum' or 'Bubba Gump' in its name at Great America.",
+          sourceUrl: "https://www.greatamericaparks.com",
+          excerpt: "Marriott Corporation opened two Marriott's GREAT AMERICA parks.",
+          supports: true,
+          tier: "secondary" as const,
+        },
+      ],
+    });
+
+    expect(ledger.claims).toHaveLength(0);
+    expect(notes).toHaveLength(0);
+    expect(result.details.rejectedCount).toBe(1);
+    expect(result.content[0].text).toContain("Rejected 1 unsupported negative/meta claim");
+  });
+
+  it("allows scoped absence claims when the source excerpt itself says no matches were found", async () => {
+    const ledger = createResearchLedger();
+    const notes: ResearchNote[] = [];
+    const tool = createRecordClaimsTool(ledger, notes);
+
+    await tool.execute("call-1", {
+      claims: [
+        {
+          text: "The race-results search returned no matches for Run Forrest Run 5K.",
+          sourceUrl: "https://results.example/search",
+          excerpt: "No results found for Run Forrest Run 5K.",
+          supports: true,
+          tier: "secondary" as const,
+        },
+      ],
+    });
+
+    expect(ledger.claims).toHaveLength(1);
+    expect(notes).toHaveLength(1);
+  });
 });

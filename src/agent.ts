@@ -277,7 +277,10 @@ function findLastRewriteSteeringIndex(messages: AgentMessage[]): number {
     const msg = messages[i];
     if (!("role" in msg) || msg.role !== "user") continue;
     const content = msg.content;
-    if (typeof content === "string" && content.startsWith(REWRITE_STEERING_PREFIX)) {
+    if (
+      typeof content === "string" &&
+      (content.startsWith(REWRITE_STEERING_PREFIX) || content.startsWith(CITATION_RECOVERY_PREFIX))
+    ) {
       return i;
     }
   }
@@ -285,6 +288,127 @@ function findLastRewriteSteeringIndex(messages: AgentMessage[]): number {
 }
 
 const REWRITE_STEERING_PREFIX = "[SYSTEM] Citation verification:";
+const CITATION_RECOVERY_PREFIX = "[SYSTEM] Citation recovery:";
+const SECOND_SYNTHESIS_AUDIT_PREFIX = "[SECOND SYNTHESIS AUDIT]";
+
+function isRewriteLikeSteering(message: AgentMessage): boolean {
+  if (!("role" in message) || message.role !== "user" || typeof message.content !== "string") {
+    return false;
+  }
+  return message.content.startsWith(REWRITE_STEERING_PREFIX)
+    || message.content.startsWith(CITATION_RECOVERY_PREFIX)
+    || message.content.startsWith(SECOND_SYNTHESIS_AUDIT_PREFIX);
+}
+
+function buildCitationRecoverySteering(topic: string, result: VerificationResult): string {
+  const failed = result.claims.filter((claim) => !claim.supported).slice(0, 6);
+  const missingExcerpt = failed.filter((claim) => /no excerpts|source.*not.*found|not browsed/i.test(claim.reason));
+  const unsupported = failed.filter((claim) => !missingExcerpt.includes(claim));
+  const claimQueries = failed
+    .map((claim) => claim.claim.replace(/\[\d+(?:,\s*\d+)*\]/g, "").replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .slice(0, 4);
+  const missingUrls = [...new Set(missingExcerpt.flatMap((claim) => claim.sourceUrls))].filter(Boolean).slice(0, 6);
+  return [
+    `${CITATION_RECOVERY_PREFIX} ${result.summary.supported}/${result.summary.total} claims supported (${Math.round(result.summary.passRate * 100)}%, threshold ${Math.round(VERIFY_PASS_THRESHOLD * 100)}%).`,
+    ``,
+    `This is a lookup task and the report cannot pass citation verification with the current excerpts. Do one targeted recovery pass before rewriting.`,
+    ``,
+    `Original question: ${topic}`,
+    ``,
+    missingUrls.length > 0
+      ? `Missing-excerpt recovery: re-browse these cited source URLs first so verifier excerpts exist:\n${missingUrls.map((url) => `- ${url}`).join("\n")}`
+      : `Missing-excerpt recovery: no cited URLs need re-browse.`,
+    ``,
+    unsupported.length > 0
+      ? `Unsupported-answer recovery: the cited excerpts do not back the answer claims below. Reopen hypothesis/source search rather than merely rewording them:\n${unsupported.slice(0, 4).map((claim) => `- ${claim.claim}\n  Reason: ${claim.reason}`).join("\n")}`
+      : `Unsupported-answer recovery: no claim-specific source mismatch detected.`,
+    ``,
+    `Targeted searches to try first:`,
+    `- ${topic}`,
+    ...claimQueries.map((query) => `- ${query}`),
+    ``,
+    `Use scout/web_search/browse_url to find authoritative or result-style pages that contain the exact answer facts. Record atomic claims with verbatim excerpts using record_claims.`,
+    `Then write a corrected final report as plain text with numeric inline citations and a numbered Sources section. Do NOT call submit_report again.`,
+  ].join("\n");
+}
+
+function cloneMessageWithCompactedSubmitReport(message: AgentMessage): AgentMessage {
+  if (!("role" in message) || message.role !== "assistant") return message;
+  let changed = false;
+  const content = message.content.map((part) => {
+    if (part.type !== "toolCall" || part.name !== "submit_report") return part;
+    const report = (part.arguments as { report?: unknown }).report;
+    if (typeof report !== "string" || report.length <= 1200) return part;
+    changed = true;
+    return {
+      ...part,
+      arguments: {
+        ...part.arguments,
+        report: `[compacted previous submit_report payload: ${report.length} chars]`,
+      },
+    };
+  });
+  return changed ? { ...message, content } : message;
+}
+
+function firstUserMessage(messages: AgentMessage[]): AgentMessage | undefined {
+  return messages.find((message) => "role" in message && message.role === "user");
+}
+
+function findLastRewriteLikeSteeringIndex(messages: AgentMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (isRewriteLikeSteering(messages[i])) return i;
+  }
+  return -1;
+}
+
+/**
+ * Keep rewrite turns small enough for the model context window.
+ *
+ * A citation/audit rewrite only needs the original user ask, the current report,
+ * and the verifier/auditor instructions. Sending the whole browse/tool history
+ * after dozens of sources and several full submit_report payloads can exceed the
+ * provider window before the model has a chance to fix the report.
+ */
+export function compactContextForModel(messages: AgentMessage[]): AgentMessage[] {
+  const steeringIndex = findLastRewriteLikeSteeringIndex(messages);
+  if (steeringIndex >= 0) {
+    const steering = messages[steeringIndex];
+    const report = extractFinalReport(messages.slice(0, steeringIndex)) ?? extractFinalReport(messages);
+    const compacted: AgentMessage[] = [];
+    const initialUser = firstUserMessage(messages);
+    if (initialUser) compacted.push(initialUser);
+    if (report) {
+      compacted.push({
+        role: "user" as const,
+        content: [
+          "[SYSTEM] Current submitted report to rewrite:",
+          "",
+          report,
+        ].join("\n"),
+        timestamp: Date.now(),
+      });
+    }
+    compacted.push(steering);
+    return compacted;
+  }
+
+  let latestSubmitReportIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const candidate = messages[i];
+    if (!("role" in candidate) || candidate.role !== "assistant") continue;
+    if (candidate.content.some((part) => part.type === "toolCall" && part.name === "submit_report")) {
+      latestSubmitReportIndex = i;
+      break;
+    }
+  }
+  return messages.map((message, index) => {
+    return latestSubmitReportIndex >= 0 && index >= latestSubmitReportIndex
+      ? message
+      : cloneMessageWithCompactedSubmitReport(message);
+  });
+}
 
 /** Count how many rewrite-steering messages have been injected into the log. */
 function countRewriteAttempts(messages: AgentMessage[]): number {
@@ -506,9 +630,19 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
 
       // Track whether we've already sent the "stop" steering message
       let steeringSent = false;
+      let submitReportAccepted = context.messages.some(
+        (message) =>
+          "role" in message &&
+          message.role === "assistant" &&
+          message.content.some((part) => part.type === "toolCall" && part.name === "submit_report"),
+      );
+      let submitReportInFlight = false;
       // Track browses since last evaluate for auto-injection
       let browsesSinceEval = 0;
       const EVAL_INTERVAL = 5;
+      let consecutiveJunkBrowses = 0;
+      let junkSteeringSent = false;
+      const JUNK_BROWSE_LIMIT = 5;
       // Total tool calls this run — guards against runaway loops (see toolCallHardCap).
       let toolCallCount = 0;
       let toolCallWarned = false;
@@ -517,11 +651,31 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
       const config: AgentLoopConfig = {
         model: agentModel,
         convertToLlm,
+        transformContext: async (messages) => compactContextForModel(messages),
         toolExecution: "parallel",
         reasoning: getAgentReasoning(),
         getApiKey: (provider) => getEnvApiKey(provider),
+        beforeToolCall: async (ctx) => {
+          if (ctx.toolCall.name === "submit_report") {
+            if (submitReportAccepted || submitReportInFlight) {
+              return {
+                block: true,
+                reason: "A report has already been submitted for this task. Do not call submit_report again; stop or provide the corrected report as plain text when asked to rewrite.",
+              };
+            }
+            submitReportInFlight = true;
+          }
+          return undefined;
+        },
         afterToolCall: async (ctx) => {
           toolCallCount++;
+          if (ctx.toolCall.name === "submit_report") {
+            submitReportInFlight = false;
+          }
+          if (ctx.toolCall.name === "submit_report" && !ctx.isError) {
+            const rejected = (ctx.result.details as { rejected?: unknown } | undefined)?.rejected;
+            if (rejected !== true) submitReportAccepted = true;
+          }
           if (!toolCallWarned && toolCallCount >= toolCallWarnAt) {
             toolCallWarned = true;
             taskLog(`[BUDGET] ${toolCallCount} tool calls (warn at ${toolCallWarnAt}, hard cap ${toolCallHardCap}) — wrap up soon.`);
@@ -529,8 +683,21 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
           // Count browses and prefetches; reset on evaluate
           if (ctx.toolCall.name === "browse_url" || ctx.toolCall.name === "prefetch_sources") {
             browsesSinceEval++;
+            const details = ctx.result.details as {
+              meaningful?: unknown;
+              browsedCount?: unknown;
+              meaningfulBrowsedUrls?: unknown;
+            } | undefined;
+            const noMeaningfulBrowse = ctx.toolCall.name === "browse_url"
+              ? details?.meaningful === false
+              : typeof details?.browsedCount === "number" &&
+                details.browsedCount > 0 &&
+                Array.isArray(details.meaningfulBrowsedUrls) &&
+                details.meaningfulBrowsedUrls.length === 0;
+            consecutiveJunkBrowses = noMeaningfulBrowse ? consecutiveJunkBrowses + 1 : 0;
           } else if (ctx.toolCall.name === "evaluate_progress") {
             browsesSinceEval = 0;
+            consecutiveJunkBrowses = 0;
           }
           return undefined;
         },
@@ -548,6 +715,20 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
             return [{
               role: "user" as const,
               content: timeout.message,
+              timestamp: Date.now(),
+            }];
+          }
+
+          if (!junkSteeringSent && consecutiveJunkBrowses >= JUNK_BROWSE_LIMIT) {
+            junkSteeringSent = true;
+            consecutiveJunkBrowses = 0;
+            return [{
+              role: "user" as const,
+              content: [
+                `[SYSTEM] The last ${JUNK_BROWSE_LIMIT} browse results were dead, blocked, or non-meaningful.`,
+                `Stop retrying minor variations of the same search strategy. Switch interpretation or source class now: use a different hypothesis, a known authoritative database/archive, or direct URL retrieval.`,
+                `Do not browse games, dictionaries, shopping/product pages, search-engine help pages, or generic portals unless they are the named entity being researched.`,
+              ].join("\n"),
               timestamp: Date.now(),
             }];
           }
@@ -871,6 +1052,8 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
           }
         } else {
           let rewritesSoFar = priorAttempts;
+          let verificationAttempts = priorAttempts;
+          let recoveryUsed = false;
           let currentReport = finalReport;
           // Track the best (report, result) seen across all attempts so a destructive
           // rewrite cannot leave us with a worse final report than we started with.
@@ -878,11 +1061,11 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
           let bestResult: VerificationResult | null = null;
 
           while (currentReport) {
-            const attemptN = rewritesSoFar + 1;
+            const attemptN = verificationAttempts + 1;
             if (attemptN === 1) {
               taskLog("[VERIFY] Checking citations against source excerpts...");
             } else {
-              taskLog(`[VERIFY] Re-checking citations after rewrite ${attemptN - 1}...`);
+              taskLog(`[VERIFY] Re-checking citations (attempt ${attemptN})...`);
             }
             bus?.emit({ type: "phase", phase: "verifying" });
             bus?.emit({ type: "agent-status", text: `Verifying citations (attempt ${attemptN})...` });
@@ -930,8 +1113,36 @@ export function createResearchApp(options: ResearchAppOptions = {}): Absurd {
               // should report false, not true-because-an-earlier-attempt-triggered.
               rewriteTriggered: triggered,
             };
+            verificationAttempts = attemptN;
 
             if (!triggered) break;
+            if (mode === "lookup" && !recoveryUsed) {
+              recoveryUsed = true;
+              taskLog("[VERIFY] Citation recovery: extending lookup research for better source excerpts.");
+              bus?.emit({ type: "agent-status", text: "Recovering citations with targeted lookup..." });
+              const recoveryMessage: AgentMessage = {
+                role: "user" as const,
+                content: buildCitationRecoverySteering(params.topic, result),
+                timestamp: Date.now(),
+              };
+              await ctx.completeStep(nextHandle, { message: recoveryMessage } satisfies MessageLogEntry);
+              context.messages.push(recoveryMessage);
+              nextHandle = await ctx.beginStep<MessageLogEntry>("message");
+              const recoveryPersister = createLoggingPersister(ctx, nextHandle, {
+                ...persisterOpts,
+                initialTurnCount: countCompletedTurns(),
+              });
+              await runWithTimeout(recoveryPersister);
+              checkForAgentError(context.messages);
+
+              const recoveredReport = extractFinalReport(context.messages);
+              if (!recoveredReport || recoveredReport === currentReport) {
+                taskLog("[VERIFY] Citation recovery produced no new report; continuing to rewrite.");
+              } else {
+                currentReport = recoveredReport;
+                continue;
+              }
+            }
             if (rewritesSoFar >= MAX_REWRITES) {
               taskLog(`[VERIFY] Hit rewrite cap (${MAX_REWRITES}); accepting current report.`);
               break;

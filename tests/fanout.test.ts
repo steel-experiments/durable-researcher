@@ -28,6 +28,13 @@ describe("interpretationsToAngles", () => {
     }
   });
 
+  it("adds generated source-class hints for event and race questions", () => {
+    const angles = interpretationsToAngles("What was the name of the 5K race at Great America?", interps, 2);
+    expect(angles[0].instruction).toContain("Source classes to prioritize");
+    expect(angles[0].instruction).toContain("race/event result databases");
+    expect(angles[0].instruction).not.toContain("Athlinks");
+  });
+
   it("caps the number of angles at the requested width", () => {
     expect(interpretationsToAngles("q", interps, 1)).toHaveLength(1);
   });

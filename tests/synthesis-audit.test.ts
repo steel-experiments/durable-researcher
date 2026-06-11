@@ -37,7 +37,8 @@ describe("buildSynthesisAuditSteering", () => {
 
     expect(text).toContain("[SECOND SYNTHESIS AUDIT]");
     expect(text).toContain("Claim A");
-    expect(text).toContain("call submit_report exactly once");
+    expect(text).toContain("Do NOT call any tools");
+    expect(text).toContain("Output only the corrected report itself");
   });
 });
 

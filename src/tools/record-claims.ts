@@ -68,19 +68,25 @@ export function createRecordClaimsTool(
       "Record atomic falsifiable claims with verbatim evidence. Use after browsing sources. This is the research ledger; do not write prose notes.",
     parameters: RecordClaimsParams,
     execute: async (_toolCallId, params: RecordClaimsParamsValue) => {
-      const touched = recordClaimsInLedger(ledger, params.claims);
+      const rejected = params.claims.filter(isUnsupportedNegativeMetaClaim);
+      const accepted = params.claims.filter((claim) => !isUnsupportedNegativeMetaClaim(claim));
+      const touched = recordClaimsInLedger(ledger, accepted);
       notes.length = 0;
       notes.push(...ledgerToNotes(ledger));
       const supported = ledger.claims.filter((claim) => claim.status === "supported").length;
       const contested = ledger.claims.filter((claim) => claim.status === "contested").length;
       const refuted = ledger.claims.filter((claim) => claim.status === "refuted").length;
+      const rejectionText = rejected.length > 0
+        ? ` Rejected ${rejected.length} unsupported negative/meta claim(s): quote a source that itself establishes the absence, or record the scoped source fact instead.`
+        : "";
       return {
         content: [{
           type: "text" as const,
-          text: `Recorded ${touched.length} claim evidence item(s). Ledger: ${ledger.claims.length} claims (${supported} supported, ${contested} contested, ${refuted} refuted).`,
+          text: `Recorded ${touched.length} claim evidence item(s). Ledger: ${ledger.claims.length} claims (${supported} supported, ${contested} contested, ${refuted} refuted).${rejectionText}`,
         }],
         details: {
           recordedCount: touched.length,
+          rejectedCount: rejected.length,
           claimCount: ledger.claims.length,
           evidenceCount: ledger.evidence.length,
           supported,
@@ -90,4 +96,29 @@ export function createRecordClaimsTool(
       };
     },
   };
+}
+
+const NEGATIVE_META_PATTERNS = [
+  /\bno (?:verifiable|primary|secondary|relevant)?\s*source\b/i,
+  /\bno (?:source|evidence|record|reference|mention)\b.*\b(?:found|confirm|contains?|documents?|mentions?)\b/i,
+  /\bunable to find\b/i,
+  /\bcould not find\b/i,
+  /\bnot found\b/i,
+  /\bno .* (?:was|were) found\b/i,
+  /\bdespite extensive (?:searching|research)\b/i,
+];
+
+const SCOPED_ABSENCE_EXCERPT_PATTERNS = [
+  /\bno (?:results|records|matches|events|races|mention|reference)\b/i,
+  /\b0 (?:results|records|matches)\b/i,
+  /\bnot found\b/i,
+  /\bno .* found\b/i,
+  /\bdoes not (?:include|contain|list|mention)\b/i,
+];
+
+function isUnsupportedNegativeMetaClaim(claim: RecordClaimsParamsValue["claims"][number]): boolean {
+  if (claim.supports === false) return false;
+  const text = claim.text.trim();
+  if (!NEGATIVE_META_PATTERNS.some((pattern) => pattern.test(text))) return false;
+  return !SCOPED_ABSENCE_EXCERPT_PATTERNS.some((pattern) => pattern.test(claim.excerpt));
 }

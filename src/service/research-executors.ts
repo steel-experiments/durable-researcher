@@ -2,7 +2,7 @@
 // ABOUTME: Implements campaign, single-agent, fixed-team, and subagent-style runs over durable research tasks.
 
 import { createHash } from "node:crypto";
-import { createResearchApp } from "../agent.js";
+import { createResearchApp, type ResearchAppOptions } from "../agent.js";
 import { getMaxDurationSeconds } from "../config.js";
 import {
   compileCampaignReport,
@@ -37,6 +37,7 @@ import type { ResearchLedger } from "../types.js";
 
 export type ExecutorContext = {
   signal: AbortSignal;
+  appOptions?: ResearchAppOptions;
   setRunStatus(status: ResearchRun["status"]): Promise<void>;
   setRunCampaign(campaignId: string, status: ResearchRun["status"]): Promise<void>;
 };
@@ -71,6 +72,7 @@ async function runResearchTask(input: {
   objective: string;
   params: ResearchParams;
   signal?: AbortSignal;
+  appOptions?: ResearchAppOptions;
 }): Promise<{ task: ResearchRunTask; result: ResearchResult; usage: CampaignUsage }> {
   throwIfAborted(input.signal);
   const task = await createResearchRunTask({
@@ -80,7 +82,7 @@ async function runResearchTask(input: {
     objective: input.objective,
   });
   const q = queueName(input.run.id, input.role);
-  const app = createResearchApp({ queueName: q, quiet: true });
+  const app = createResearchApp({ ...input.appOptions, queueName: q, quiet: input.appOptions?.quiet ?? true });
   try {
     await app.createQueue();
     const spawned = await app.spawn("research", input.params);
@@ -207,6 +209,7 @@ async function synthesizeTeam(
   run: ResearchRun,
   harnessType: string,
   results: ResearchResult[],
+  appOptions?: ResearchAppOptions,
   signal?: AbortSignal,
 ): Promise<ResearchResult> {
   const sources = mergeSources(results);
@@ -259,6 +262,7 @@ async function synthesizeTeam(
     role: "synthesis",
     objective: `Synthesize final report for ${run.topic}`,
     signal,
+    appOptions,
     params: {
       topic: run.topic,
       depth: run.params.depth,
@@ -285,6 +289,7 @@ async function runTeam(
   run: ResearchRun,
   harnessType: string,
   objectives: string[],
+  appOptions?: ResearchAppOptions,
   signal?: AbortSignal,
 ): Promise<void> {
   const tasks = await Promise.all(objectives.map((objective, index) =>
@@ -294,6 +299,7 @@ async function runTeam(
       role: `agent-${index + 1}`,
       objective,
       signal,
+      appOptions,
       params: {
         topic: run.topic,
         depth: run.params.depth,
@@ -308,7 +314,7 @@ async function runTeam(
       },
     })
   ));
-  const synthesized = await synthesizeTeam(run, harnessType, tasks.map((task) => task.result), signal);
+  const synthesized = await synthesizeTeam(run, harnessType, tasks.map((task) => task.result), appOptions, signal);
 
   // Completeness critic: one pass over the synthesized report to name coverage gaps the
   // fan-out missed. Recorded as an artifact only — it never blocks or rewrites here.
@@ -397,6 +403,7 @@ export function createSingleAgentExecutor(): ResearchExecutor {
         role: "single-agent",
         objective: run.topic,
         signal: ctx.signal,
+        appOptions: ctx.appOptions,
         params: {
           topic: run.topic,
           depth: run.params.depth,
@@ -426,7 +433,7 @@ export function createFixedTeamExecutor(): ResearchExecutor {
     async start(run, ctx) {
       const harness = run.params.selectedHarness;
       const agents = harness?.type === "fixed_team" ? harness.agents : 5;
-      await runTeam(run, "fixed_team", teamObjectives(run.topic, agents), ctx.signal);
+      await runTeam(run, "fixed_team", teamObjectives(run.topic, agents), ctx.appOptions, ctx.signal);
       await ctx.setRunStatus("completed");
     },
   };
@@ -440,7 +447,7 @@ export function createAsyncSubagentsExecutor(): ResearchExecutor {
       const objectives = teamObjectives(run.topic, count).map((objective, index) =>
         `Async subagent ${index + 1}: ${objective}. Work independently; the orchestrator will merge your findings.`
       );
-      await runTeam(run, "async_subagents", objectives, ctx.signal);
+      await runTeam(run, "async_subagents", objectives, ctx.appOptions, ctx.signal);
       await ctx.setRunStatus("completed");
     },
   };
@@ -457,6 +464,7 @@ export function createBlockingSubagentsExecutor(): ResearchExecutor {
         role: "orchestrator-plan",
         objective: `Plan quality-first subagent research for ${run.topic}`,
         signal: ctx.signal,
+        appOptions: ctx.appOptions,
         params: {
           topic: run.topic,
           depth: "quick",
@@ -479,7 +487,7 @@ export function createBlockingSubagentsExecutor(): ResearchExecutor {
             `Blocking subagent ${index + 1}: ${objective}\n\nUse this orchestrator context:\n${plan.result.report}`)
         : teamObjectives(run.topic, count).map((objective, index) =>
             `Blocking subagent ${index + 1}: ${objective}. Use this orchestrator context:\n${plan.result.report}`);
-      await runTeam(run, "orchestrator_blocking_subagents", objectives, ctx.signal);
+      await runTeam(run, "orchestrator_blocking_subagents", objectives, ctx.appOptions, ctx.signal);
       await ctx.setRunStatus("completed");
     },
   };
@@ -522,6 +530,7 @@ export function createRedundantFanoutExecutor(): ResearchExecutor {
             role: `angle-${angle.reading}`,
             objective: angle.instruction,
             signal: ctx.signal,
+            appOptions: ctx.appOptions,
             params: fanoutWorkerParams(run, angle.instruction, harness),
           });
           return result.ledger ?? createResearchLedger();
@@ -540,6 +549,7 @@ export function createRedundantFanoutExecutor(): ResearchExecutor {
             role: "escalation",
             objective: instruction,
             signal: ctx.signal,
+            appOptions: ctx.appOptions,
             params: fanoutWorkerParams(run, instruction, harness),
           });
           return result.ledger ?? createResearchLedger();
@@ -556,6 +566,7 @@ export function createRedundantFanoutExecutor(): ResearchExecutor {
         role: "synthesis",
         objective: `Synthesize final report for ${run.topic}`,
         signal: ctx.signal,
+        appOptions: ctx.appOptions,
         params: {
           topic: run.topic,
           depth: run.params.depth,

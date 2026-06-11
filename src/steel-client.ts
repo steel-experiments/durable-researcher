@@ -429,6 +429,27 @@ const REFLECTION_TITLE_PATTERNS = [
   /walmart business/i,
 ];
 
+const LOOKUP_JUNK_PATTERNS = [
+  /\bgrammar\b/i,
+  /\bspelling\b/i,
+  /\bwhich (?:is )?correct\b/i,
+  /\bbubble shooter\b/i,
+  /\bplay online\b/i,
+  /\bno-code\b/i,
+  /\bskincare\b/i,
+  /\bfishing gear\b/i,
+  /\bknives\b/i,
+  /\b3d models?\b/i,
+  /\bwalmart\b/i,
+  /\bmicrosoft (?:support|privacy|services agreement)\b/i,
+  /\bdigital services act\b/i,
+  /\bdictionary\b/i,
+  /\bdefinition\b/i,
+  /\bmeaning\b/i,
+  /\bthesaurus\b/i,
+  /\btranslation\b/i,
+];
+
 /** Content words (lowercased, ≥3 chars, non-stopword) of a string. */
 function contentWords(text: string): string[] {
   return text
@@ -477,6 +498,56 @@ export function filterReflectionSpam(
   query: string,
 ): SearchResult[] {
   return results.filter((r) => !isQueryReflectionSpam(r, query));
+}
+
+function resultSearchText(result: SearchResult): string {
+  return `${result.title ?? ""} ${result.snippet ?? ""} ${extractUrlWords(result.url)}`.toLowerCase();
+}
+
+function lookupAnchorWords(query: string, topic?: string): Set<string> {
+  const anchors = new Set([...contentWords(query), ...contentWords(topic ?? "")]);
+  // Keep short task-critical tokens that contentWords drops, e.g. "5K".
+  for (const raw of `${query} ${topic ?? ""}`.toLowerCase().match(/\b[a-z0-9]{2,}\b/g) ?? []) {
+    if (/\d/.test(raw)) anchors.add(raw);
+  }
+  return anchors;
+}
+
+function lookupAnchorScore(result: SearchResult, query: string, topic?: string): number {
+  const text = resultSearchText(result);
+  const queryAnchors = lookupAnchorWords(query);
+  const topicAnchors = lookupAnchorWords(topic ?? "");
+  let score = 0;
+  for (const word of queryAnchors) {
+    if (text.includes(word)) score += /\d/.test(word) ? 1.5 : 1;
+  }
+  for (const word of topicAnchors) {
+    if (!queryAnchors.has(word) && text.includes(word)) score += /\d/.test(word) ? 0.5 : 0.25;
+  }
+  return score;
+}
+
+/**
+ * Lookup searches are often precise decoded guesses, so the normal topic gate can
+ * drop the answer page. But returning raw SERP order admits grammar/product/game
+ * pages. Keep pages with multiple task anchors, and drop obvious junk unless it
+ * strongly matches the lookup anchors.
+ */
+export function filterLookupResults(results: SearchResult[], query: string, topic?: string): SearchResult[] {
+  const scored = results
+    .map((result) => {
+      const score = lookupAnchorScore(result, query, topic);
+      const junk = LOOKUP_JUNK_PATTERNS.some((re) => re.test(`${result.title ?? ""} ${result.snippet ?? ""} ${result.url}`));
+      return { result, score, junk };
+    })
+    .filter(({ score, junk }) => score >= (junk ? 5 : 2))
+    .sort((a, b) => {
+      if (a.junk !== b.junk) return a.junk ? 1 : -1;
+      const authorityDelta = sourceAuthority(b.result.url) - sourceAuthority(a.result.url);
+      if (authorityDelta !== 0) return authorityDelta;
+      return b.score - a.score;
+    });
+  return scored.map((s) => s.result);
 }
 
 /** Try multiple search engines in order, returning results from the first success. */

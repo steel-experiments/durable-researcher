@@ -247,6 +247,16 @@ describe("createPrefetchTool", () => {
   it("trusts decoded lookup queries instead of re-gating them against the literal topic", async () => {
     mockSearch.mockResolvedValue([
       {
+        title: "Bubble Shooter - Play the game for free",
+        url: "https://games.example/bubble-shooter",
+        snippet: "Play online",
+      },
+      {
+        title: "GREAT Definition & Meaning",
+        url: "https://dictionary.example/great",
+        snippet: "Dictionary definition",
+      },
+      {
         title: "Run Forrest Run 5K Bubba Gump Shrimp Co.",
         url: "https://results.example/run-forrest-run-5k",
         snippet: "Great America Santa Clara race results",
@@ -261,6 +271,7 @@ describe("createPrefetchTool", () => {
     });
 
     expect(result.details.browsedCount).toBe(1);
+    expect(mockBrowse).toHaveBeenCalledTimes(1);
     expect(mockBrowse).toHaveBeenCalledWith(
       expect.objectContaining({
         client,

@@ -3,7 +3,7 @@
 
 import { describe, it, expect } from "vitest";
 
-import { extractSearchResults, scoreRelevance, filterByRelevance, isQueryReflectionSpam } from "../../src/steel-client.js";
+import { extractSearchResults, scoreRelevance, filterByRelevance, filterLookupResults, isQueryReflectionSpam } from "../../src/steel-client.js";
 import { createSearchTool } from "../../src/tools/search.js";
 import type { ScrapeResponse } from "steel-sdk/resources/top-level.js";
 import type Steel from "steel-sdk";
@@ -358,6 +358,37 @@ describe("isQueryReflectionSpam", () => {
   });
 });
 
+describe("filterLookupResults", () => {
+  it("keeps exact race-result lookup needles while dropping grammar/game/product drift", () => {
+    const results: SearchResult[] = [
+      {
+        title: "Run Forrest Run 5K Bubba Gump Shrimp Co.",
+        url: "https://results.example/run-forrest-run-5k",
+        snippet: "Great America Santa Clara race results",
+      },
+      {
+        title: "Forest vs Forrest Which Spelling Is Correct and Usage?",
+        url: "https://grammarupdate.com/forest-vs-forrest/",
+        snippet: "Grammar guide",
+      },
+      {
+        title: "Bubble Shooter Games - Play Online for Free",
+        url: "https://poki.com/en/bubble-shooter",
+        snippet: "Play Bubble Shooter",
+      },
+      {
+        title: "Big Bubbles, No Troubles | HUBBA BUBBA Official Website",
+        url: "https://www.hubbabubba.com/",
+        snippet: "Bubble gum products",
+      },
+    ];
+
+    const filtered = filterLookupResults(results, "Bubba Gump Run Forrest Run 5K Great America Santa Clara");
+
+    expect(filtered.map((r) => r.url)).toEqual(["https://results.example/run-forrest-run-5k"]);
+  });
+});
+
 describe("web_search relevance gate by mode", () => {
   const topic = "AI agent automation web infrastructure";
   // One on-topic result (matches the topic on ≥2 keywords) plus one result that
@@ -377,12 +408,15 @@ describe("web_search relevance gate by mode", () => {
     expect(out.content[0].text).not.toContain("https://b.com/answer");
   });
 
-  it("keeps the agent's deliberately-decoded results in lookup mode (gate loosened)", async () => {
-    const tool = createSearchTool(fakeSteel(links), new Set(), topic, "lookup");
-    const out = await tool.execute("call-1", { query: "Larkspur festival name" });
-    // In lookup mode we trust the agent's precise query and do not gate against the
-    // literal topic, so the single-keyword-match result survives for the agent to browse.
-    expect(out.details?.freshResults).toBe(2);
-    expect(out.content[0].text).toContain("https://b.com/answer");
+  it("keeps anchored deliberately-decoded results in lookup mode while dropping weak drift", async () => {
+    const lookupLinks = [
+      { text: "On-topic agent infrastructure guide", url: "https://a.com/agents" },
+      { text: "Larkspur festival event page", url: "https://b.com/larkspur-festival-event" },
+    ];
+    const tool = createSearchTool(fakeSteel(lookupLinks), new Set(), topic, "lookup");
+    const out = await tool.execute("call-1", { query: "Larkspur festival event name" });
+    expect(out.details?.freshResults).toBe(1);
+    expect(out.content[0].text).toContain("https://b.com/larkspur-festival-event");
+    expect(out.content[0].text).not.toContain("https://a.com/agents");
   });
 });

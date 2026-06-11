@@ -2,6 +2,7 @@
 // ABOUTME: Parses args, finds existing tasks, spawns or resumes, saves reports, and prints usage.
 
 import dotenv from "dotenv";
+import { randomUUID } from "node:crypto";
 
 // Load .env without overriding existing env vars — shell env takes precedence
 dotenv.config({ override: false });
@@ -44,7 +45,30 @@ import {
   printUsageIfPresent,
   type CompletedResearchForCli,
 } from "./cli-output.js";
+import { createResearchService } from "./service/research-service.js";
+import type { ResearchRunParams } from "./service/research-runs.js";
+import type { ResearchRunTask } from "./service/research-tasks.js";
 
+function researchFromServiceRun(
+  topic: string,
+  report: string,
+  tasks: ResearchRunTask[],
+): CompletedResearchForCli {
+  const notes = tasks.flatMap((task) => task.result?.notes ?? []);
+  const sourcesByUrl = new Map<string, { title: string; url: string }>();
+  for (const task of tasks) {
+    for (const source of task.result?.sources ?? []) {
+      if (!sourcesByUrl.has(source.url)) sourcesByUrl.set(source.url, source);
+    }
+  }
+  return {
+    topic,
+    report,
+    notes,
+    sources: [...sourcesByUrl.values()],
+    messages: [],
+  };
+}
 
 async function main() {
   const args = process.argv.slice(2);
@@ -146,6 +170,113 @@ async function main() {
     } catch {
       console.error(`Error: Unknown model "${cli.modelSpec}".`);
       process.exit(1);
+    }
+  }
+
+  async function runServiceDeepResearch(runTopic: string, clarifications?: string): Promise<void> {
+    const service = createResearchService({ appOptions });
+    const params: ResearchRunParams = {
+      topic: runTopic,
+      depth,
+      mode: undefined,
+      clarify: clarifications,
+      budgets: {
+        maxSources: maxSources ?? DEPTH_CONFIG[depth].maxSources,
+      },
+    };
+    const { run } = await service.createRun({
+      params,
+      idempotencyKey: `cli:${Date.now()}:${randomUUID()}`,
+    });
+
+    let tuiHandle: ReturnType<typeof runTui> | undefined;
+    let quitPromise: Promise<void> | undefined;
+    const requestQuit = (): Promise<void> => {
+      if (!quitPromise) {
+        if (eventBus) eventBus.emit({ type: "agent-status", text: "Cancelling run..." });
+        quitPromise = service.cancelRun(run.id)
+          .catch((err) => {
+            if (eventBus) eventBus.emit({ type: "task-error", message: (err as Error).message });
+            else console.error(`Cancel failed: ${(err as Error).message}`);
+          })
+          .then(() => undefined);
+      }
+      return quitPromise;
+    };
+    if (useTui && eventBus && steeringQueue) {
+      tuiHandle = runTui({
+        topic: runTopic,
+        maxSources: params.budgets.maxSources ?? DEPTH_CONFIG[depth].maxSources,
+        modelLabel,
+        bus: eventBus,
+        steeringQueue,
+        onQuit: () => {
+          void requestQuit();
+        },
+        onExtend: () => undefined,
+      });
+      eventBus.emit({
+        type: "agent-status",
+        text: `Starting ${run.kind} run ${run.id.slice(0, 8)}...`,
+      });
+    } else {
+      console.log(`\nDurable Researcher`);
+      console.log(`Topic: ${runTopic}`);
+      console.log(`Depth: ${depth}`);
+      console.log(`Harness: ${run.kind}`);
+      console.log(`Max sources: ${params.budgets.maxSources ?? `${DEPTH_CONFIG[depth].maxSources} (depth default)`}`);
+      if (clarifications) {
+        console.log(`Clarifications: ${clarifications.split("\n").length / 3} answers captured`);
+      }
+      console.log(`---\n`);
+      console.log(`Research run created: ${run.id}`);
+    }
+    await service.startRun(run.id);
+
+    let lastStatus = run.status;
+    const tuiExit = tuiHandle?.waitForExit.then(() => "tui-exit" as const);
+    try {
+      while (true) {
+        const tick = new Promise<"tick">((resolve) => setTimeout(() => resolve("tick"), 2000));
+        const next = tuiExit ? await Promise.race([tick, tuiExit]) : await tick;
+        if (next === "tui-exit") {
+          await requestQuit();
+          tuiHandle?.unmount();
+          console.log(`\nQuit requested. Research run cancelled: ${run.id}`);
+          return;
+        }
+        const current = await service.getRun(run.id);
+        if (current.status !== lastStatus) {
+          if (useTui && eventBus) {
+            eventBus.emit({ type: "agent-status", text: `Run status: ${current.status}` });
+          } else {
+            console.log(`Run status: ${current.status}`);
+          }
+          lastStatus = current.status;
+        }
+        if (current.status === "completed") {
+          const [{ report }, tasks] = await Promise.all([
+            service.getReport(run.id),
+            service.listTasks(run.id),
+          ]);
+          const research = researchFromServiceRun(runTopic, report ?? "", tasks);
+          if (useTui && eventBus) eventBus.emit({ type: "phase", phase: "complete" });
+          tuiHandle?.unmount();
+          printCompletedResearchResult(research, { useTui, isResume: false });
+          return;
+        }
+        if (current.status === "failed" || current.status === "cancelled") {
+          if (current.status === "cancelled" && quitPromise) {
+            tuiHandle?.unmount();
+            console.log(`\nQuit requested. Research run cancelled: ${run.id}`);
+            return;
+          }
+          throw new Error(`Research run ${current.status}: ${run.id}`);
+        }
+      }
+    } catch (err) {
+      tuiHandle?.unmount();
+      throw err;
     }
   }
 
@@ -334,6 +465,17 @@ async function main() {
 
   // Spawn new task if we still don't have one
   if (!taskID && topic) {
+    let clarifications: string | undefined;
+    if (cli.clarify && process.stdin.isTTY) {
+      clarifications = await runClarification(topic);
+    }
+
+    if (depth === "deep" && !cli.resumeTaskId) {
+      await app.close();
+      await runServiceDeepResearch(topic, clarifications);
+      process.exit(0);
+    }
+
     taskQueue = createIsolatedQueueName();
     await app.close();
     app = createResearchApp({ ...appOptions, queueName: taskQueue });
@@ -342,11 +484,8 @@ async function main() {
     const params: ResearchParams = { topic, depth, maxSources };
 
     // Run clarification if requested and interactive
-    if (cli.clarify && process.stdin.isTTY) {
-      const clarifications = await runClarification(topic);
-      if (clarifications) {
-        params.clarifications = clarifications;
-      }
+    if (clarifications) {
+      params.clarifications = clarifications;
     }
 
     console.log(`\nDurable Researcher`);

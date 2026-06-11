@@ -30,6 +30,7 @@ export async function generateInterpretations(
   question: string,
   opts: { complete?: CompleteFn } = {},
 ): Promise<PlanInterpretation[]> {
+  const deterministic = deterministicInterpretations(question);
   const complete = opts.complete ?? defaultComplete;
   let text = "";
   try {
@@ -38,7 +39,7 @@ export async function generateInterpretations(
     text = "";
   }
   const parsed = parseInterpretations(text);
-  return ensureLiteral(question, parsed);
+  return dedupeInterpretations(ensureLiteral(question, [...deterministic, ...parsed]));
 }
 
 function parseInterpretations(text: string): PlanInterpretation[] {
@@ -72,6 +73,85 @@ function normalizeInterpretation(item: unknown): PlanInterpretation[] {
 function ensureLiteral(question: string, interps: PlanInterpretation[]): PlanInterpretation[] {
   if (interps.some((i) => i.reading === "literal")) return interps;
   return [{ reading: "literal", meaning: `Take the question at face value: ${question}`, queriesTarget: question }, ...interps];
+}
+
+function deterministicInterpretations(question: string): PlanInterpretation[] {
+  const quoted = Array.from(question.matchAll(/["'“”‘’]([^"'“”‘’]{2,80})["'“”‘’]/g))
+    .map((match) => match[1]?.trim())
+    .filter((value): value is string => !!value);
+  const out: PlanInterpretation[] = [];
+  for (const phrase of quoted) {
+    out.push({
+      reading: "literal",
+      meaning: `The quoted phrase "${phrase}" appears literally in the target answer or source wording.`,
+      queriesTarget: `${phrase} ${question.replace(phrase, "").trim()}`.trim(),
+    });
+    const phonetic = phoneticVariants(phrase);
+    if (phonetic.length > 0) {
+      out.push({
+        reading: "lateral",
+        device: "homophone",
+        meaning: `The quoted phrase "${phrase}" may be a sound-alike clue rather than literal wording.`,
+        queriesTarget: `${phonetic.join(" OR ")} ${question.replace(phrase, "").trim()}`.trim(),
+      });
+    }
+  }
+  return out;
+}
+
+function phoneticVariants(phrase: string): string[] {
+  const normalized = phrase.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const variants = new Set<string>();
+  const words = normalized.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [];
+
+  const joined = words.join(" ");
+  variants.add(joined);
+
+  // Generic-ish sound-alike substitutions that often appear in clues and brand names.
+  const substitutions: Array<[RegExp, string]> = [
+    [/\bbubble\b/g, "bubba"],
+    [/\bble\b/g, "bba"],
+    [/\bgum\b/g, "gump"],
+    [/\bforrest\b/g, "forest"],
+    [/\bforest\b/g, "forrest"],
+    [/\bto\b/g, "two"],
+    [/\btwo\b/g, "to"],
+    [/\btoo\b/g, "two"],
+    [/\bsee\b/g, "sea"],
+    [/\bsea\b/g, "see"],
+    [/\bwon\b/g, "one"],
+    [/\bone\b/g, "won"],
+  ];
+  for (const [pattern, replacement] of substitutions) {
+    const next = joined.replace(pattern, replacement);
+    if (next !== joined) variants.add(next);
+  }
+
+  // Also try replacing inside words, which catches bubble -> bubba.
+  const inside = joined
+    .replace(/\bbubble\b/g, "bubba")
+    .replace(/ble\b/g, "bba")
+    .replace(/\bgum\b/g, "gump");
+  if (inside !== joined) variants.add(inside);
+
+  variants.delete(joined);
+  return [...variants].slice(0, 6);
+}
+
+function dedupeInterpretations(interps: PlanInterpretation[]): PlanInterpretation[] {
+  const seen = new Set<string>();
+  const out: PlanInterpretation[] = [];
+  for (const interp of interps) {
+    const key = `${interp.reading}|${interp.device ?? ""}|${interp.meaning}|${interp.queriesTarget ?? ""}`
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+      .trim();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(interp);
+  }
+  return out;
 }
 
 const defaultComplete: CompleteFn = async (prompt) => {

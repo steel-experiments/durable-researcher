@@ -40,6 +40,10 @@ export function interpretationsToAngles(
   width: number,
 ): FanoutAngle[] {
   const cap = Math.max(1, width);
+  const sourceHints = sourceClassHints(question);
+  const sourceHintBlock = sourceHints.length
+    ? [``, `Source classes to prioritize:`, ...sourceHints.map((hint) => `- ${hint}`)].join("\n")
+    : "";
   if (interpretations && interpretations.length > 0) {
     return interpretations.slice(0, cap).map((interp) => {
       const device = interp.device ? ` (${interp.device})` : "";
@@ -50,7 +54,7 @@ export function interpretationsToAngles(
           `You are the "${interp.reading}"${device} interpretation worker for this question:`,
           question,
           ``,
-          `This reading means: ${interp.meaning}.${target}`,
+          `This reading means: ${interp.meaning}.${target}${sourceHintBlock}`,
           ``,
           ANTI_SELF_REJECTION,
         ].join("\n"),
@@ -62,12 +66,31 @@ export function interpretationsToAngles(
       reading: "literal",
       instruction: [
         `Research this question directly and literally:`,
-        question,
+        question + sourceHintBlock,
         ``,
         ANTI_SELF_REJECTION,
       ].join("\n"),
     },
   ];
+}
+
+function sourceClassHints(question: string): string[] {
+  const q = question.toLowerCase();
+  const hints: string[] = [];
+  if (/\b(?:5k|race|run|marathon|walk|event)\b/.test(q)) {
+    hints.push(
+      "race/event result databases and archived calendars",
+      "official venue, organizer, or sponsor event pages",
+      "local news, community papers, and event listing/review pages with the event title",
+    );
+  }
+  if (/\b(?:company|startup|funding|ceo|founder|product)\b/.test(q)) {
+    hints.push("official company pages, filings, press releases, and reputable business databases");
+  }
+  if (/\b(?:paper|study|benchmark|dataset|model)\b/.test(q)) {
+    hints.push("primary papers, benchmark leaderboards, dataset cards, and project documentation");
+  }
+  return hints;
 }
 
 export type RedundantFanoutResult = {

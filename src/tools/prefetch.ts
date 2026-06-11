@@ -4,7 +4,7 @@
 import Steel from "steel-sdk";
 import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { multiEngineSearch, filterByRelevance } from "../steel-client.js";
+import { multiEngineSearch, filterByRelevance, filterLookupResults } from "../steel-client.js";
 import { browseOne, type BrowseOneResult } from "./browse.js";
 import type { ToolProgress } from "../event-bus.js";
 import type { UrlExcerptStore } from "../url-excerpts.js";
@@ -166,7 +166,7 @@ export function createPrefetchTool(
           try {
             const rawResults = await search(client, query);
             const results = mode === "lookup"
-              ? rawResults
+              ? filterLookupResults(rawResults, query, topic)
               : filterResults(rawResults, topic, 0.3, query);
             qr.searchResultCount = results.length;
             report(`    ✓ "${query.slice(0, 50)}" → ${results.length}/${rawResults.length} relevant`);
